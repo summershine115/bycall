@@ -1,0 +1,51 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+*.whl
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 测试 / 覆盖 ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---- 类型 / lint 缓存 ----
+.mypy_cache/
+.ruff_cache/
+
+# ---- 运行时数据（绝不进 git）----
+data/
+!data/.gitkeep
+*.log
+logs/
+
+# ---- 配置 / 密钥（绝不进 git）----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ---- ZCode 工具内部 ----
+.zcode/
+
+# ---- Docker 卷（本地开发时数据落这里）----
+pgdata/
+redisdata/

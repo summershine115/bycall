@@ -1,0 +1,24 @@
+# Pre-commit hooks：本地提交前自动 lint + format。
+# 安装：pre-commit install（首次）；之后每次 git commit 自动跑。
+# 手动全量跑：pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0  # 与 pyproject dev 依赖的 ruff>=0.5 对齐
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # 通用：大文件 / 私钥 / 合并冲突标记 / 行尾
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^docker/postgres-init/  # SQL 不是 yaml

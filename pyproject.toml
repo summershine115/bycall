@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bycall"
+version = "0.1.0"
+description = "Bycall — 企业级数字员工 Agent（路线 B：分层混搭自研）"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Bycall Team" }]
+keywords = ["agent", "rag", "digital-employee", "langgraph", "zvec"]
+
+# 运行时依赖（M0 最小集）。各里程碑新增依赖时在此追加。
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "zvec>=0.5.1",
+    "numpy>=1.26",
+    "openai>=1.30",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "pre-commit>=3.7",
+    "httpx>=0.27",  # 测试 FastAPI 用
+]
+
+[project.urls]
+Documentation = "https://github.com/lilinsen/bycall/blob/main/README.md"
+
+# hatchling: 把 src/bycall 作为包根
+[tool.hatch.build.targets.wheel]
+packages = ["src/bycall"]
+
+# ---------- ruff ----------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "C4",            # comprehensions
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+]
+ignore = [
+    "E501",  # 行长由 formatter 管
+    "RUF001", "RUF002", "RUF003",  # 中文文档/注释里的全角标点（项目本身用中文）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # 测试里允许 assert
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ---------- pytest ----------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: 需要外部服务（postgres/redis/真实 LLM key）的集成测试",
+]

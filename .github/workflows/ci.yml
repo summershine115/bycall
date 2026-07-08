@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# 同分支新提交取消旧的，省 CI 配额。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install "ruff>=0.5"
+      - name: Ruff check
+        run: ruff check src tests
+      - name: Ruff format check
+        run: ruff format --check src tests
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + dev deps
+        run: |
+          pip install -U pip
+          pip install -e ".[dev]"
+      # unit 测试不需外部服务（zvec 嵌入式，FastAPI 用 TestClient）。
+      # integration 标记的测试需 postgres/redis，CI 里暂跳过。
+      - name: Run unit tests
+        run: pytest tests/unit -q
+
+  build:
+    name: Build (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build app image
+        run: docker build -t bycall:ci .
+      - name: Smoke test image
+        run: |
+          docker run -d --name bycall-smoke -p 18000:8000 bycall:ci
+          sleep 3
+          curl -sf http://localhost:18000/health | grep -q '"ok"'
+          docker rm -f bycall-smoke

@@ -1,0 +1,73 @@
+# Bycall 本地/内网开发栈。
+# 内网无公网友好：所有服务本地起，zvec 嵌入式无独立服务。
+#
+# 服务：
+#   postgres  : pgvector/pgvector:pg16（带 pgvector，M0 只起服务 + 建库）
+#   redis     : redis:7-alpine（缓存/队列，M0 只起服务）
+#   app       : Bycall API（profile=app，默认不起，本地用 make dev）
+#
+# 用法：
+#   docker compose up -d postgres redis   # 起依赖
+#   docker compose --profile app up app   # 起 app（容器内）
+#   docker compose down                   # 停全部
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: bycall-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bycall
+      POSTGRES_PASSWORD: bycall
+      POSTGRES_DB: bycall
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bycall -d bycall"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: bycall-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    # 默认不启动，用 profile 隔离；本地开发走 make dev。
+    profiles: ["app"]
+    build: .
+    container_name: bycall-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 容器内访问同栈服务用服务名，覆盖 .env 里的 localhost。
+      BYCALL_POSTGRES_DSN: postgresql://bycall:bycall@postgres:5432/bycall
+      BYCALL_REDIS_URL: redis://redis:6379/0
+      BYCALL_VECTOR_STORE_DATA_DIR: /app/data/zvec
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

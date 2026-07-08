@@ -1,0 +1,86 @@
+# Bycall 架构设计
+
+> 路线 B（分层混搭自研）。完整选型评估与排期见 `digital-employee-plan.md`（项目外部文档）。
+> 本文档是 Bycall 仓库内的架构速览，随实现演进更新。
+
+## 分层架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        IM 渠道层 (LangBot)            [M1+]      │
+│   企微(长连接) │ 飞书(长连接) │ 钉钉(Stream) │ Web              │
+│   统一消息事件抽象 → 统一回复接口 │ 访问控制/限速/敏感词            │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ 统一 Message 对象
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Agent 编排层 (LangGraph)           [M3]       │
+│   意图识别 → 规划 → 工具调用(+HITL) → 响应生成(+citation)        │
+│   状态: Checkpointer(短期) + Store(长期，Postgres)               │
+│   循环: ReAct 协调层 + Function Calling 叶子节点（混合架构）     │
+└───────────────────────────┬─────────────────────────────────────┘
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ RAG 检索层       │ │ MCP 工具层 [M4]  │ │ 记忆层 [M3]      │
+│ VectorStore 抽象 │ │ Gateway+Registry│ │ 短期:对话窗口    │
+│  ├ zvec (M0✅)   │ │ + Auth(RBAC)    │ │ 长期:Postgres   │
+│  ├ Qdrant (迁移) │ │                 │ │  +pgvector      │
+│  └ pgvector      │ │                 │ │                 │
+│ 权限预过滤        │ │                 │ │                 │
+│ 混合检索(向+FTS+  │ │                 │ │                 │
+│  filter+RRF)     │ │                 │ │                 │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+        │                                       │
+        ▼                                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│            持久化与基础设施层                                      │
+│  zvec 数据目录 │ Postgres(+pgvector) │ Redis │ OTel+Langfuse     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+标注 `[M?]` 表示该层在对应里程碑落地。✅ 表示已完成。
+
+## M0 已落地的部分
+
+| 层 | 组件 | 状态 | 位置 |
+|----|------|------|------|
+| 配置 | pydantic-settings 分层配置 | ✅ | `src/bycall/config.py` |
+| LLM | 模型无关抽象（OpenAI 兼容 / GLM） | ✅ | `src/bycall/llm/` |
+| RAG 检索 | `VectorStore` 抽象 + zvec 实现 | ✅ | `src/bycall/vector_store/` |
+| Web | FastAPI 骨架 + /health /ready | ✅ | `src/bycall/api/` |
+| 基础设施 | Docker Compose（pg+redis+app） | ✅ | `docker-compose.yml` |
+| 工程 | CI（lint/test/build） + pre-commit | ✅ | `.github/` `.pre-commit-config.yaml` |
+
+## 架构红线（不可违背，详见 HANDOVER §4）
+
+1. **权限预过滤**：RAG 文档级 ACL，向量检索**前**注入 metadata filter，不是先召回再过滤。
+2. **Session 隔离**：`session_key = (agent_id, channel, tenant_id, user_id)`，多用户并发独立。
+3. **混合架构**：LangGraph durable（超步边界持久化）+ 同步 RAG 热路径。
+4. **分层记忆**：工作/情景/语义/治理四层，**agent memory ≠ RAG**。
+5. **MCP 网关**：统一工具治理，agent 不直连 MCP server。
+
+## 核心数据流（一次用户提问）
+
+```
+用户在企微 @数字员工："上季度华东区销售额？"
+  → LangBot 收消息(长连接) → 统一 Message → Agent 层
+  → LangGraph 意图识别 + guardrail
+  → 规划：查知识库(报表) + 可能调数据查询工具
+  → RAG 检索(权限预过滤): 向量+FTS+filter 三合一 + RRF rerank
+  → 响应生成(带 citation)
+  → 记忆更新(episodic → Postgres)
+  → LangBot 回复企微
+  → 全链路 OTel trace + Langfuse
+```
+
+## 后端可切换设计
+
+`VectorStore` 抽象接口定义在 `vector_store/base.py`，zvec 是第一个实现。
+迁移触发条件（任一满足）：
+- 规模超千万级 chunk → Milvus
+- 需原生 RBAC + 复杂权限 → pgvector / Qdrant
+- 多 Agent 实例共享 + 高并发 → Qdrant / Milvus
+
+迁移时新增一个实现类，在 `factory.py` 注册即可，业务代码不变。
+详见 `docs/decisions/0001-vectorstore-abstraction.md`。
