@@ -89,6 +89,8 @@ class AppConfig(BaseSettings):
     env: Literal["dev", "prod"] = "dev"
     debug: bool = False
     log_level: str = "INFO"
+    # session cookie 签名密钥，生产必改（环境变量 BYCALL_SESSION_SECRET）。
+    session_secret: str = "bycall-dev-change-me-in-prod"
 
     # default_factory 让子模型每次按当前环境变量构造，而非 import 时固化。
     llm: LLMConfig = Field(default_factory=LLMConfig)

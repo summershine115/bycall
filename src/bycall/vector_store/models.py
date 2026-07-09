@@ -97,7 +97,7 @@ class FilterCondition:
 
     field: str
     op: Literal["match", "in"]
-    value: str | int | float | bool
+    value: str | int | float | bool | None = None  # op=="match" 时用
     values: list[str] | None = None  # op == "in" 时用
 
     def matches(self, candidate: object) -> bool:

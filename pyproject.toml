@@ -22,6 +22,12 @@ dependencies = [
     "numpy>=1.26",
     "openai>=1.30",
     "httpx>=0.27",
+    # M1 治理脊柱 + 控制面
+    "sqlmodel>=0.0.22",  # ORM（User/Role/Prompt/AuditLog）
+    "jinja2>=3.1",  # Admin Web UI 服务端渲染
+    "python-multipart>=0.0.9",  # form 解析
+    "itsdangerous>=2.2",  # session cookie 签名
+    "passlib[bcrypt]>=1.7",  # admin 密码哈希
 ]
 
 [project.optional-dependencies]

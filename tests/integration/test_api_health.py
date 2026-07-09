@@ -1,16 +1,33 @@
 """API 健康检查集成测试。
 
 用 FastAPI TestClient（无需起真实 server，但走完整 ASGI 协议栈）。
+``create_app()`` 现在会 init_db，所以需要一个 SQLite 引擎 fixture（否则走默认 Postgres DSN）。
 本组测试不需要 postgres/redis，所以默认参与 ``make test``（不标 integration marker）。
-未来需要外部服务的测试再标 ``@pytest.mark.integration``。
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import create_engine
 
 from bycall import __version__
 from bycall.api.app import create_app
+from bycall.config import get_settings
+from bycall.db import init_db, set_engine
+
+
+@pytest.fixture(autouse=True)
+def sqlite_env(tmp_path, monkeypatch):
+    """每个 health 测试用独立 SQLite + init_db，避免走 Postgres。"""
+    db_file = tmp_path / "test.db"
+    monkeypatch.setenv("BYCALL_POSTGRES_DSN", f"sqlite:///{db_file}")
+    monkeypatch.setenv("BYCALL_VECTOR_STORE_DIMENSION", "16")
+    get_settings.cache_clear()
+    set_engine(create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False}))
+    init_db()
+    yield
+    get_settings.cache_clear()
 
 
 def test_health_returns_ok():
