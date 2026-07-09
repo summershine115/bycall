@@ -1,0 +1,70 @@
+// API 层：封装所有后端调用。统一走 axios，带错误拦截。
+// 后端端点：/api/login, /api/admin/* (用户/角色/提示词/审计/act-as), /chat
+
+import axios from 'axios'
+import { ElMessage } from 'element-plus'
+
+const http = axios.create({
+  baseURL: '/',
+  withCredentials: true, // 带 cookie（会话）
+  timeout: 30000,
+})
+
+// 响应拦截：统一处理 401/403/错误
+http.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    const status = error.response?.status
+    const detail = error.response?.data?.detail || error.message
+    if (status === 401) {
+      // 未登录 → 跳登录页（避免在登录页自身跳转造成循环）
+      if (!window.location.hash.includes('/login')) {
+        window.location.hash = '#/login'
+      }
+    } else if (status >= 400) {
+      ElMessage.error(`请求失败 (${status}): ${detail}`)
+    }
+    return Promise.reject(error)
+  },
+)
+
+// ============ 会话 ============
+
+export const auth = {
+  login: (name, password) =>
+    http.post('/api/login', new URLSearchParams({ name, password })),
+  logout: () => http.post('/api/logout'),
+}
+
+// ============ Admin REST ============
+
+export const admin = {
+  // 用户
+  listUsers: () => http.get('/api/admin/users').then((r) => r.data),
+  createUser: (data) => http.post('/api/admin/users', data).then((r) => r.data),
+  updateUser: (id, data) => http.patch(`/api/admin/users/${id}`, data).then((r) => r.data),
+  deleteUser: (id) => http.delete(`/api/admin/users/${id}`),
+  // 角色
+  listRoles: () => http.get('/api/admin/roles').then((r) => r.data),
+  createRole: (data) => http.post('/api/admin/roles', data).then((r) => r.data),
+  updateRole: (name, data) => http.patch(`/api/admin/roles/${name}`, data).then((r) => r.data),
+  deleteRole: (name) => http.delete(`/api/admin/roles/${name}`),
+  // 提示词
+  listPrompts: () => http.get('/api/admin/prompts').then((r) => r.data),
+  createPrompt: (data) => http.post('/api/admin/prompts', data).then((r) => r.data),
+  activatePrompt: (version) =>
+    http.post('/api/admin/prompts/activate', { version }).then((r) => r.data),
+  // 审计
+  listAudit: (limit = 100) =>
+    http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),
+  // dev act-as
+  actAs: (userId) =>
+    http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),
+  clearActAs: () => http.post('/api/admin/clear-act-as'),
+}
+
+// ============ 数据面 /chat ============
+
+export const chat = {
+  ask: (question) => http.post('/chat', { question }).then((r) => r.data),
+}

@@ -69,8 +69,13 @@ def test_docs_endpoint_available():
     assert resp.status_code == 200
 
 
-def test_unknown_route_returns_404():
+def test_unknown_api_route_returns_404():
+    """未知 API 路径返回 404（不被 SPA fallback 吞掉）。
+
+    注意：SPA 挂载后，非 API 的未知路径会 fallback 到 index.html（history 模式路由），
+    这是正确行为。这里只验证 API 前缀下的未知路径仍 404。
+    """
     app = create_app()
     with TestClient(app) as client:
-        resp = client.get("/does-not-exist")
+        resp = client.get("/api/does-not-exist")
     assert resp.status_code == 404
