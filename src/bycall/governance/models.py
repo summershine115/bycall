@@ -171,3 +171,44 @@ class AuditLog(SQLModel, table=True):
         from sqlmodel import select
 
         return select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
+
+
+# ============ SystemSetting：可编辑运行时配置 ============
+
+
+class SystemSetting(SQLModel, table=True):
+    """可编辑运行时配置（key-value）。admin 在控制台管理，存 DB 而非 .env。
+
+    分层约定（避免鸡生蛋）：
+    - ``.env`` 只留启动引导：DB DSN / session_secret / env / debug / log_level
+      （这些在"连上 DB 之前"就需要）
+    - 本表管运行时可编辑的：LLM 全部配置（provider/base_url/api_key/model/embed_model）、
+      IM 全部配置（enable/bot_id/secret）
+
+    优先级：DB 值 > .env 环境变量 > 代码默认。DB 有值即时生效，无需重启。
+    ``is_secret=True`` 的 key 在 API/UI 返回时脱敏（不回显明文）。
+
+    key 命名：扁平，如 ``llm.provider`` / ``llm.api_key`` / ``im.enable`` / ``im.wecom_bot_id``。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    key: str = Field(index=True, unique=True)  # 如 "llm.api_key"
+    value: str = ""  # 字符串存储；非字符串值由调用方做类型转换
+    is_secret: bool = Field(default=False)  # True → API/UI 脱敏（不回显）
+    description: str = ""
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_key(key: str):
+        from sqlmodel import select
+
+        return select(SystemSetting).where(SystemSetting.key == key)
+
+    @staticmethod
+    def select_all():
+        from sqlmodel import select
+
+        return select(SystemSetting).order_by(SystemSetting.key)

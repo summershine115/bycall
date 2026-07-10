@@ -147,3 +147,32 @@ class AuditOut(BaseModel):
     detail: str
     answer: str
     created_at: datetime
+
+
+# ============ 运行时设置（LLM/IM 凭证）============
+
+
+class SettingOut(BaseModel):
+    """设置项响应。``is_secret=True`` 时 value 返回脱敏值（绝不回显明文）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    value: str  # secret 已脱敏
+    is_secret: bool
+    description: str
+    is_set: bool  # 是否已配置（非空）
+
+
+class SettingUpdate(BaseModel):
+    """更新设置项。value 为空串表示清除该设置（回退到 .env/默认）。"""
+
+    value: str = Field(..., description="新值；空串=清除")
+
+
+class SettingsBatchUpdate(BaseModel):
+    """批量更新设置（一个表单提交多个 key）。"""
+
+    settings: dict[str, str] = Field(
+        ..., description="{key: value} 映射；value 空串=清除该 key"
+    )

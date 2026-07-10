@@ -28,6 +28,8 @@ from bycall.admin.schemas import (
     RoleCreate,
     RoleOut,
     RoleUpdate,
+    SettingOut,
+    SettingsBatchUpdate,
     UserCreate,
     UserOut,
     UserUpdate,
@@ -37,6 +39,7 @@ from bycall.governance.models import (
     AuditLog,
     Role,
     SystemPrompt,
+    SystemSetting,
     User,
 )
 from bycall.governance.security import hash_password
@@ -370,6 +373,69 @@ def list_audit(
     """返回最近 N 条审计记录（按时间倒序）。limit ∈ [1, 500]。"""
     logs = session.exec(AuditLog.select_recent(limit=limit)).all()
     return list(logs)
+
+
+# ============ 运行时设置（LLM/IM 凭证，控制台管理）============
+
+
+@router.get("/settings", response_model=list[SettingOut])
+def list_settings(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[dict]:
+    """返回所有运行时设置。secret 字段脱敏（绝不回显明文）。"""
+    from bycall.governance.settings_store import mask_secret
+
+    rows = session.exec(SystemSetting.select_all()).all()
+    out = []
+    for r in rows:
+        value = mask_secret(r.value) if r.is_secret else r.value
+        out.append(
+            {
+                "key": r.key,
+                "value": value,
+                "is_secret": r.is_secret,
+                "description": r.description,
+                "is_set": bool(r.value),
+            }
+        )
+    return out
+
+
+@router.put("/settings", response_model=dict)
+def update_settings(
+    body: SettingsBatchUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """批量更新设置。admin 改完下一条消息即时生效（无需重启）。
+
+    - secret 字段：value 为脱敏占位符（含 ***）时视为"未改"，跳过。
+    - value 空串：清除该 key（回退到 .env/默认）。
+    """
+    from bycall.governance.settings_store import set_setting_value
+
+    skipped: list[str] = []
+    updated: list[str] = []
+    for key, value in body.settings.items():
+        existing = session.exec(SystemSetting.select_by_key(key)).first()
+        if existing is None:
+            skipped.append(f"{key}（未知 key）")
+            continue
+        # secret 占位符保护：脱敏值里含 *** 且不是空串 → 用户没真改，跳过。
+        if existing.is_secret and "***" in value and value != "":
+            skipped.append(f"{key}（未改）")
+            continue
+        set_setting_value(
+            session,
+            key,
+            value,
+            is_secret=existing.is_secret,
+            description=existing.description,
+        )
+        updated.append(key)
+    session.commit()
+    return {"ok": True, "updated": updated, "skipped": skipped}
 
 
 # ============ dev act-as（演示权限链路用）============

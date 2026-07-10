@@ -75,7 +75,7 @@ def init_db() -> None:
 
 
 def _seed_defaults() -> None:
-    """灌默认 admin/角色/提示词（幂等：已存在则跳过）。"""
+    """灌默认 admin/角色/提示词/运行时设置（幂等：已存在则跳过）。"""
     from bycall.governance.models import Role, RoleConfig, SystemPrompt, User
     from bycall.governance.security import hash_password
 
@@ -114,3 +114,21 @@ def _seed_defaults() -> None:
                     is_active=True,
                 )
             )
+        # 默认运行时设置（LLM/IM）。值留空——admin 在控制台填，或 .env 环境变量兜底。
+        _seed_setting(session, "llm.provider", "openai", "LLM 提供商: openai | glm")
+        _seed_setting(session, "llm.base_url", "https://api.openai.com/v1", "LLM API base URL（可指向代理/本地）")
+        _seed_setting(session, "llm.api_key", "", "LLM API key", is_secret=True)
+        _seed_setting(session, "llm.model", "gpt-4o-mini", "对话模型名")
+        _seed_setting(session, "llm.embed_model", "text-embedding-3-small", "向量模型名")
+        _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
+        _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")
+        _seed_setting(session, "im.wecom_bot_secret", "", "企微智能机器人 Secret", is_secret=True)
+
+
+def _seed_setting(session, key: str, value: str, description: str, *, is_secret: bool = False) -> None:
+    """灌一个默认设置（幂等：key 已存在则跳过）。"""
+    from bycall.governance.models import SystemSetting
+    from bycall.governance.settings_store import set_setting_value
+
+    if session.exec(SystemSetting.select_by_key(key)).first() is None:
+        set_setting_value(session, key, value, is_secret=is_secret, description=description)

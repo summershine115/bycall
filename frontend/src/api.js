@@ -57,6 +57,10 @@ export const admin = {
   // 审计
   listAudit: (limit = 100) =>
     http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),
+  // 运行时设置（LLM/IM 凭证，控制台管理）
+  listSettings: () => http.get('/api/admin/settings').then((r) => r.data),
+  updateSettings: (settings) =>
+    http.put('/api/admin/settings', { settings }).then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),

@@ -15,6 +15,9 @@
         <el-menu-item index="prompts" :route="{ name: 'prompts' }">
           <el-icon><Document /></el-icon><span>提示词</span>
         </el-menu-item>
+        <el-menu-item index="settings" :route="{ name: 'settings' }">
+          <el-icon><Setting /></el-icon><span>运行时设置</span>
+        </el-menu-item>
         <el-menu-item index="audit" :route="{ name: 'audit' }">
           <el-icon><List /></el-icon><span>审计日志</span>
         </el-menu-item>
@@ -51,6 +54,7 @@ const titles = {
   users: '用户管理',
   roles: '角色与权限',
   prompts: '提示词管理',
+  settings: '运行时设置',
   audit: '审计日志',
   chat: '对话测试',
 }

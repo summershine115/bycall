@@ -12,6 +12,7 @@ const routes = [
       { path: 'users', name: 'users', component: () => import('./views/Users.vue') },
       { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
+      { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },
     ],

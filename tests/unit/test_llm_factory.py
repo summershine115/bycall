@@ -21,6 +21,19 @@ from bycall.llm.factory import create_llm_client
 from bycall.llm.glm import GLM_DEFAULT_BASE_URL, GLMClient
 from bycall.llm.openai_compat import OpenAICompatClient
 
+
+@pytest.fixture(autouse=True)
+def _reset_global_engine():
+    """LLM factory 现在读 DB 设置；本文件是纯单元测试，不应受全局 DB 引擎污染。
+
+    清掉 set_engine 设置的全局引擎，让 factory 回退到 config 参数。
+    """
+    import bycall.db as db_mod
+
+    db_mod.set_engine(None)
+    yield
+    db_mod.set_engine(None)
+
 # ============ 工具：构造 mock openai client ============
 
 
