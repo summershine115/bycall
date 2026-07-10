@@ -15,14 +15,23 @@
       </template>
       <el-form label-width="140px">
         <el-form-item label="提供商 provider">
-          <el-select v-model="form['llm.provider']" style="width: 200px">
+          <el-select
+            v-model="form['llm.provider']"
+            style="width: 200px"
+            @change="onProviderChange"
+          >
             <el-option label="OpenAI 兼容" value="openai" />
             <el-option label="智谱 GLM" value="glm" />
           </el-select>
-          <div class="hint">选择后下方 base_url / model 自动建议对应值</div>
+          <div class="hint">切换后自动填充预设地址/模型；你改过的字段不会被覆盖</div>
         </el-form-item>
         <el-form-item label="API base_url">
-          <el-input v-model="form['llm.base_url']" placeholder="https://api.openai.com/v1" />
+          <el-input
+            v-model="form['llm.base_url']"
+            placeholder="https://api.openai.com/v1"
+            @input="markEdited('llm.base_url')"
+          />
+          <div class="hint">可自定义任意 OpenAI 兼容端点（代理/本地 vLLM）</div>
         </el-form-item>
         <el-form-item label="API key">
           <el-input
@@ -35,10 +44,18 @@
           </div>
         </el-form-item>
         <el-form-item label="对话模型 model">
-          <el-input v-model="form['llm.model']" placeholder="gpt-4o-mini / glm-4-flash" />
+          <el-input
+            v-model="form['llm.model']"
+            placeholder="gpt-4o-mini / glm-4-flash"
+            @input="markEdited('llm.model')"
+          />
         </el-form-item>
         <el-form-item label="向量模型 embed">
-          <el-input v-model="form['llm.embed_model']" placeholder="text-embedding-3-small" />
+          <el-input
+            v-model="form['llm.embed_model']"
+            placeholder="text-embedding-3-small"
+            @input="markEdited('llm.embed_model')"
+          />
         </el-form-item>
       </el-form>
     </el-card>
@@ -80,6 +97,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { admin } from '../api'
+import { ElMessageBox } from 'element-plus'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -88,17 +106,47 @@ const form = reactive({})
 // masks: 后端返回的脱敏值，仅用于占位提示
 const masks = reactive({})
 const imEnable = ref(false)
+// 记录用户手动改过哪些字段（改过的不被 provider 联动覆盖）
+const userEdited = reactive({})
+
+// provider → 预设值（切提供商时自动填充，但保留用户已改的字段）
+const PROVIDER_PRESETS = {
+  openai: {
+    base_url: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    embed_model: 'text-embedding-3-small',
+  },
+  glm: {
+    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-flash',
+    embed_model: 'embedding-3',
+  },
+}
+
+function onProviderChange(provider) {
+  // 切提供商时，预设 base_url/model/embed_model，但保留用户手动改过的字段
+  const preset = PROVIDER_PRESETS[provider]
+  if (!preset) return
+  for (const [k, v] of Object.entries(preset)) {
+    if (!userEdited[`llm.${k}`]) {
+      form[`llm.${k}`] = v
+    }
+  }
+}
+
+function markEdited(key) {
+  userEdited[key] = true
+}
 
 async function load() {
   loading.value = true
   try {
     const settings = await admin.listSettings()
-    // 清空旧的
     Object.keys(form).forEach((k) => delete form[k])
     Object.keys(masks).forEach((k) => delete masks[k])
+    Object.keys(userEdited).forEach((k) => delete userEdited[k])
     for (const s of settings) {
       if (s.is_secret) {
-        // secret：form 留空（不改即不改），mask 记下脱敏值显示
         form[s.key] = ''
         masks[s.key] = s.is_set ? s.value : ''
       } else {
@@ -115,16 +163,30 @@ async function load() {
 async function onSave() {
   saving.value = true
   try {
-    // 构造提交：非 secret 直接提交；secret 仅在用户输入了非空值时提交
-    // im.enable 从 switch 同步
     form['im.enable'] = imEnable.value ? 'true' : 'false'
     const payload = {}
     for (const [k, v] of Object.entries(form)) {
-      // secret 字段：空值=不改（后端会跳过），非空=更新
       payload[k] = v
     }
     const result = await admin.updateSettings(payload)
-    ElMessage.success(`已更新 ${result.updated.length} 项${result.skipped.length ? '，跳过 ' + result.skipped.length + ' 项未改' : ''}`)
+
+    // 若 IM 相关设置有变更，提示重连（热重载，不重启服务）
+    const imChanged = result.updated.some((k) => k.startsWith('im.'))
+    if (imChanged) {
+      try {
+        await ElMessageBox.confirm(
+          'IM 凭证已更新。是否立即重连？（热重载，不重启服务）',
+          'IM 渠道',
+          { confirmButtonText: '立即重连', cancelButtonText: '稍后', type: 'success' }
+        )
+        const reloadResult = await admin.reloadIm()
+        ElMessage.success(reloadResult.message || 'IM 渠道已重连')
+      } catch {
+        ElMessage.info('可稍后在「IM 渠道」手动重连')
+      }
+    } else {
+      ElMessage.success(`已更新 ${result.updated.length} 项${result.skipped.length ? '，跳过 ' + result.skipped.length + ' 项未改' : ''}`)
+    }
     await load()
   } finally {
     saving.value = false

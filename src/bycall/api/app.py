@@ -66,71 +66,26 @@ def create_app() -> FastAPI:
     # ---- SPA 托管（生产用：托管 frontend/dist 打包产物）----
     _mount_spa(app)
 
-    # ---- IM 渠道（配置 enable=True 时启动企微长连接）----
-    if settings.im.enable:
-        _setup_im_channel(app, settings)
+    # ---- IM 渠道（启动时若已启用且有凭证则建连；admin 可在控制台热重载）----
+    from bycall.gateway.manager import get_channel_manager
+
+    mgr = get_channel_manager()
+
+    @app.on_event("startup")
+    def _start_im() -> None:
+        mgr.start_if_enabled()
+
+    @app.on_event("shutdown")
+    def _stop_im() -> None:
+        mgr.stop()
 
     logger.info("Bycall app created (env=%s, version=%s)", settings.env, __version__)
     return app
 
 
-def _setup_im_channel(app: FastAPI, settings) -> None:
-    """启动 IM 渠道长连接（后台 task），应用关闭时断开。
-
-    凭证优先读 DB 设置（admin 在控制台填），其次 .env。enable 启动时由 .env 决定
-    （长连接需在启动时建立）；bot_id/secret 从 DB 读，admin 改完需重启生效。
-
-    企微 SDK 是 asyncio 的，但 FastAPI 的 sync 路由跑在线程池里——所以 IM 渠道
-    在独立后台 task + 自己的事件循环里跑（asyncio.to_thread 模式）。
-    """
-    import asyncio
-    import threading
-
-    from bycall.agent.im_handler import handle_im_message
-    from bycall.gateway.wecom import WecomChannel
-    from bycall.governance.settings_store import get_setting_value
-
-    channel_name = settings.im.channel
-    if channel_name != "wecom":
-        logger.warning("IM channel=%s 暂未实现，仅支持 wecom", channel_name)
-        return
-
-    # 凭证：DB 设置优先（admin 控制台填），.env 兜底。
-    bot_id = get_setting_value(
-        "im.wecom_bot_id", default=settings.im.wecom_bot_id, env_var="BYCALL_IM_WECOM_BOT_ID"
-    )
-    bot_secret = get_setting_value(
-        "im.wecom_bot_secret",
-        default=settings.im.wecom_bot_secret,
-        env_var="BYCALL_IM_WECOM_BOT_SECRET",
-    )
-    if not bot_id or not bot_secret:
-        logger.warning("IM enable=True 但 wecom_bot_id/secret 为空（.env 和 DB 均未设），跳过 IM 渠道")
-        return
-
-    wecom = WecomChannel(bot_id=bot_id, secret=bot_secret)
-
-    def _run_im_loop() -> None:
-        """在独立线程跑 asyncio 事件循环驱动 IM 渠道。"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(wecom.start(handle_im_message))
-            loop.run_forever()
-        except Exception:
-            logger.exception("IM 渠道事件循环异常")
-
-    im_thread = threading.Thread(target=_run_im_loop, name="bycall-im", daemon=True)
-
-    @app.on_event("startup")
-    def _start_im() -> None:
-        im_thread.start()
-        logger.info("IM 渠道已启动 (channel=wecom, bot_id=%s)", bot_id)
-
-    @app.on_event("shutdown")
-    def _stop_im() -> None:
-        wecom.stop()
-        logger.info("IM 渠道已停止")
+def _setup_im_channel_deprecated() -> None:
+    """已废弃：改用 ChannelManager（gateway/manager.py）支持热重载。"""
+    raise NotImplementedError
 
 
 # ============ 会话路由 ============

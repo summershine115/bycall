@@ -61,6 +61,9 @@ export const admin = {
   listSettings: () => http.get('/api/admin/settings').then((r) => r.data),
   updateSettings: (settings) =>
     http.put('/api/admin/settings', { settings }).then((r) => r.data),
+  // IM 渠道热重载（改凭证后重连，不重启服务）
+  reloadIm: () => http.post('/api/admin/im/reload').then((r) => r.data),
+  imStatus: () => http.get('/api/admin/im/status').then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),

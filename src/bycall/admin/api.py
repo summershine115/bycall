@@ -438,6 +438,35 @@ def update_settings(
     return {"ok": True, "updated": updated, "skipped": skipped}
 
 
+# ============ IM 渠道热重载 ============
+
+
+@router.post("/im/reload", response_model=dict)
+def reload_im_channel(
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """热重载 IM 渠道：断开旧连接 + 用当前凭证建新连接。不重启 HTTP 服务。
+
+    admin 改完 IM 凭证后调用此端点（或前端保存设置时自动触发）。
+    借鉴 OpenClaw 的 channel reload：只重启那一个渠道，其他不动。
+    """
+    from bycall.gateway.manager import get_channel_manager
+
+    mgr = get_channel_manager()
+    ok, msg = mgr.reload()
+    return {"ok": ok, "message": msg, "status": mgr.status()}
+
+
+@router.get("/im/status", response_model=dict)
+def im_status(
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """查询 IM 渠道当前连接状态。"""
+    from bycall.gateway.manager import get_channel_manager
+
+    return get_channel_manager().status()
+
+
 # ============ dev act-as（演示权限链路用）============
 
 
