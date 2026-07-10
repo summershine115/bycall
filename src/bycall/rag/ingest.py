@@ -9,7 +9,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 
-from bycall.llm.base import LLMClient
+from bycall.llm.base import EmbedModel
 from bycall.rag.chunking import Document, documents_to_pre_chunks
 from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import ACLMetadata, Chunk
@@ -36,25 +36,25 @@ class IngestPipeline:
     """RAG 入库管道：文档切块 → embedding → 写 zvec → flush。
 
     一个管道实例绑定一个 collection（默认 ``knowledge``）。
-    构造时打开（不存在则按默认 RAG schema 创建，已含 source 字段）。
+    构造时打开（不存在则按默认 RAG schema 创建，已含 source/doc_id 字段）。
     """
 
     def __init__(
         self,
         vector_store: VectorStore,
-        llm: LLMClient,
+        embed_model: EmbedModel,
         collection_name: str = "knowledge",
     ) -> None:
         """打开（或创建）向量库的 knowledge collection。"""
         self._store = vector_store
-        self._llm = llm
+        self._embed_model = embed_model
         self._store.open(collection_name)
 
     def ingest_documents(self, docs: list[Document]) -> IngestResult:
         """完整入库：文档→切块→embedding→写 zvec→flush。
 
-        embedding 用 llm.embed 批量（分批每批 ≤64 条避免超时）。
-        每个 chunk 的 source 写进 fields，id 用 ``{doc_id}_{idx}``。
+        embedding 用 embed_model.embed 批量（分批每批 ≤64 条避免超时）。
+        每个 chunk 的 source/doc_id 写进 fields，id 用 ``{doc_id}_{idx}``。
         返回 IngestResult(success, chunk_count, errors)。
         """
         errors: list[str] = []
@@ -64,13 +64,13 @@ class IngestPipeline:
         if not pre_chunks:
             return IngestResult(success=True, chunk_count=0, errors=errors)
 
-        # 2. 批量 embedding。逐批调 llm.embed，失败整批记错但继续后续批。
+        # 2. 批量 embedding。逐批调 embed_model.embed，失败整批记错但继续后续批。
         vectors: list[list[float]] = []
         for start in range(0, len(pre_chunks), _EMBED_BATCH_SIZE):
             batch = pre_chunks[start : start + _EMBED_BATCH_SIZE]
             texts = [p.text for p in batch]
             try:
-                batch_vecs = self._llm.embed(texts)
+                batch_vecs = self._embed_model.embed(texts)
                 if len(batch_vecs) != len(texts):
                     errors.append(f"embedding 数量不匹配: batch={len(texts)} got={len(batch_vecs)}")
                     # 用零向量兜底，保证后续能对齐写入（不影响其他 chunk）。
@@ -81,7 +81,7 @@ class IngestPipeline:
                 errors.append(f"embedding 失败 (start={start}): {e}")
                 vectors.extend([[] for _ in texts])  # 占位，下面跳过空向量
 
-        # 3. 组装 Chunk：source 进 fields，acl 记 tenant_id（source 是主权限门）。
+        # 3. 组装 Chunk：source/doc_id 进 fields，acl 记 tenant_id（source 是主权限门）。
         chunks: list[Chunk] = []
         for pre, vec in zip(pre_chunks, vectors, strict=True):
             if not vec:
@@ -92,7 +92,7 @@ class IngestPipeline:
                     id=pre.id,
                     text=pre.text,
                     vector=vec,
-                    fields={"source": pre.source},
+                    fields={"source": pre.source, "doc_id": pre.doc_id},
                     acl=ACLMetadata(tenant_id=_DEFAULT_TENANT),
                 )
             )

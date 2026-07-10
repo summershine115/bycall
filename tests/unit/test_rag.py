@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from bycall.config import get_settings
-from bycall.llm.base import LLMClient
+from bycall.llm.base import EmbedModel
 from bycall.rag.chunking import Document, documents_to_pre_chunks, split_document
 from bycall.rag.ingest import IngestPipeline
 from bycall.rag.retrieve import build_rag_messages, retrieve_context
@@ -34,13 +34,13 @@ def rag_env(tmp_path: Path, monkeypatch):
     return tmp_path
 
 
-def make_mock_llm(dim: int = DIM) -> MagicMock:
-    """mock LLM：chat 返回固定串，embed 返回与文本哈希相关的归一化向量。
+def make_mock_embed_model(dim: int = DIM) -> MagicMock:
+    """mock EmbedModel：embed 返回与文本哈希相关的归一化向量。
 
     向量与文本内容相关（sha256 派生），便于向量化路也能命中语义相近的 chunk。
     """
-    m = MagicMock(spec=LLMClient)
-    m.chat.return_value = "基于知识的回答"
+    m = MagicMock(spec=EmbedModel)
+    m.dimension = dim
 
     def embed(texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -58,8 +58,8 @@ def make_mock_llm(dim: int = DIM) -> MagicMock:
 def _make_store_and_pipeline(rag_env: Path):
     """建 store（维度 8）+ IngestPipeline，返回 (store, pipeline)。"""
     store = create_vector_store(get_settings().vector_store)
-    llm = make_mock_llm(DIM)
-    pipeline = IngestPipeline(store, llm, collection_name="knowledge")
+    embed_model = make_mock_embed_model(DIM)
+    pipeline = IngestPipeline(store, embed_model, collection_name="knowledge")
     return store, pipeline
 
 

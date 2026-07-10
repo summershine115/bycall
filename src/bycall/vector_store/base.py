@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from bycall.vector_store.models import (
     Chunk,
     CollectionDef,
+    FilterCondition,
     InsertResult,
     SearchRequest,
     SearchResult,
@@ -48,6 +49,14 @@ class VectorStore(ABC):
     @abstractmethod
     def delete(self, ids: list[str]) -> None:
         """按 id 删除。"""
+
+    @abstractmethod
+    def delete_by_filter(self, conditions: list[FilterCondition]) -> int:
+        """按过滤条件批量删除（zvec delete_by_filter）。返回删除条数（尽力统计，可能为 0）。
+
+        用于级联删除：删某文档的所有 chunk（doc_id = xxx）。
+        后端不支持时 raise NotImplementedError，调用方回退到 query+delete。
+        """
 
     @abstractmethod
     def search(self, query: SearchRequest) -> list[SearchResult]:

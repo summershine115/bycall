@@ -236,3 +236,59 @@ class ModelTestResult(BaseModel):
     latency_ms: int = 0
     error: str = ""
     detail: str = Field(default="", description="成功时返回的样例响应片段")
+
+
+# ============ Document（知识库文档管理，参考 WeKnora Knowledge 实体）============
+
+
+class DocumentCreate(BaseModel):
+    """创建文档并入库请求。
+
+    ``source`` 是知识域 ACL 标签（如 "public"/"sales"/"hr"），对应角色的
+    ``knowledge_scope_tags``——只有该标签在角色配置里的用户才能检索到本文档。
+    """
+
+    title: str = Field(..., description="文档标题")
+    source: str = Field(
+        ..., description="知识域标签，如 public/sales/hr（对应角色 knowledge_scope_tags）"
+    )
+    content: str = Field(..., description="文档正文（手动输入或文件解析后文本）")
+    file_name: str = Field(default="", description="来源文件名（可选，用于显示）")
+
+
+class DocumentUpdate(BaseModel):
+    """更新文档请求（PATCH 语义）。
+
+    改 ``source`` 会触发重新入库（chunk 的 source 标签需同步更新）。
+    """
+
+    title: str | None = None
+    source: str | None = Field(default=None, description="改 source 会触发重新入库")
+
+
+class DocumentOut(BaseModel):
+    """文档响应。不返回 ``content``（可能很长，列表/详情均只看元数据）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    source: str
+    status: str
+    chunk_count: int
+    char_count: int
+    error_message: str
+    file_name: str
+    file_type: str
+    embedding_model_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentIngestResult(BaseModel):
+    """入库操作结果。"""
+
+    ok: bool
+    document_id: int
+    chunk_count: int
+    errors: list[str] = Field(default_factory=list)

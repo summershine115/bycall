@@ -16,12 +16,16 @@ M1 先用一个简单的 admin 守卫依赖（``_require_admin``）；正式会�
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
     AuditOut,
+    DocumentCreate,
+    DocumentIngestResult,
+    DocumentOut,
+    DocumentUpdate,
     ModelCreate,
     ModelOut,
     ModelTestResult,
@@ -41,6 +45,7 @@ from bycall.admin.schemas import (
 from bycall.db import get_session
 from bycall.governance.models import (
     AuditLog,
+    Document,
     Model,
     Role,
     SystemPrompt,
@@ -813,3 +818,323 @@ def test_model(
         latency_ms = int((time.perf_counter() - start) * 1000)
         msg = str(exc) or exc.__class__.__name__
         return ModelTestResult(ok=False, latency_ms=latency_ms, error=msg[:500])
+
+
+# ============ 知识库文档管理（参考 WeKnora Knowledge 实体）============
+
+
+def _get_document_or_404(session: Session, doc_id: int) -> Document:
+    """按 id 取文档，不存在 → 404。"""
+    doc = session.get(Document, doc_id)
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"文档不存在: {doc_id}",
+        )
+    return doc
+
+
+def _delete_chunks_for_doc(doc_id: int) -> None:
+    """删除 zvec knowledge collection 里某文档的所有 chunk。
+
+    用 ``delete_by_filter``（zvec 原生按标量 filter 批删）按 ``doc_id`` 字段删除。
+    chunk 入库时 ``fields`` 里带了 ``doc_id`` 标量字段，见 ``rag/ingest.py``。
+    """
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+    from bycall.vector_store.models import FilterCondition
+
+    store = create_vector_store(get_settings().vector_store)
+    store.open("knowledge")
+    try:
+        store.delete_by_filter(
+            [FilterCondition(field="doc_id", op="match", value=str(doc_id))]
+        )
+        store.flush()
+    finally:
+        store.close()
+
+
+def _ingest_document(
+    session: Session,
+    doc_id: int,
+    title: str,
+    source: str,
+    content: str,
+) -> DocumentIngestResult:
+    """同步入库：标记 processing → 查激活 embedding → 删旧 chunk → 入库 → 更新 Document。
+
+    无激活 embedding 模型 → status=failed + 400（友好提示）。
+    入库失败 → status=failed + error_message。
+    入库成功 → status=completed + chunk_count + embedding_model_id（维度锁定）。
+    """
+    from bycall.config import get_settings
+    from bycall.llm.resolver import get_embed_model
+    from bycall.rag.ingest import IngestPipeline
+    from bycall.vector_store.factory import create_vector_store
+
+    doc = session.get(Document, doc_id)
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不存在: {doc_id}")
+
+    # 1. 标记 processing。
+    doc.status = "processing"
+    doc.error_message = ""
+    session.add(doc)
+    session.commit()
+
+    # 2. 查激活 embedding 模型（无激活 → failed + 400）。
+    resolved = get_embed_model(session)
+    if resolved is None:
+        doc.status = "failed"
+        doc.error_message = "未激活 embedding 模型，请先在「模型管理」激活一个 embedding 模型"
+        session.add(doc)
+        session.commit()
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=doc.error_message,
+        )
+
+    entity, embed_model = resolved
+
+    # 3. 删旧 chunk（幂等，支持 reindex）。
+    try:
+        _delete_chunks_for_doc(doc_id)
+    except Exception as exc:
+        # 删旧 chunk 失败不阻断入库——旧 chunk 可能本来就没有。
+        import logging
+
+        logging.getLogger(__name__).warning("删旧 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+
+    # 4. 入库。
+    errors: list[str] = []
+    chunk_count = 0
+    try:
+        store = create_vector_store(get_settings().vector_store)
+        try:
+            pipeline = IngestPipeline(store, embed_model, collection_name="knowledge")
+            result = pipeline.ingest_text(content, source=source, doc_id=f"doc_{doc_id}")
+            errors = result.errors
+            chunk_count = result.chunk_count
+        finally:
+            store.close()
+    except Exception as exc:
+        errors.append(f"入库异常: {exc}")
+
+    # 5. 更新 Document。
+    doc.status = "completed" if not errors else "failed"
+    doc.chunk_count = chunk_count
+    doc.char_count = len(content)
+    doc.embedding_model_id = entity.id
+    doc.error_message = "; ".join(errors) if errors else ""
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    return DocumentIngestResult(
+        ok=doc.status == "completed",
+        document_id=doc_id,
+        chunk_count=chunk_count,
+        errors=errors,
+    )
+
+
+@router.get("/knowledge/documents", response_model=list[DocumentOut])
+def list_documents(
+    source: str | None = Query(default=None, description="按知识域标签过滤"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[Document]:
+    """列出文档。可选 source 过滤。按 id 倒序（最新在前）。"""
+    if source is not None:
+        rows = session.exec(Document.select_by_source(source)).all()
+    else:
+        rows = session.exec(Document.select_all()).all()
+    return list(rows)
+
+
+@router.post(
+    "/knowledge/documents",
+    response_model=DocumentIngestResult,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_document(
+    payload: DocumentCreate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> DocumentIngestResult:
+    """创建文档并入库。content 非空校验后写 Document 记录 → 同步入库。
+
+    file_name 用于显示与推断 file_type（txt/md/markdown）。
+    """
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文档正文不能为空")
+    if not payload.source.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="知识域标签不能为空")
+
+    file_type = ""
+    if payload.file_name:
+        ext = payload.file_name.rsplit(".", 1)[-1].lower() if "." in payload.file_name else ""
+        file_type = ext if ext in ("txt", "md", "markdown") else ""
+
+    doc = Document(
+        title=payload.title,
+        source=payload.source.strip(),
+        content=content,
+        file_name=payload.file_name,
+        file_type=file_type,
+        status="pending",
+    )
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+
+
+@router.get("/knowledge/documents/{doc_id}", response_model=DocumentOut)
+def get_document(
+    doc_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Document:
+    """按 id 取文档详情，不存在 → 404。"""
+    return _get_document_or_404(session, doc_id)
+
+
+@router.put("/knowledge/documents/{doc_id}", response_model=DocumentOut)
+def update_document(
+    doc_id: int,
+    payload: DocumentUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Document:
+    """更新文档标题/source。改 source 会重新入库（chunk 的 source 标签需同步）。
+
+    不改 content（M1 只支持重入库，不支持编辑正文——编辑正文走 reindex）。
+    """
+    doc = _get_document_or_404(session, doc_id)
+
+    need_reingest = False
+    if payload.title is not None:
+        doc.title = payload.title
+    if payload.source is not None and payload.source != doc.source:
+        doc.source = payload.source.strip()
+        need_reingest = True
+
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    if need_reingest:
+        _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+
+    session.refresh(doc)
+    return doc
+
+
+@router.delete("/knowledge/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(
+    doc_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除文档：级联清理 zvec chunks + DB 记录。
+
+    zvec chunk 删除失败不阻断 DB 删除（避免残留 DB 记录造成"幽灵文档"）。
+    """
+    doc = _get_document_or_404(session, doc_id)
+
+    try:
+        _delete_chunks_for_doc(doc_id)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("删除文档 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+
+    session.delete(doc)
+    session.commit()
+
+
+@router.post(
+    "/knowledge/documents/{doc_id}/reindex", response_model=DocumentIngestResult
+)
+def reindex_document(
+    doc_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> DocumentIngestResult:
+    """重新入库：切换 embedding 模型后用，或修复失败文档。
+
+    等价于对现有 content 再跑一次入库流程（含删旧 chunk → 重新 embed → 写入）。
+    """
+    doc = _get_document_or_404(session, doc_id)
+    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+
+
+@router.get("/knowledge/sources", response_model=list[str])
+def list_knowledge_sources(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[str]:
+    """列出所有已用过的 source 标签（供前端下拉 + 角色配置参考）。"""
+    rows = session.exec(Document.select_distinct_sources()).all()
+    return sorted(str(r) for r in rows if r)
+
+
+@router.post(
+    "/knowledge/upload",
+    response_model=DocumentIngestResult,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    file: UploadFile,
+    source: str = Query(..., description="知识域标签"),
+    title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> DocumentIngestResult:
+    """文件上传入库：读文件内容 → 走与创建文档同样的入库流程。
+
+    支持 .txt / .md / .markdown。其他格式 → 400。
+    文件内容读取为 UTF-8 文本（二进制文件 → 400）。
+    """
+    if not file.filename:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件名不能为空")
+
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ("txt", "md", "markdown"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"不支持的文件类型: .{ext}（仅支持 txt/md/markdown）",
+        )
+
+    raw = await file.read()
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="文件不是有效的 UTF-8 文本",
+        ) from exc
+
+    content = content.strip()
+    if not content:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件内容为空")
+
+    doc_title = title or file.filename.rsplit(".", 1)[0]
+
+    doc = Document(
+        title=doc_title,
+        source=source.strip(),
+        content=content,
+        file_name=file.filename,
+        file_type=ext,
+        status="pending",
+    )
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)

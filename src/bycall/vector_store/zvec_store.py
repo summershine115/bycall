@@ -132,6 +132,18 @@ class ZvecStore(VectorStore):
     def delete(self, ids: list[str]) -> None:
         self._require_open().delete(ids)
 
+    def delete_by_filter(self, conditions: list[FilterCondition]) -> int:
+        """按过滤条件批量删除（zvec ``delete_by_filter``）。
+
+        用于级联删除：删某文档的所有 chunk（``doc_id = xxx``）。
+        条件翻译成 zvec 单等号 filter 字符串（复用 ``_build_filter``）。
+        """
+        filter_str = self._build_filter(conditions)
+        if not filter_str:
+            return 0
+        self._require_open().delete_by_filter(filter_str)
+        return 0  # zvec delete_by_filter 不返回删除条数
+
     def flush(self) -> None:
         self._require_open().flush()
 
@@ -205,9 +217,12 @@ class ZvecStore(VectorStore):
 
     @staticmethod
     def _default_rag_schema(name: str, dimension: int) -> CollectionDef:
-        """通用 RAG schema：正文(FTS) + source + 默认 ACL 标量字段。
+        """通用 RAG schema：正文(FTS) + source + doc_id + 默认 ACL 标量字段。
 
-        ACL 字段（tenant_id/dept/level 等）供 M2 权限预过滤用，M0 先建好索引。
+        - ``source``：知识域 ACL 标签，检索时翻译成 ``source IN (...)`` 预过滤（主权限门）。
+        - ``doc_id``：文档 id，按文档级联删除时用（zvec 无前缀删，靠标量 filter 查出再删）。
+        - ``tenant_id``/``dept``/``level``：M2 ABAC 预过滤用，M1 先建好索引。
+
         ``dimension`` 由 store 配置传入，须与 embedding 模型对齐。
         """
         return CollectionDef(
@@ -215,6 +230,7 @@ class ZvecStore(VectorStore):
             dimension=dimension,
             fields=[
                 FieldDef("source", "string"),
+                FieldDef("doc_id", "string"),
                 FieldDef("tenant_id", "string"),
                 FieldDef("dept", "string"),
                 FieldDef("level", "int64"),

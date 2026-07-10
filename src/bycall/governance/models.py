@@ -8,6 +8,8 @@
 - Role ──内嵌──> RoleConfig（该角色的工具白名单 / 知识域 / 职级）
 - SystemPrompt（版本化，激活版本下发给数据面）
 - AuditLog（append-only，谁/何时/问什么/放行/拒绝）
+- Model（LLM/向量模型实体，每种类型一个激活）
+- Document（知识库文档，source = ACL 标签，入库到 zvec knowledge collection）
 
 ⚠️ 设计约定：
 - ``admin`` 是内置特殊角色名（不建 Role 表记录），policy 引擎识别后给全部权限。
@@ -223,6 +225,69 @@ class Model(SQLModel, table=True):
         from sqlmodel import select
 
         return select(Model).where(Model.model_type == model_type).order_by(Model.id)
+
+
+# ============ Document：知识库文档（参考 WeKnora Knowledge 实体）============
+
+
+class Document(SQLModel, table=True):
+    """知识库文档——入库管理的一等公民。
+
+    参考腾讯 WeKnora 的 Knowledge 实体设计：文档有明确的生命周期状态
+    （pending → processing → completed/failed），记录入库时用的 embedding 模型
+    （维度锁定），支持级联删除与重新入库（reindex）。
+
+    - ``source``：知识域 ACL 标签（如 "public"/"sales"/"hr"），对应角色的
+      ``knowledge_scope_tags``。检索时翻译成 ``source IN (...)`` 预过滤——
+      这条把治理脊柱的 ACL 预过滤与知识库管理打通。
+    - ``embedding_model_id``：入库时用的 embedding 模型 id（维度锁定）。
+      切换 embedding 模型后维度可能不匹配，需 reindex 才能重新检索。
+    - ``status``：``pending``（已创建未入库）→ ``processing``（入库中）→
+      ``completed``（成功）/ ``failed``（失败，``error_message`` 记原因）。
+
+    M1 不存物理文件路径——文件上传读取文本后即入库，不落盘（WeKnora 有下载/预览
+    需求才存 FilePath，Bycall M1 不做）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    title: str = Field(index=True)  # 文档标题
+    source: str = Field(index=True)  # 知识域 ACL 标签（对应 Role.knowledge_scope_tags）
+    content: str = ""  # 原始正文（manual/file 解析后文本）
+    status: str = Field(default="pending", index=True)  # pending|processing|completed|failed
+    chunk_count: int = 0  # 切块数（入库成功后更新）
+    char_count: int = 0  # 正文字符数
+    error_message: str = ""  # 失败原因（status=failed 时填）
+    file_name: str = ""  # 上传文件名（file 模式；manual 为空）
+    file_type: str = ""  # txt/md/markdown
+    embedding_model_id: int | None = Field(default=None)  # 入库时用的 embedding 模型（维度锁定）
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_source(source: str):
+        """按知识域标签查（列表过滤用）。"""
+        from sqlmodel import select
+
+        return select(Document).where(Document.source == source).order_by(Document.id.desc())
+
+    @staticmethod
+    def select_all():
+        """全部文档，按 id 倒序（最新在前）。"""
+        from sqlmodel import select
+
+        return select(Document).order_by(Document.id.desc())
+
+    @staticmethod
+    def select_distinct_sources():
+        """所有已用过的 source 标签（供前端下拉 + 角色配置参考）。"""
+        from sqlmodel import distinct, select
+
+        return select(distinct(Document.source))
 
 
 # ============ SystemSetting：可编辑运行时配置 ============
