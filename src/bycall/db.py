@@ -114,15 +114,57 @@ def _seed_defaults() -> None:
                     is_active=True,
                 )
             )
-        # 默认运行时设置（LLM/IM）。值留空——admin 在控制台填，或 .env 环境变量兜底。
-        _seed_setting(session, "llm.provider", "openai", "LLM 提供商: openai | glm")
-        _seed_setting(session, "llm.base_url", "https://api.openai.com/v1", "LLM API base URL（可指向代理/本地）")
-        _seed_setting(session, "llm.api_key", "", "LLM API key", is_secret=True)
-        _seed_setting(session, "llm.model", "gpt-4o-mini", "对话模型名")
-        _seed_setting(session, "llm.embed_model", "text-embedding-3-small", "向量模型名")
+        # 默认模型实体（LLM 升级为 Model 实体，参考 WeKnora）。
+        # chat 模型：OpenAI 兼容占位（admin 在控制台激活真实 provider 的模型）
+        _seed_default_model(
+            session,
+            name="gpt-4o-mini",
+            display_name="OpenAI GPT-4o-mini",
+            model_type="chat",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        # embedding 模型：OpenAI text-embedding-3-small（dim=1536）
+        _seed_default_model(
+            session,
+            name="text-embedding-3-small",
+            display_name="OpenAI text-embedding-3-small",
+            model_type="embedding",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            embed_dimension=1536,
+        )
+        # IM 配置保留在 SystemSetting（渠道凭证，非模型）
         _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
         _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")
         _seed_setting(session, "im.wecom_bot_secret", "", "企微智能机器人 Secret", is_secret=True)
+
+
+def _seed_default_model(
+    session, name, display_name, model_type, provider, base_url, *, embed_dimension=0
+) -> None:
+    """灌一个默认 Model 实体（幂等：同 name+type 已存在则跳过）。默认不激活（admin 填 key 后激活）。"""
+    from sqlmodel import select
+
+    from bycall.governance.models import Model
+
+    existing = session.exec(
+        select(Model).where(Model.name == name, Model.model_type == model_type)
+    ).first()
+    if existing is None:
+        session.add(
+            Model(
+                name=name,
+                display_name=display_name,
+                model_type=model_type,
+                source="remote",
+                provider=provider,
+                base_url=base_url,
+                embed_dimension=embed_dimension,
+                is_active=False,
+                description=f"默认 {model_type} 模型（请在控制台填 API key 后激活）",
+            )
+        )
 
 
 def _seed_setting(session, key: str, value: str, description: str, *, is_secret: bool = False) -> None:

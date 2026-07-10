@@ -17,6 +17,8 @@
 │                    Agent 编排层 (LangGraph)           [M3]       │
 │   意图识别 → 规划 → 工具调用(+HITL) → 响应生成(+citation)        │
 │   状态: Checkpointer(短期) + Store(长期，Postgres)               │
+│   会话: Conversation/Message 表，按 (user,channel) 隔离上下文    │
+│   模型: per-session 可选(Conversation.model_id) → 默认全局激活   │
 │   循环: ReAct 协调层 + Function Calling 叶子节点（混合架构）     │
 └───────────────────────────┬─────────────────────────────────────┘
         ┌───────────────────┼───────────────────┐
@@ -55,7 +57,9 @@
 ## 架构红线（不可违背，详见 HANDOVER §4）
 
 1. **权限预过滤**：RAG 文档级 ACL，向量检索**前**注入 metadata filter，不是先召回再过滤。
-2. **Session 隔离**：`session_key = (agent_id, channel, tenant_id, user_id)`，多用户并发独立。
+2. **Session 隔离**：`session_key = (agent_id, channel, tenant_id, user_id)`，多用户并发独立。一个 IM bot 连接服务全组织员工，每人私聊 = 一条独立会话（`Conversation`），上下文按会话隔离，提示词/SKILL/MCP/默认模型全局共享（详见 `product-design.md` §2.4）。
+   - **DB 落地**：`Conversation(user_id, channel, model_id?)` + `Message(conversation_id, role, content)`，一个 `(user_id, channel)` 对应一条会话。
+   - **per-session 模型**：`Conversation.model_id` 可空外键，空 → fallback 全局激活模型（`Model.is_active`）。默认行为兼容 M1/M2 无状态形态。
 3. **混合架构**：LangGraph durable（超步边界持久化）+ 同步 RAG 热路径。
 4. **分层记忆**：工作/情景/语义/治理四层，**agent memory ≠ RAG**。
 5. **MCP 网关**：统一工具治理，agent 不直连 MCP server。

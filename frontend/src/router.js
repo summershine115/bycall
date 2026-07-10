@@ -11,6 +11,7 @@ const routes = [
       { path: '', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'users', name: 'users', component: () => import('./views/Users.vue') },
       { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
+      { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
       { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },

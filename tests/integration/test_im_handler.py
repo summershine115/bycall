@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,11 +71,24 @@ def _seed_user(name, role, scope_tags):
         )
 
 
+def _patch_chat_model(monkeypatch, mock_llm):
+    """patch resolver.get_chat_model 返回 (假 Model, mock ChatModel)。
+
+    im_handler._run_sync 内部 import get_chat_model，所以 patch 源模块。
+    """
+    from bycall.llm import resolver
+
+    fake_model = SimpleNamespace(id=1, name="mock-chat")
+    monkeypatch.setattr(resolver, "get_chat_model", lambda session: (fake_model, mock_llm))
+    # im_handler 在函数内 import，patch 后再调时已是新函数
+    return mock_llm
+
+
 def test_unbound_user_rejected(env, monkeypatch):
     """未绑定（未邀请）的 IM 用户 → 友好拒绝。"""
     from bycall.agent import im_handler
 
-    monkeypatch.setattr(im_handler, "create_llm_client", lambda c: _make_mock_llm())
+    _patch_chat_model(monkeypatch, _make_mock_llm())
     capture = []
     sender = _make_sender(capture)
     msg = InboundMessage(channel="wecom", im_user_id="im_stranger", text="你好")
@@ -90,7 +104,7 @@ def test_user_with_no_scope_denied(env, monkeypatch):
     _seed_user("bob", "intern", [])
     from bycall.agent import im_handler
 
-    monkeypatch.setattr(im_handler, "create_llm_client", lambda c: _make_mock_llm())
+    _patch_chat_model(monkeypatch, _make_mock_llm())
     capture = []
     sender = _make_sender(capture)
     msg = InboundMessage(channel="wecom", im_user_id="im_bob", text="机密信息")
@@ -109,7 +123,7 @@ def test_authorized_user_gets_answer(env, monkeypatch):
     from bycall.agent import im_handler
 
     mock_llm = _make_mock_llm("这是基于知识的答案。")
-    monkeypatch.setattr(im_handler, "create_llm_client", lambda c: mock_llm)
+    _patch_chat_model(monkeypatch, mock_llm)
     capture = []
     sender = _make_sender(capture)
     msg = InboundMessage(channel="wecom", im_user_id="im_erin", text="公司介绍")
@@ -127,6 +141,7 @@ def test_empty_message_ignored(env, monkeypatch):
     """空消息 → 不处理（不回复、不报错）。"""
     from bycall.agent import im_handler
 
+    _patch_chat_model(monkeypatch, _make_mock_llm())
     capture = []
     sender = _make_sender(capture)
     msg = InboundMessage(channel="wecom", im_user_id="im_x", text="   ")

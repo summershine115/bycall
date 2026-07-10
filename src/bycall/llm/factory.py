@@ -1,71 +1,89 @@
-"""LLM 客户端工厂：按设置（DB 优先 > .env > 默认）实例化 provider。
+"""LLM 工厂入口：从配置构造 ChatModel / EmbedModel。
 
-Bycall 的配置真值在 DB（admin 在控制面改），所以这里每次都读当前 DB 值——
-admin 改 key 后下一条消息即时生效，无需重启。
-（OpenClaw 热重载的体验，但实现更简单：DB 即真值。）
+两条数据来源：
+1. **DB 激活实体（推荐，新代码入口）**：``create_chat_model(session)`` /
+   ``create_embed_model(session)`` 走 ``resolver``，admin 控制面改激活模型后即时生效。
+   这与 ``governance/models.py`` 的 ``Model`` 表对齐，参考 WeKnora。
+2. **传入 config（兼容旧路径）**：``create_llm_client(config)`` 仍按 ``LLMConfig``
+   构造，供未接入 DB 的旧调用点（如纯单元测试、IM handler 早期初始化）兜底。
+
+兼容说明：
+- ``create_llm_client`` 保留旧签名，内部优先走 DB（若 ``session`` 可用且 DB 有激活
+  chat 模型），否则回退到 config 构造。返回 ``ChatModel``（``LLMClient`` 已是
+  ``ChatModel`` 子类，类型兼容）。它**不再**承担向量化职责——需要 embed 的调用方
+  改用 ``create_embed_model``。
+- 旧返回的 ``LLMClient``（chat+embed 合一）已不存在；保留类型别名让历史 import 不崩。
 """
 
 from __future__ import annotations
 
 from sqlmodel import Session
 
-from bycall.llm.base import LLMClient
+from bycall.llm.base import ChatModel, EmbedModel, LLMClient
+
+# ============ 新入口：DB 激活实体驱动 ============
+
+
+def create_chat_model(session: Session, *, timeout: float = 60.0) -> ChatModel | None:
+    """从 DB 激活的 chat 模型构造 ChatModel。无激活 chat 模型返回 None。
+
+    admin 在控制面改激活模型后，下次调用即时生效。
+    """
+    from bycall.llm.resolver import get_chat_model
+
+    pair = get_chat_model(session, timeout=timeout)
+    if pair is None:
+        return None
+    _entity, model = pair
+    return model
+
+
+def create_embed_model(session: Session, *, timeout: float = 60.0) -> EmbedModel | None:
+    """从 DB 激活的 embedding 模型构造 EmbedModel。无激活 embedding 模型返回 None。"""
+    from bycall.llm.resolver import get_embed_model
+
+    pair = get_embed_model(session, timeout=timeout)
+    if pair is None:
+        return None
+    _entity, model = pair
+    return model
+
+
+# ============ 兼容入口：config 驱动 ============
 
 
 def create_llm_client(config=None, *, session: Session | None = None) -> LLMClient:
-    """实例化一个 LLMClient。
+    """兼容入口：返回一个对话模型（``ChatModel``，即 ``LLMClient``）。
 
-    优先级：DB 设置（admin 控制）> 传入 config（.env/pydantic）> 代码默认。
+    优先级：DB 激活 chat 实体（``session`` 可用且 DB 有数据）> config 兜底。
     admin 改 DB 后下一条消息即时生效。
-    """
-    from bycall.governance.settings_store import get_setting_value
 
-    # config 兜底值（来自 .env / 测试用 LLMConfig）。用 getattr 容错（部分测试传 SimpleNamespace）。
-    cfg_provider = getattr(config, "provider", "openai")
+    ⚠️ 返回值只承担对话（``chat``）。旧调用方若曾依赖 ``.embed()``，需改用
+    ``create_embed_model``。保留 ``LLMClient`` 返回类型仅为类型兼容（它是
+    ``ChatModel`` 的子类）。
+    """
+    # 1. 优先：DB 激活实体
+    if session is not None:
+        chat = create_chat_model(session)
+        if chat is not None:
+            return chat  # type: ignore[return-value]  # ChatModel 是 LLMClient 的子集
+
+    # 2. 兜底：从 config（.env / LLMConfig / SimpleNamespace）构造对话模型。
+    #    用 getattr 容错（部分测试传 SimpleNamespace）。
     cfg_base_url = getattr(config, "base_url", "https://api.openai.com/v1")
     _key = getattr(config, "api_key", None)
     cfg_api_key = _key.get_secret_value() if hasattr(_key, "get_secret_value") else str(_key or "")
     cfg_model = getattr(config, "model", "gpt-4o-mini")
-    cfg_embed_model = getattr(config, "embed_model", "text-embedding-3-small")
-    cfg_timeout = getattr(config, "timeout", 60.0)
+    cfg_timeout = float(getattr(config, "timeout", 60.0))
 
-    provider = get_setting_value(
-        "llm.provider", default=cfg_provider, env_var="BYCALL_LLM_PROVIDER", session=session
-    )
-    base_url = get_setting_value(
-        "llm.base_url", default=cfg_base_url, env_var="BYCALL_LLM_BASE_URL", session=session
-    )
-    api_key = get_setting_value(
-        "llm.api_key", default=cfg_api_key, env_var="BYCALL_LLM_API_KEY", session=session
-    )
-    model = get_setting_value(
-        "llm.model", default=cfg_model, env_var="BYCALL_LLM_MODEL", session=session
-    )
-    embed_model = get_setting_value(
-        "llm.embed_model", default=cfg_embed_model, env_var="BYCALL_LLM_EMBED_MODEL", session=session
-    )
-    timeout = float(
-        get_setting_value(
-            "llm.timeout", default=str(cfg_timeout), env_var="BYCALL_LLM_TIMEOUT", session=session
-        )
-        or str(cfg_timeout)
+    from bycall.llm.openai_compat import OpenAIChatModel
+
+    return OpenAIChatModel(
+        base_url=cfg_base_url,
+        api_key=cfg_api_key,
+        model=cfg_model,
+        timeout=cfg_timeout,
     )
 
-    if provider == "openai":
-        from bycall.llm.openai_compat import OpenAICompatClient
 
-        return OpenAICompatClient(
-            base_url=base_url, api_key=api_key, model=model, embed_model=embed_model, timeout=timeout
-        )
-
-    if provider == "glm":
-        from bycall.llm.glm import GLMClient
-
-        return GLMClient(
-            api_key=api_key, base_url=base_url, model=model, embed_model=embed_model, timeout=timeout
-        )
-
-    raise ValueError(f"不支持的 LLM provider: {provider!r}")
-
-
-__all__ = ["create_llm_client"]
+__all__ = ["create_chat_model", "create_embed_model", "create_llm_client"]

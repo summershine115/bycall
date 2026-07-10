@@ -1,5 +1,6 @@
-"""运行时设置 API 集成测试 —— LLM/IM 凭证控制台管理。
+"""运行时设置 API 集成测试 —— IM 凭证控制台管理。
 
+LLM 配置已迁移到 Model 实体（test_models_api.py 测），SystemSetting 现在只管 IM。
 验证：列表脱敏、更新即时生效、secret 占位符保护、清除设置。
 """
 
@@ -29,65 +30,61 @@ def client(tmp_path, monkeypatch):
     return c
 
 
-def test_list_settings_masks_secrets(client):
-    """/settings 返回的 secret 字段脱敏（绝不回显明文）。"""
-    # 先设一个 api_key
-    client.put("/api/admin/settings", json={"settings": {"llm.api_key": "sk-secret-12345678"}})
+def test_list_settings_masks_im_secrets(client):
+    """/settings 返回的 IM secret 字段脱敏（绝不回显明文）。"""
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "bot-secret-12345678"}})
     resp = client.get("/api/admin/settings")
     assert resp.status_code == 200
     settings = {s["key"]: s for s in resp.json()}
-    api_key = settings["llm.api_key"]
-    assert api_key["is_secret"] is True
-    assert "sk-secret-12345678" not in api_key["value"]  # 明文绝不出现
-    assert "*" in api_key["value"]  # 脱敏了
-    assert api_key["is_set"] is True
-    # 非 secret 不脱敏
-    assert settings["llm.provider"]["is_secret"] is False
+    secret = settings["im.wecom_bot_secret"]
+    assert secret["is_secret"] is True
+    assert "bot-secret-12345678" not in secret["value"]
+    assert "*" in secret["value"]
+    assert secret["is_set"] is True
+    # 非 secret（bot_id）不脱敏
+    assert settings["im.wecom_bot_id"]["is_secret"] is False
 
 
-def test_update_llm_provider_takes_effect(client):
-    """改 llm.provider 后，factory 读到新值（即时生效验证）。"""
-    client.put("/api/admin/settings", json={"settings": {"llm.provider": "glm"}})
+def test_update_im_setting_takes_effect(client):
+    """改 im.wecom_bot_id 后即时生效（DB 值更新）。"""
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_id": "new_bot_001"}})
     from bycall.db import session_scope
     from bycall.governance.settings_store import get_setting_value
 
     with session_scope() as s:
-        assert get_setting_value("llm.provider", session=s) == "glm"
+        assert get_setting_value("im.wecom_bot_id", session=s) == "new_bot_001"
 
 
 def test_secret_placeholder_skipped(client):
     """secret 字段提交含 *** 的脱敏占位符 → 视为未改，跳过。"""
-    # 先设真值
-    client.put("/api/admin/settings", json={"settings": {"llm.api_key": "sk-real-value"}})
-    # 再提交脱敏占位符（列表读回的脱敏值）
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "real-bot-secret"}})
     resp = client.get("/api/admin/settings")
-    masked = next(s["value"] for s in resp.json() if s["key"] == "llm.api_key")
-    # 提交这个脱敏值 → 应被跳过，原值不变
+    masked = next(s["value"] for s in resp.json() if s["key"] == "im.wecom_bot_secret")
     resp = client.put(
         "/api/admin/settings",
-        json={"settings": {"llm.api_key": masked}},
+        json={"settings": {"im.wecom_bot_secret": masked}},
     )
     assert resp.status_code == 200
-    assert "llm.api_key" in resp.json()["skipped"] or "llm.api_key" not in resp.json()["updated"]
-    # 原值还在
+    skipped = resp.json()["skipped"]
+    assert any("im.wecom_bot_secret" in s for s in skipped)
     from bycall.db import session_scope
     from bycall.governance.settings_store import get_setting_value
 
     with session_scope() as s:
-        assert get_setting_value("llm.api_key", session=s) == "sk-real-value"
+        assert get_setting_value("im.wecom_bot_secret", session=s) == "real-bot-secret"
 
 
 def test_empty_value_clears_setting(client):
-    """secret 传空串 → 清除该设置（回退到 .env/默认）。"""
-    client.put("/api/admin/settings", json={"settings": {"llm.api_key": "sk-x"}})
-    client.put("/api/admin/settings", json={"settings": {"llm.api_key": ""}})
+    """secret 传空串 → 清除该设置。"""
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "bot-x"}})
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": ""}})
     resp = client.get("/api/admin/settings")
-    api_key = next(s for s in resp.json() if s["key"] == "llm.api_key")
-    assert api_key["is_set"] is False
+    secret = next(s for s in resp.json() if s["key"] == "im.wecom_bot_secret")
+    assert secret["is_set"] is False
 
 
 def test_unknown_key_rejected(client):
-    """未知 key → skipped（不创建新 key）。"""
+    """未知 key → skipped。"""
     resp = client.put(
         "/api/admin/settings",
         json={"settings": {"nonexistent.key": "value"}},

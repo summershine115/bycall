@@ -41,19 +41,20 @@ def env(tmp_path, monkeypatch):
 def client(env, monkeypatch):
     """FastAPI TestClient，LLM 被 mock（治理链路测试不需要真实 LLM）。
 
-    用 monkeypatch 替换 create_llm_client，测试结束自动还原，不污染其他测试。
+    dataplane 现在用 resolver.get_chat_model(session) 解析激活模型，
+    patch resolver 返回 (假 Model, mock ChatModel)。
     """
+    from types import SimpleNamespace
+
     from bycall.api.app import create_app
+    from bycall.llm import resolver
 
     app = create_app()
     mock_llm = MagicMock(spec=LLMClient)
     mock_llm.chat.return_value = "基于知识库的回答。"
-    mock_llm.embed.return_value = []
 
-    # 用 monkeypatch 替换 dataplane 模块里的 create_llm_client（dataplane 在请求时调用它）。
-    from bycall.api import dataplane
-
-    monkeypatch.setattr(dataplane, "create_llm_client", lambda config: mock_llm)
+    fake_model = SimpleNamespace(id=1, name="mock-chat")
+    monkeypatch.setattr(resolver, "get_chat_model", lambda session: (fake_model, mock_llm))
     return TestClient(app)
 
 

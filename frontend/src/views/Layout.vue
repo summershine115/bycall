@@ -12,6 +12,9 @@
         <el-menu-item index="roles" :route="{ name: 'roles' }">
           <el-icon><Key /></el-icon><span>角色与权限</span>
         </el-menu-item>
+        <el-menu-item index="models" :route="{ name: 'models' }">
+          <el-icon><Cpu /></el-icon><span>模型管理</span>
+        </el-menu-item>
         <el-menu-item index="prompts" :route="{ name: 'prompts' }">
           <el-icon><Document /></el-icon><span>提示词</span>
         </el-menu-item>
@@ -53,8 +56,9 @@ const titles = {
   dashboard: '仪表盘',
   users: '用户管理',
   roles: '角色与权限',
+  models: '模型管理',
   prompts: '提示词管理',
-  settings: '运行时设置',
+  settings: 'IM 渠道',
   audit: '审计日志',
   chat: '对话测试',
 }

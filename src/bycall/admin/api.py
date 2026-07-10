@@ -22,6 +22,10 @@ from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
     AuditOut,
+    ModelCreate,
+    ModelOut,
+    ModelTestResult,
+    ModelUpdate,
     PromptActivate,
     PromptCreate,
     PromptOut,
@@ -37,6 +41,7 @@ from bycall.admin.schemas import (
 from bycall.db import get_session
 from bycall.governance.models import (
     AuditLog,
+    Model,
     Role,
     SystemPrompt,
     SystemSetting,
@@ -534,3 +539,277 @@ def clear_act_as_route(
         max_age=86400,
     )
     return {"ok": True}
+
+
+# ============ 模型实体管理（参考 WeKnora，CRUD + 激活 + 测试 + provider 注册表）============
+
+
+def _model_to_out(model: Model) -> ModelOut:
+    """把 Model ORM 行转 ModelOut：api_key 脱敏 + has_api_key 标记。绝不回显明文。"""
+    from bycall.governance.settings_store import mask_secret
+
+    return ModelOut(
+        id=model.id,  # type: ignore[arg-type]
+        name=model.name,
+        display_name=model.display_name,
+        model_type=model.model_type,
+        source=model.source,
+        provider=model.provider,
+        base_url=model.base_url,
+        api_key_masked=mask_secret(model.api_key),
+        has_api_key=bool(model.api_key),
+        embed_dimension=model.embed_dimension,
+        is_active=model.is_active,
+        description=model.description,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _get_model_or_404(session: Session, model_id: int) -> Model:
+    """按 id 取模型，不存在 → 404。"""
+    model = session.get(Model, model_id)
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"模型不存在: {model_id}",
+        )
+    return model
+
+
+def _deactivate_same_type(session: Session, model_type: str) -> None:
+    """把同 model_type 的其他模型 is_active 全置 False（不单独 commit，由调用方提交）。"""
+    for m in session.exec(Model.select_by_type(model_type)).all():
+        if m.is_active:
+            m.is_active = False
+            session.add(m)
+
+
+@router.get("/models/providers", response_model=list[dict])
+def list_model_providers(
+    model_type: str | None = Query(
+        default=None, description="按模型类型过滤（chat/embedding/rerank）"
+    ),
+    _admin: None = Depends(_require_admin),
+) -> list[dict]:
+    """provider 注册表：前端新建模型时填 provider 下拉 + 自动填默认 URL + 推荐模型名。"""
+    from bycall.llm.providers import list_providers, to_dict_list
+
+    return to_dict_list(list_providers(model_type))
+
+
+@router.get("/models", response_model=list[ModelOut])
+def list_models(
+    model_type: str | None = Query(
+        default=None, description="按模型类型过滤（chat/embedding/rerank）"
+    ),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[ModelOut]:
+    """列出模型。可选 model_type 过滤。api_key 一律脱敏，不回显明文。"""
+    if model_type is not None:
+        rows = session.exec(Model.select_by_type(model_type)).all()
+    else:
+        rows = session.exec(select(Model).order_by(Model.id)).all()
+    return [_model_to_out(m) for m in rows]
+
+
+@router.post("/models", response_model=ModelOut, status_code=status.HTTP_201_CREATED)
+def create_model(
+    payload: ModelCreate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ModelOut:
+    """创建模型。name + model_type 联合冲突 → 409。
+
+    若 ``is_active=True``，先把同类型其他模型置 False（保持同类型唯一 active）。
+    注：表 schema 未建复合唯一索引，这里在应用层显式预检（同类型下重名才视为冲突，
+    不同类型允许同名）。
+    """
+    existing = session.exec(
+        select(Model).where(Model.name == payload.name, Model.model_type == payload.model_type)
+    ).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"同类型下模型名已存在: {payload.name} ({payload.model_type})",
+        )
+
+    if payload.is_active:
+        _deactivate_same_type(session, payload.model_type)
+
+    model = Model(
+        name=payload.name,
+        display_name=payload.display_name,
+        model_type=payload.model_type,
+        source=payload.source,
+        provider=payload.provider,
+        base_url=payload.base_url,
+        api_key=payload.api_key,
+        embed_dimension=payload.embed_dimension,
+        description=payload.description,
+        is_active=payload.is_active,
+    )
+    session.add(model)
+    session.commit()
+    session.refresh(model)
+    return _model_to_out(model)
+
+
+@router.get("/models/{model_id}", response_model=ModelOut)
+def get_model(
+    model_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ModelOut:
+    """按 id 取模型详情，不存在 → 404。api_key 脱敏。"""
+    return _model_to_out(_get_model_or_404(session, model_id))
+
+
+@router.put("/models/{model_id}", response_model=ModelOut)
+def update_model(
+    model_id: int,
+    payload: ModelUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ModelOut:
+    """更新模型（PATCH 语义：仅传入字段生效）。
+
+    ``api_key`` 若含 ``***``（前端回填的脱敏占位符）视为"未改"，跳过——
+    避免把展示用的脱敏串当真实密钥写回去覆盖原值。
+    """
+    model = _get_model_or_404(session, model_id)
+
+    if payload.display_name is not None:
+        model.display_name = payload.display_name
+    if payload.provider is not None:
+        model.provider = payload.provider
+    if payload.base_url is not None:
+        model.base_url = payload.base_url
+    if payload.embed_dimension is not None:
+        model.embed_dimension = payload.embed_dimension
+    if payload.description is not None:
+        model.description = payload.description
+    if payload.api_key is not None and "***" not in payload.api_key:
+        # 含 *** 的脱敏占位符（前端回填）→ 用户没真改密钥，跳过；否则更新。
+        model.api_key = payload.api_key
+
+    session.add(model)
+    session.commit()
+    session.refresh(model)
+    return _model_to_out(model)
+
+
+@router.delete("/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_model(
+    model_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除模型。``is_active=True`` 的不能删（避免误删当前生效模型）→ 400。"""
+    model = _get_model_or_404(session, model_id)
+    if model.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能删除当前激活的模型，请先激活其他同类模型再删",
+        )
+    session.delete(model)
+    session.commit()
+
+
+@router.post("/models/{model_id}/activate", response_model=dict)
+def activate_model(
+    model_id: int,
+    rebuild: bool = Query(
+        default=False,
+        description="embedding 维度变化时是否确认重建知识库索引",
+    ),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """激活指定模型：同 model_type 原子切换（其他置 False，本条置 True）。
+
+    embedding 维度检测（关键死结）：
+    - 若新激活的 embedding 模型 ``embed_dimension`` 与当前 active 的不同，
+      且未带 ``rebuild=true``，返回 ``{"need_rebuild": True, ...}`` 让前端二次确认；
+    - 带 ``rebuild=true`` 才真正切换（重建知识库索引由调用方/前端另行触发，本端只切模型）。
+    """
+    model = _get_model_or_404(session, model_id)
+
+    if model.model_type == "embedding" and not rebuild:
+        current = session.exec(Model.select_active_by_type("embedding")).first()
+        if (
+            current is not None
+            and current.id != model.id
+            and current.embed_dimension != model.embed_dimension
+        ):
+            return {
+                "need_rebuild": True,
+                "old_dim": current.embed_dimension,
+                "new_dim": model.embed_dimension,
+                "message": "向量维度变化，激活后需重建知识库索引",
+            }
+
+    # 原子切换：同类型其他置 False，本条置 True。
+    _deactivate_same_type(session, model.model_type)
+    model.is_active = True
+    session.add(model)
+    session.commit()
+    session.refresh(model)
+    return {"ok": True, "model": _model_to_out(model).model_dump(mode="json")}
+
+
+@router.post("/models/{model_id}/test", response_model=ModelTestResult)
+def test_model(
+    model_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ModelTestResult:
+    """连通性测试：按 provider 构造临时 OpenAI 兼容 client 发一次最小请求，计时。
+
+    - chat：``chat.completions.create`` 一条 "hi"；
+    - embedding：``embeddings.create`` 一个 "test"，并校验返回维度 == 配置维度；
+    - 异常一律捕获返回 ``ok=False`` + error，绝不抛 500（前端要拿结果展示）。
+    """
+    import time
+
+    model = _get_model_or_404(session, model_id)
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:  # openai 未装：返失败而非 500
+        return ModelTestResult(ok=False, error=f"未安装 openai 客户端: {exc}")
+
+    start = time.perf_counter()
+    try:
+        client = OpenAI(
+            base_url=model.base_url or None,
+            api_key=model.api_key or "EMPTY",
+            timeout=15,
+        )
+        if model.model_type == "embedding":
+            resp = client.embeddings.create(model=model.name, input="test")
+            dim = len(resp.data[0].embedding) if resp.data else 0
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            if model.embed_dimension and dim != model.embed_dimension:
+                return ModelTestResult(
+                    ok=False,
+                    latency_ms=latency_ms,
+                    error=f"维度不匹配：期望 {model.embed_dimension}，实际 {dim}",
+                )
+            detail = f"dim={dim}, model={resp.model}"
+            return ModelTestResult(ok=True, latency_ms=latency_ms, detail=detail)
+        else:
+            # chat / rerank（rerank 暂按 chat 路径尝试，OpenAI 兼容性有限）
+            resp = client.chat.completions.create(
+                model=model.name,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=5,
+            )
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            text = resp.choices[0].message.content if resp.choices else ""
+            return ModelTestResult(ok=True, latency_ms=latency_ms, detail=text[:200])
+    except Exception as exc:  # 任何异常（网络/鉴权/模型不存在）→ ok=False
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        msg = str(exc) or exc.__class__.__name__
+        return ModelTestResult(ok=False, latency_ms=latency_ms, error=msg[:500])

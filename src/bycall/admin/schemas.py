@@ -173,6 +173,66 @@ class SettingUpdate(BaseModel):
 class SettingsBatchUpdate(BaseModel):
     """批量更新设置（一个表单提交多个 key）。"""
 
-    settings: dict[str, str] = Field(
-        ..., description="{key: value} 映射；value 空串=清除该 key"
-    )
+    settings: dict[str, str] = Field(..., description="{key: value} 映射；value 空串=清除该 key")
+
+
+# ============ Model（模型实体管理，参考 WeKnora）============
+
+
+class ModelCreate(BaseModel):
+    """创建模型请求。``name`` + ``model_type`` 联合唯一（同类型下重名 → 409）。"""
+
+    name: str = Field(..., description="模型名，如 glm-4-flash")
+    display_name: str = Field(default="", description="人类可读显示名")
+    model_type: str = Field(..., description='模型类型："chat" / "embedding" / "rerank"')
+    source: str = Field(default="remote", description='"remote" / "local"')
+    provider: str = Field(default="generic", description="provider 标识（见 llm/providers.py）")
+    base_url: str = Field(default="", description="API 地址（remote 必填）")
+    api_key: str = Field(default="", description="密钥，明文落库、API 脱敏返回")
+    embed_dimension: int = Field(default=0, description="向量维度（仅 embedding 用）")
+    description: str = Field(default="", description="备注说明")
+    is_active: bool = Field(default=False, description="创建时是否直接激活同类型其他置 False")
+
+
+class ModelUpdate(BaseModel):
+    """更新模型请求（PATCH 语义：仅传入字段生效）。
+
+    ``api_key`` 若是含 ``***`` 的脱敏占位符（前端原样回填的展示值）视为"未改"，跳过。
+    """
+
+    display_name: str | None = None
+    provider: str | None = None
+    base_url: str | None = None
+    api_key: str | None = Field(default=None, description="含 *** 的脱敏占位符视为未改")
+    embed_dimension: int | None = None
+    description: str | None = None
+
+
+class ModelOut(BaseModel):
+    """模型响应。``api_key`` 只返回脱敏值 + 是否已设，绝不回显明文。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    display_name: str
+    model_type: str
+    source: str
+    provider: str
+    base_url: str
+    api_key_masked: str = Field(default="", description="脱敏后的 api_key")
+    has_api_key: bool = Field(default=False, description="是否已设置 api_key")
+    embed_dimension: int
+    is_active: bool
+    description: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelTestResult(BaseModel):
+    """连通性测试结果。失败时 ok=False + error；成功时附带响应片段。"""
+
+    ok: bool
+    latency_ms: int = 0
+    error: str = ""
+    detail: str = Field(default="", description="成功时返回的样例响应片段")

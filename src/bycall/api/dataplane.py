@@ -20,8 +20,6 @@ from bycall.config import get_settings
 from bycall.db import get_session
 from bycall.governance.auth import load_session_cookie
 from bycall.governance.models import User
-from bycall.llm import LLMClient
-from bycall.llm.factory import create_llm_client
 
 # FastAPI 的 Depends(...) 作为参数默认值是框架惯用法，与 ruff B008 冲突，整文件豁免。
 # ruff: noqa: B008
@@ -88,16 +86,28 @@ def chat(
     body: ChatRequest,
     request: Request,
     session: Session = Depends(get_session),
-    llm: LLMClient = Depends(lambda: create_llm_client(get_settings().llm)),
     vector_store=Depends(_get_vector_store),
 ) -> ChatResponse:
-    """数据面对话：委托 run_agent 执行完整治理链路。"""
+    """数据面对话：委托 run_agent 执行完整治理链路。
+
+    LLM/EmbedModel 从 DB 激活的 Model 实体解析（admin 控制台管理）。
+    """
+    from bycall.llm.resolver import get_chat_model
+
     user = _current_user(request, session)
+    # 从 DB 激活的 chat Model 实体构造 ChatModel；无激活模型则报错提示
+    resolved = get_chat_model(session)
+    if resolved is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "未激活对话模型，请管理员在「模型管理」激活一个 chat 模型",
+        )
+    _, chat_model = resolved
     result = run_agent(
         session=session,
         user=user,
         question=body.question,
-        llm=llm,
+        llm=chat_model,
         vector_store=vector_store,
         channel="api",
     )

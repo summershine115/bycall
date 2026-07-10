@@ -57,13 +57,30 @@ export const admin = {
   // 审计
   listAudit: (limit = 100) =>
     http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),
-  // 运行时设置（LLM/IM 凭证，控制台管理）
+  // 运行时设置（IM 凭证，控制台管理）
   listSettings: () => http.get('/api/admin/settings').then((r) => r.data),
   updateSettings: (settings) =>
     http.put('/api/admin/settings', { settings }).then((r) => r.data),
   // IM 渠道热重载（改凭证后重连，不重启服务）
   reloadIm: () => http.post('/api/admin/im/reload').then((r) => r.data),
   imStatus: () => http.get('/api/admin/im/status').then((r) => r.data),
+  // 模型管理（Model 实体 CRUD + 激活 + 测试 + provider 注册表）
+  listModelProviders: (modelType) =>
+    http
+      .get('/api/admin/models/providers', { params: modelType ? { model_type: modelType } : {} })
+      .then((r) => r.data),
+  listModels: (modelType) =>
+    http
+      .get('/api/admin/models', { params: modelType ? { model_type: modelType } : {} })
+      .then((r) => r.data),
+  createModel: (data) => http.post('/api/admin/models', data).then((r) => r.data),
+  updateModel: (id, data) => http.put(`/api/admin/models/${id}`, data).then((r) => r.data),
+  deleteModel: (id) => http.delete(`/api/admin/models/${id}`),
+  activateModel: (id, rebuild) =>
+    http
+      .post(`/api/admin/models/${id}/activate`, null, { params: rebuild ? { rebuild: true } : {} })
+      .then((r) => r.data),
+  testModel: (id) => http.post(`/api/admin/models/${id}/test`).then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),

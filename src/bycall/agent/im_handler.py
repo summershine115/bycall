@@ -16,7 +16,6 @@ from bycall.config import get_settings
 from bycall.db import session_scope
 from bycall.gateway.base import InboundMessage, ReplySender
 from bycall.gateway.identity import resolve_user_by_im
-from bycall.llm.factory import create_llm_client
 from bycall.vector_store.factory import create_vector_store
 
 logger = logging.getLogger(__name__)
@@ -77,9 +76,11 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
 
 
 def _run_sync(user_id: int, question: str, channel: str):
-    """在线程池里同步执行治理链路（run_agent 是同步的）。"""
+    """在线程池里同步执行治理链路（run_agent 是同步的）。
+
+    LLM 从 DB 激活的 Model 实体解析（与 /chat 一致），在 session 内构造避免多开连接。
+    """
     settings = get_settings()
-    llm = create_llm_client(settings.llm)
     try:
         store = create_vector_store(settings.vector_store)
         store.open("knowledge")
@@ -88,18 +89,38 @@ def _run_sync(user_id: int, question: str, channel: str):
 
     with session_scope() as session:
         from bycall.governance.models import User
+        from bycall.llm.resolver import get_chat_model
 
         user = session.get(User, user_id)
         if user is None:
             raise RuntimeError(f"用户不存在: id={user_id}")
+        # 从激活的 chat Model 实体构造 ChatModel；无激活则给友好错误
+        resolved = get_chat_model(session)
+        if resolved is None:
+            return _no_model_result(user, channel)
+        _, chat_model = resolved
         return run_agent(
             session=session,
             user=user,
             question=question,
-            llm=llm,
+            llm=chat_model,
             vector_store=store,
             channel=channel,
         )
+
+
+def _no_model_result(user, channel: str):
+    """未激活对话模型时的降级结果。"""
+    from bycall.agent.runner import AgentResult
+
+    return AgentResult(
+        answer="系统尚未配置对话模型，请联系管理员在控制台激活一个模型。",
+        decision="error",
+        knowledge_scope=[],
+        retrieved_chunks=0,
+        user_name=user.name,
+        role=user.role,
+    )
 
 
 def _format_answer(decision: str, answer: str) -> str:

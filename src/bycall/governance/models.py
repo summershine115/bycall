@@ -173,6 +173,58 @@ class AuditLog(SQLModel, table=True):
         return select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
 
 
+# ============ Model：模型实体（参考 WeKnora）============
+
+
+class Model(SQLModel, table=True):
+    """模型实体——LLM/向量模型是一等公民的可管理资源，不是配置项。
+
+    每种 ``model_type``（chat/embedding/rerank）可有多个 Model 行，其中
+    ``is_active=True`` 的是当前使用的（同类型只能一个 active）。
+    admin 在控制台 CRUD + 激活 + 连通性测试。
+
+    与 SystemSetting 的区别：SystemSetting 是扁平 key-value（IM 凭证等），
+    Model 是结构化实体（多模型共存 + 默认 + 测试）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)  # 模型名（如 glm-4-flash、text-embedding-3-small）
+    display_name: str = ""  # 显示名（"智谱 GLM-4-Flash"）
+    model_type: str = Field(index=True)  # "chat" / "embedding" / "rerank"
+    source: str = "remote"  # "remote" / "local"（local 预留 Ollama）
+    provider: str = "generic"  # provider 标识（见 llm/providers.py）
+    base_url: str = ""  # API 地址（remote 必填）
+    api_key: str = ""  # 密钥（明文落库，API 脱敏返回；后续可加密）
+    # 仅 embedding 类型用：向量维度（如 1536/1024/768）。
+    # 用于向量库 collection schema + 切换模型时的维度不匹配检测。
+    embed_dimension: int = 0
+    is_active: bool = Field(default=False, index=True)  # 每种 model_type 只有一个 active
+    description: str = ""
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_active_by_type(model_type: str):
+        """查某类型的当前激活模型。"""
+        from sqlmodel import select
+
+        return select(Model).where(
+            Model.model_type == model_type, Model.is_active == True  # noqa: E712
+        )
+
+    @staticmethod
+    def select_by_type(model_type: str):
+        """列某类型的全部模型。"""
+        from sqlmodel import select
+
+        return select(Model).where(Model.model_type == model_type).order_by(Model.id)
+
+
 # ============ SystemSetting：可编辑运行时配置 ============
 
 
