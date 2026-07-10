@@ -71,6 +71,22 @@ class RedisConfig(BaseSettings):
     url: str = "redis://localhost:6379/0"
 
 
+class IMConfig(BaseSettings):
+    """IM 渠道配置。M1.5 接企微智能机器人长连接。前缀 ``BYCALL_IM_``。
+
+    凭证（bot_id/secret）从企业微信后台「智能机器人」获取。无凭证时 enable=False，
+    系统不连企微，仅用 Admin 控制台 + /chat 端点测试。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="bycall_im_", extra="ignore")
+
+    enable: bool = False  # 是否启动 IM 渠道连接
+    channel: Literal["wecom", "feishu"] = "wecom"
+    # 企微智能机器人凭证（企业微信后台获取）
+    wecom_bot_id: str = ""
+    wecom_bot_secret: str = ""
+
+
 class AppConfig(BaseSettings):
     """顶层配置。环境变量前缀 ``BYCALL_``（顶层字段如 ``BYCALL_ENV``）。
 
@@ -97,6 +113,7 @@ class AppConfig(BaseSettings):
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
+    im: IMConfig = Field(default_factory=IMConfig)
 
 
 @lru_cache(maxsize=1)

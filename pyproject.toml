@@ -28,6 +28,8 @@ dependencies = [
     "python-multipart>=0.0.9",  # form 解析
     "itsdangerous>=2.2",  # session cookie 签名
     "passlib[bcrypt]>=1.7",  # admin 密码哈希
+    # M1.5 IM 接入（企微智能机器人长连接）
+    "wecom-aibot-python-sdk>=1.0.2",
 ]
 
 [project.optional-dependencies]

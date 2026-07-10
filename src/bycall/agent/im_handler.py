@@ -1,0 +1,114 @@
+"""IM 消息处理器 —— 把渠道入站消息接入治理链路。
+
+收到 IM 消息后：
+  身份映射(IM user_id → User) → run_agent(治理链路) → 流式回复
+
+未绑定用户（未邀请）→ 友好拒绝；无权知识 → 拒绝（审计落库）；正常 → 流式回复答案。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from bycall.agent.runner import run_agent
+from bycall.config import get_settings
+from bycall.db import session_scope
+from bycall.gateway.base import InboundMessage, ReplySender
+from bycall.gateway.identity import resolve_user_by_im
+from bycall.llm.factory import create_llm_client
+from bycall.vector_store.factory import create_vector_store
+
+logger = logging.getLogger(__name__)
+
+
+async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
+    """IM 消息 → 治理链路 → 回复。
+
+    每条消息独立 session（IM 是长连接事件流，不复用请求级 session）。
+    LLM/vector_store 每次新建（M1.5 简化；M5 可换池化）。
+    """
+    text = msg.text.strip()
+    if not text:
+        return
+
+    # 1. 身份映射：IM user_id → Bycall User（邀请制，未绑定则拒绝）。
+    #    在 session 内提取标量 user_id（避免 session 关闭后访问 detached 对象）。
+    with session_scope() as session:
+        user = resolve_user_by_im(session, msg.channel, msg.im_user_id)
+        user_id = user.id if user is not None else None
+
+    if user_id is None:
+        await sender.send_text("您还未被授权使用数字员工，请联系管理员邀请您加入。")
+        logger.info("IM 消息被拒（未绑定用户）: channel=%s im_user_id=%s", msg.channel, msg.im_user_id)
+        return
+
+    # 2. 先回一句"正在处理"（流式，提升体验），然后异步跑治理链路。
+    #    企微 SDK 要求进会话事件 5s 内回欢迎语，但普通文本消息无此限制；
+    #    这里用 send_stream 发中间态，最终态 finish=True。
+    stream_id = None
+    if sender.send_stream is not None:
+        # 流式渠道：先发"思考中"
+        import uuid
+
+        stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+        try:
+            await sender.send_stream("正在查阅相关资料...", stream_id, finish=False)
+        except Exception:
+            stream_id = None  # 流式失败则退化为单条
+
+    # 3. 跑治理链路（同步，放在线程池避免阻塞事件循环）。
+    try:
+        result = await asyncio.to_thread(_run_sync, user_id, text, msg.channel)
+    except Exception:
+        logger.exception("治理链路执行失败")
+        await sender.send_text("抱歉，处理时出错了，请稍后重试。")
+        return
+
+    # 4. 回复结果。流式渠道发最终帧，非流式发单条。
+    answer = _format_answer(result.decision, result.answer)
+    if stream_id is not None and sender.send_stream is not None:
+        try:
+            await sender.send_stream(answer, stream_id, finish=True)
+            return
+        except Exception:
+            logger.warning("流式最终帧失败，退化单条回复")
+    await sender.send_text(answer)
+
+
+def _run_sync(user_id: int, question: str, channel: str):
+    """在线程池里同步执行治理链路（run_agent 是同步的）。"""
+    settings = get_settings()
+    llm = create_llm_client(settings.llm)
+    try:
+        store = create_vector_store(settings.vector_store)
+        store.open("knowledge")
+    except Exception:
+        store = None
+
+    with session_scope() as session:
+        from bycall.governance.models import User
+
+        user = session.get(User, user_id)
+        if user is None:
+            raise RuntimeError(f"用户不存在: id={user_id}")
+        return run_agent(
+            session=session,
+            user=user,
+            question=question,
+            llm=llm,
+            vector_store=store,
+            channel=channel,
+        )
+
+
+def _format_answer(decision: str, answer: str) -> str:
+    """按决策格式化回复（IM 友好提示）。"""
+    if decision == "denied_no_access":
+        return answer  # 已是友好提示
+    if decision == "denied":
+        return answer
+    return answer
+
+
+__all__ = ["handle_im_message"]
