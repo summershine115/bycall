@@ -10,6 +10,8 @@
 - AuditLog（append-only，谁/何时/问什么/放行/拒绝）
 - Model（LLM/向量模型实体，每种类型一个激活）
 - Document（知识库文档，source = ACL 标签，入库到 zvec knowledge collection）
+- Conversation + Message（会话状态层，按 (user_id, channel) 隔离，参考 Hermes SessionStore）
+- UserMemory（用户级长期记忆，跨会话持久，admin 管控）
 
 ⚠️ 设计约定：
 - ``admin`` 是内置特殊角色名（不建 Role 表记录），policy 引擎识别后给全部权限。
@@ -288,6 +290,137 @@ class Document(SQLModel, table=True):
         from sqlmodel import distinct, select
 
         return select(distinct(Document.source))
+
+
+# ============ Conversation + Message：会话状态层（参考 Hermes SessionStore）============
+
+
+class Conversation(SQLModel, table=True):
+    """会话——一个 (user_id, channel) 对应一条，永不过期。
+
+    参考 Hermes Agent 的 SessionEntry：会话有确定性 session_key、
+    可选 model_id（per-session 模型，空→fallback 全局激活）、summary（压缩摘要）。
+
+    会话生命周期：每渠道独立 + 永不过期（用户确认）。一个 (user_id, channel)
+    永远对应一条 Conversation，上下文按会话隔离，提示词/能力集/默认模型全局共享。
+    消息全量存 DB（审计需要），压缩只影响拼 prompt 时取多少条（summary + recent N）。
+
+    与 Hermes 的差异：Hermes 压缩后删中间消息创建 lineage 子会话；
+    Bycall 保留全量消息，summary 原地更新。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)  # User.id
+    channel: str = Field(index=True)  # "api" / "wecom" / "feishu"
+    session_key: str = Field(unique=True, index=True)  # 确定性: f"{channel}:{user_id}"
+    model_id: int | None = Field(default=None)  # per-session 模型（空→全局激活）
+    summary: str = ""  # 压缩摘要（增量更新，非从头重写）
+    message_count: int = 0  # 消息总数
+    last_message_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_session_key(session_key: str):
+        """按 session_key 查（确定性查找）。"""
+        from sqlmodel import select
+
+        return select(Conversation).where(Conversation.session_key == session_key)
+
+    @staticmethod
+    def select_by_user(user_id: int):
+        """按 user_id 查（列表过滤）。"""
+        from sqlmodel import select
+
+        return select(Conversation).where(Conversation.user_id == user_id).order_by(
+            Conversation.id.desc()
+        )
+
+    @staticmethod
+    def select_all():
+        """全部会话，按最后消息时间倒序。"""
+        from sqlmodel import select
+
+        return select(Conversation).order_by(Conversation.last_message_at.desc())
+
+
+class Message(SQLModel, table=True):
+    """单条消息——role + content，按 conversation_id 关联。
+
+    参考 Hermes 的 messages 表（role/content/token_count）。
+    user message 和 assistant answer 分两条存（对齐 Dify query+answer 模式，
+    便于审计单独查 user 问题或 assistant 回答）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    conversation_id: int = Field(index=True)  # Conversation.id
+    role: str = Field(index=True)  # "user" / "assistant" / "system"
+    content: str  # 消息正文
+    token_count: int = 0  # token 计数（压缩判断用；粗估 = len(content)//4）
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, index=True),
+    )
+
+    @staticmethod
+    def select_recent(conversation_id: int, limit: int = 20):
+        """取最近 N 条消息（按 created_at 倒序取，再正序返回用于拼 prompt）。"""
+        from sqlmodel import select
+
+        return (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def select_by_conversation(conversation_id: int):
+        """全部消息（按时间正序，分页查历史用）。"""
+        from sqlmodel import select
+
+        return (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at)
+        )
+
+
+class UserMemory(SQLModel, table=True):
+    """用户级长期记忆——跨会话持久，admin 可见可编辑。
+
+    参考 Hermes 的 USER.md + MEMORY.md，但关键差异：Bycall 的记忆不由 LLM 自主编辑
+    （企业场景：记忆是组织管控的，不是 LLM 自己写的）。M3 先做表结构 + admin 手动管理，
+    LLM 自动提取记忆留后续迭代。
+
+    记忆在拼 prompt 时注入 system message（与 system_prompt 一起，不是 user message）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)  # User.id
+    category: str = Field(index=True)  # "preference" / "fact" / "note"
+    content: str  # 记忆内容
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_user(user_id: int):
+        """按 user_id 查全部记忆。"""
+        from sqlmodel import select
+
+        return select(UserMemory).where(UserMemory.user_id == user_id).order_by(UserMemory.id)
 
 
 # ============ SystemSetting：可编辑运行时配置 ============

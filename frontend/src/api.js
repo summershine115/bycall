@@ -109,6 +109,24 @@ export const admin = {
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),
   clearActAs: () => http.post('/api/admin/clear-act-as'),
+  // 会话管理
+  listConversations: (userId) =>
+    http
+      .get('/api/admin/conversations', { params: userId ? { user_id: userId } : {} })
+      .then((r) => r.data),
+  getConversation: (id) => http.get(`/api/admin/conversations/${id}`).then((r) => r.data),
+  listMessages: (convId, limit = 50) =>
+    http
+      .get(`/api/admin/conversations/${convId}/messages`, { params: { limit } })
+      .then((r) => r.data),
+  deleteConversation: (id) => http.delete(`/api/admin/conversations/${id}`),
+  resetConversation: (id) => http.post(`/api/admin/conversations/${id}/reset`).then((r) => r.data),
+  // 用户长期记忆
+  listUserMemory: (userId) => http.get(`/api/admin/users/${userId}/memory`).then((r) => r.data),
+  createUserMemory: (userId, data) =>
+    http.post(`/api/admin/users/${userId}/memory`, data).then((r) => r.data),
+  updateUserMemory: (memId, data) => http.put(`/api/admin/memory/${memId}`, data).then((r) => r.data),
+  deleteUserMemory: (memId) => http.delete(`/api/admin/memory/${memId}`),
 }
 
 // ============ 数据面 /chat ============

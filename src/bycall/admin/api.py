@@ -22,10 +22,15 @@ from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
     AuditOut,
+    ConversationOut,
     DocumentCreate,
     DocumentIngestResult,
     DocumentOut,
     DocumentUpdate,
+    MemoryCreate,
+    MemoryOut,
+    MemoryUpdate,
+    MessageOut,
     ModelCreate,
     ModelOut,
     ModelTestResult,
@@ -45,12 +50,15 @@ from bycall.admin.schemas import (
 from bycall.db import get_session
 from bycall.governance.models import (
     AuditLog,
+    Conversation,
     Document,
+    Message,
     Model,
     Role,
     SystemPrompt,
     SystemSetting,
     User,
+    UserMemory,
 )
 from bycall.governance.security import hash_password
 
@@ -1138,3 +1146,175 @@ async def upload_document(
     session.refresh(doc)
 
     return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+
+
+# ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============
+
+
+@router.get("/conversations", response_model=list[ConversationOut])
+def list_conversations(
+    user_id: int | None = Query(default=None, description="按用户过滤"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[Conversation]:
+    """列出会话。可选 user_id 过滤。按最后消息时间倒序。"""
+    if user_id is not None:
+        rows = session.exec(Conversation.select_by_user(user_id)).all()
+    else:
+        rows = session.exec(Conversation.select_all()).all()
+    return list(rows)
+
+
+@router.get("/conversations/{conv_id}", response_model=ConversationOut)
+def get_conversation(
+    conv_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Conversation:
+    """会话详情。不存在 → 404。"""
+    conv = session.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"会话不存在: {conv_id}")
+    return conv
+
+
+@router.get("/conversations/{conv_id}/messages", response_model=list[MessageOut])
+def list_messages(
+    conv_id: int,
+    limit: int = Query(default=50, ge=1, le=500, description="返回最近 N 条消息"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[Message]:
+    """查看会话消息历史。按时间正序返回（旧→新）。"""
+    conv = session.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"会话不存在: {conv_id}")
+    rows = session.exec(Message.select_recent(conv_id, limit=limit)).all()
+    return list(reversed(rows))
+
+
+@router.delete("/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_conversation(
+    conv_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除会话：删全部消息 + 会话记录（物理删除，不可恢复）。
+
+    审计日志不受影响（AuditLog 独立于 Conversation/Message）。
+    """
+    conv = session.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"会话不存在: {conv_id}")
+
+    msgs = session.exec(Message.select_by_conversation(conv_id)).all()
+    for msg in msgs:
+        session.delete(msg)
+    session.delete(conv)
+    session.commit()
+
+
+@router.post("/conversations/{conv_id}/reset", response_model=ConversationOut)
+def reset_conversation(
+    conv_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Conversation:
+    """重置会话：清全部消息 + 清 summary，但保留会话本身。
+
+    与删除的区别：会话记录还在，session_key 不变，只是历史清空。
+    """
+    conv = session.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"会话不存在: {conv_id}")
+
+    msgs = session.exec(Message.select_by_conversation(conv_id)).all()
+    for msg in msgs:
+        session.delete(msg)
+    conv.summary = ""
+    conv.message_count = 0
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+    return conv
+
+
+# ============ 用户长期记忆（UserMemory）============
+
+
+@router.get("/users/{user_id}/memory", response_model=list[MemoryOut])
+def list_user_memory(
+    user_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[UserMemory]:
+    """列出用户全部长期记忆。"""
+    return list(session.exec(UserMemory.select_by_user(user_id)).all())
+
+
+@router.post(
+    "/users/{user_id}/memory",
+    response_model=MemoryOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_user_memory(
+    user_id: int,
+    payload: MemoryCreate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> UserMemory:
+    """添加用户记忆条目。category ∈ {preference, fact, note}。"""
+    if payload.category not in ("preference", "fact", "note"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="category 必须是 preference / fact / note 之一",
+        )
+    mem = UserMemory(
+        user_id=user_id,
+        category=payload.category,
+        content=payload.content.strip(),
+    )
+    session.add(mem)
+    session.commit()
+    session.refresh(mem)
+    return mem
+
+
+@router.put("/memory/{mem_id}", response_model=MemoryOut)
+def update_user_memory(
+    mem_id: int,
+    payload: MemoryUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> UserMemory:
+    """更新记忆条目（PATCH 语义）。不存在 → 404。"""
+    mem = session.get(UserMemory, mem_id)
+    if mem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"记忆条目不存在: {mem_id}")
+    if payload.category is not None:
+        if payload.category not in ("preference", "fact", "note"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="category 必须是 preference / fact / note 之一",
+            )
+        mem.category = payload.category
+    if payload.content is not None:
+        mem.content = payload.content.strip()
+    session.add(mem)
+    session.commit()
+    session.refresh(mem)
+    return mem
+
+
+@router.delete("/memory/{mem_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user_memory(
+    mem_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除记忆条目。不存在 → 404。"""
+    mem = session.get(UserMemory, mem_id)
+    if mem is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"记忆条目不存在: {mem_id}")
+    session.delete(mem)
+    session.commit()

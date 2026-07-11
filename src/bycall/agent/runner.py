@@ -5,8 +5,12 @@
 - IM：把结果通过 ReplySender 流式/单条发回
 
 治理链路（每一步在 LLM 之前完成判定）：
-  用户 → 能力集(策略引擎) → RAG(ACL预过滤) → LLM(控制面提示词) → 审计
+  用户 → 能力集(策略引擎) → RAG(ACL预过滤) → LLM(控制面提示词+会话历史) → 审计
 LLM 拿不到它无权拿的东西——策略活在代码层。
+
+会话状态层（参考 Hermes Agent）：
+- ``conversation_id`` 传入时启用多轮：加载历史 + summary → 拼 messages → 存新消息 → 压缩。
+- ``conversation_id`` 为 None 时退化为单轮（兼容 M1 行为）。
 
 参考：docs/product-design.md 四支柱、src/bycall/api/dataplane.py 原始实现。
 """
@@ -18,8 +22,16 @@ from dataclasses import dataclass
 
 from sqlmodel import Session
 
+from bycall.agent.session_store import (
+    build_conversation_messages,
+    compress_history,
+    load_message_history,
+    load_user_memory,
+    save_message,
+    should_compress,
+)
 from bycall.governance.capability import CapabilitySet, compute_capability_set
-from bycall.governance.models import AuditLog, User
+from bycall.governance.models import AuditLog, Conversation, User
 from bycall.llm import LLMClient
 from bycall.rag.retrieve import build_rag_messages, retrieve_context
 from bycall.vector_store.base import VectorStore
@@ -47,11 +59,16 @@ def run_agent(
     llm: LLMClient,
     vector_store: VectorStore | None,
     channel: str = "api",
+    conversation_id: int | None = None,
 ) -> AgentResult:
     """执行一次完整的治理链路对话。
 
     这是治理脊柱的同步实现：身份 → 能力集 → ACL预过滤RAG → LLM → 审计。
     IM 渠道和 REST /chat 都调它，差异仅在如何拿到 user 和如何回复。
+
+    会话状态（参考 Hermes Agent）：
+    - ``conversation_id`` 传入时启用多轮：加载历史 + summary → 拼 messages → 存消息 → 压缩。
+    - ``conversation_id`` 为 None 时退化为单轮（兼容 M1 无状态行为）。
     """
     # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
     try:
@@ -87,8 +104,28 @@ def run_agent(
             user=user,
         )
 
-    # 3. 拼 prompt + LLM 调用。
-    messages = build_rag_messages(cap.system_prompt, question, retrieved)
+    # 3. 拼消息 + LLM 调用。
+    if conversation_id is not None:
+        # 多轮模式：加载历史 + summary + 用户记忆 → 拼完整 messages。
+        conv = session.get(Conversation, conversation_id)
+        summary = conv.summary if conv is not None else ""
+        history = load_message_history(session, conversation_id)
+        user_memories = load_user_memory(session, user.id) if user.id is not None else []
+        rag_context = "\n\n".join(
+            f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved
+        )
+        messages = build_conversation_messages(
+            system_prompt=cap.system_prompt,
+            rag_context=rag_context,
+            question=question,
+            history=history,
+            summary=summary,
+            user_memories=user_memories,
+        )
+    else:
+        # 单轮模式（兼容 M1）：system + RAG + user，无历史。
+        messages = build_rag_messages(cap.system_prompt, question, retrieved)
+
     try:
         answer = llm.chat(messages)
     except Exception as e:
@@ -102,7 +139,27 @@ def run_agent(
             user=user,
         )
 
-    # 4. 审计落库。
+    # 4. 会话持久化：存 user + assistant 消息 + 压缩检查。
+    if conversation_id is not None:
+        save_message(session, conversation_id, "user", question)
+        save_message(session, conversation_id, "assistant", answer)
+
+        # 压缩检查：历史 + 新消息超阈值时压缩旧消息为 summary。
+        full_history = load_message_history(session, conversation_id)
+        if should_compress(full_history):
+            conv = session.get(Conversation, conversation_id)
+            if conv is not None:
+                new_summary = compress_history(
+                    llm=llm,
+                    history=full_history,
+                    previous_summary=conv.summary,
+                )
+                if new_summary != conv.summary:
+                    conv.summary = new_summary
+                    session.add(conv)
+                    logger.info("会话 %s 压缩完成，summary 已更新", conversation_id)
+
+    # 5. 审计落库。
     _audit(
         session,
         user,

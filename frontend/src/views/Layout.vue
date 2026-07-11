@@ -18,6 +18,9 @@
         <el-menu-item index="knowledge" :route="{ name: 'knowledge' }">
           <el-icon><Collection /></el-icon><span>知识库</span>
         </el-menu-item>
+        <el-menu-item index="conversations" :route="{ name: 'conversations' }">
+          <el-icon><ChatLineRound /></el-icon><span>会话管理</span>
+        </el-menu-item>
         <el-menu-item index="prompts" :route="{ name: 'prompts' }">
           <el-icon><Document /></el-icon><span>提示词</span>
         </el-menu-item>
@@ -61,6 +64,7 @@ const titles = {
   roles: '角色与权限',
   models: '模型管理',
   knowledge: '知识库管理',
+  conversations: '会话管理',
   prompts: '提示词管理',
   settings: 'IM 渠道',
   audit: '审计日志',

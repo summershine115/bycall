@@ -92,6 +92,7 @@ def chat(
 
     LLM/EmbedModel 从 DB 激活的 Model 实体解析（admin 控制台管理）。
     """
+    from bycall.agent.session_store import get_or_create_conversation
     from bycall.llm.resolver import get_chat_model
 
     user = _current_user(request, session)
@@ -103,6 +104,10 @@ def chat(
             "未激活对话模型，请管理员在「模型管理」激活一个 chat 模型",
         )
     _, chat_model = resolved
+
+    # 多轮会话：按 (user_id, channel) 查/建会话，传入 run_agent 启用历史。
+    conv = get_or_create_conversation(session, user.id, "api")
+
     result = run_agent(
         session=session,
         user=user,
@@ -110,6 +115,7 @@ def chat(
         llm=chat_model,
         vector_store=vector_store,
         channel="api",
+        conversation_id=conv.id,
     )
     return ChatResponse(
         answer=result.answer,

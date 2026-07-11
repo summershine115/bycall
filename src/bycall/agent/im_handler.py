@@ -88,6 +88,7 @@ def _run_sync(user_id: int, question: str, channel: str):
         store = None
 
     with session_scope() as session:
+        from bycall.agent.session_store import get_or_create_conversation
         from bycall.governance.models import User
         from bycall.llm.resolver import get_chat_model
 
@@ -99,6 +100,10 @@ def _run_sync(user_id: int, question: str, channel: str):
         if resolved is None:
             return _no_model_result(user, channel)
         _, chat_model = resolved
+
+        # 多轮会话：按 (user_id, channel) 查/建会话，传入 run_agent 启用历史。
+        conv = get_or_create_conversation(session, user_id, channel)
+
         return run_agent(
             session=session,
             user=user,
@@ -106,6 +111,7 @@ def _run_sync(user_id: int, question: str, channel: str):
             llm=chat_model,
             vector_store=store,
             channel=channel,
+            conversation_id=conv.id,
         )
 
 

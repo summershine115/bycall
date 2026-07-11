@@ -292,3 +292,65 @@ class DocumentIngestResult(BaseModel):
     document_id: int
     chunk_count: int
     errors: list[str] = Field(default_factory=list)
+
+
+# ============ Conversation + Message（会话管理）============
+
+
+class ConversationOut(BaseModel):
+    """会话响应。不包含 summary（太长，按需单独查）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    channel: str
+    session_key: str
+    model_id: int | None = None
+    message_count: int
+    last_message_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class MessageOut(BaseModel):
+    """单条消息响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    conversation_id: int
+    role: str
+    content: str
+    token_count: int
+    created_at: datetime
+
+
+# ============ UserMemory（长期记忆管理）============
+
+
+class MemoryCreate(BaseModel):
+    """添加用户记忆条目。"""
+
+    category: str = Field(..., description="分类：preference / fact / note")
+    content: str = Field(..., description="记忆内容")
+
+
+class MemoryUpdate(BaseModel):
+    """更新记忆条目（PATCH 语义）。"""
+
+    category: str | None = None
+    content: str | None = None
+
+
+class MemoryOut(BaseModel):
+    """记忆条目响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    category: str
+    content: str
+    created_at: datetime
+    updated_at: datetime

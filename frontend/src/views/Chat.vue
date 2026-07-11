@@ -12,95 +12,143 @@
     </el-alert>
 
     <el-card>
-      <template #header>对话测试（数据面 /chat）</template>
-      <p class="muted">
-        这里验证治理链路：身份 → 能力集 → ACL 预过滤 RAG → 控制面提示词 → 审计。
-        在「用户管理」点「扮演」切换身份，可对比不同角色的可见范围。
-      </p>
+      <template #header>
+        <div class="chat-header">
+          <span>对话测试（数据面 /chat · 多轮）</span>
+          <el-button size="small" @click="onNewConversation">新对话</el-button>
+        </div>
+      </template>
 
-      <el-input
-        v-model="question"
-        placeholder="问一个业务问题，如：上季度销售额是多少？"
-        @keyup.enter="onAsk"
-      >
-        <template #append>
-          <el-button :loading="loading" @click="onAsk">提问</el-button>
-        </template>
-      </el-input>
+      <div class="chat-messages" ref="msgContainer">
+        <div v-for="(msg, i) in chatHistory" :key="i" class="chat-msg" :class="msg.role">
+          <div class="chat-role">{{ roleLabel(msg.role) }}</div>
+          <div class="chat-content">{{ msg.content }}</div>
+        </div>
+        <div v-if="loading" class="chat-msg assistant">
+          <div class="chat-role">助手</div>
+          <div class="chat-content muted">思考中...</div>
+        </div>
+        <div v-if="!chatHistory.length && !loading" class="muted center">
+          问一个业务问题开始对话，如：上季度销售额是多少？
+        </div>
+      </div>
 
-      <el-descriptions
-        v-if="result"
-        :column="2"
-        border
-        style="margin-top: 16px"
-        title="治理决策（透明化）"
-      >
-        <el-descriptions-item label="当前用户">{{ result.user }}</el-descriptions-item>
-        <el-descriptions-item label="角色">{{ result.role }}</el-descriptions-item>
-        <el-descriptions-item label="知识域权限">
-          <el-tag v-for="t in result.knowledge_scope" :key="t" size="small" type="success" style="margin-right: 4px">
-            {{ t }}
-          </el-tag>
-          <span v-if="!result.knowledge_scope.length" class="muted">无（默认隔离）</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="命中授权 chunk">{{ result.retrieved_chunks }}</el-descriptions-item>
-        <el-descriptions-item label="决策">
-          <el-tag :type="result.decision === 'answered' ? 'success' : 'danger'">{{ result.decision }}</el-tag>
-        </el-descriptions-item>
-      </el-descriptions>
+      <el-divider />
 
-      <el-card v-if="result" shadow="never" style="margin-top: 16px">
-        <div class="answer">{{ result.answer }}</div>
-      </el-card>
+      <div class="chat-input">
+        <el-input
+          v-model="question"
+          placeholder="输入问题，回车发送..."
+          @keyup.enter="onAsk"
+          :disabled="loading"
+        >
+          <template #append>
+            <el-button :loading="loading" @click="onAsk">发送</el-button>
+          </template>
+        </el-input>
+      </div>
+
+      <el-collapse v-if="lastResult" style="margin-top: 16px">
+        <el-collapse-item title="治理决策（透明化）" name="1">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="当前用户">{{ lastResult.user }}</el-descriptions-item>
+            <el-descriptions-item label="角色">{{ lastResult.role }}</el-descriptions-item>
+            <el-descriptions-item label="知识域权限">
+              <el-tag v-for="t in lastResult.knowledge_scope" :key="t" size="small" type="success" style="margin-right: 4px">
+                {{ t }}
+              </el-tag>
+              <span v-if="!lastResult.knowledge_scope.length" class="muted">无（默认隔离）</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="命中授权 chunk">{{ lastResult.retrieved_chunks }}</el-descriptions-item>
+            <el-descriptions-item label="决策">
+              <el-tag :type="lastResult.decision === 'answered' ? 'success' : 'danger'">{{ lastResult.decision }}</el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { admin, chat } from '../api'
 
 const question = ref('')
 const loading = ref(false)
-const result = ref(null)
+const chatHistory = ref([])
+const lastResult = ref(null)
 const actAsInfo = ref('')
+const msgContainer = ref(null)
 
 async function onAsk() {
-  if (!question.value.trim()) return
+  if (!question.value.trim() || loading.value) return
+  const q = question.value
+  question.value = ''
+
+  // 先显示用户消息
+  chatHistory.value.push({ role: 'user', content: q })
+  await scrollToBottom()
+
   loading.value = true
   try {
-    result.value = await chat.ask(question.value)
-    if (result.value.decision === 'denied_no_access') {
+    const result = await chat.ask(q)
+    lastResult.value = result
+    // 显示助手回答
+    chatHistory.value.push({ role: 'assistant', content: result.answer })
+
+    if (result.decision === 'denied_no_access') {
       ElMessage.warning('该用户无权访问相关知识（ACL 预过滤拦截）')
     }
+
+    // 检测 act-as 状态
+    if (result.role !== 'admin' && !actAsInfo.value) {
+      actAsInfo.value = result.user
+    } else if (result.role === 'admin' && actAsInfo.value) {
+      actAsInfo.value = ''
+    }
+
+    await scrollToBottom()
   } finally {
     loading.value = false
+  }
+}
+
+function onNewConversation() {
+  chatHistory.value = []
+  lastResult.value = null
+  ElMessage.info('已清空当前对话界面（后端会话历史仍保留，新问题会带上历史）')
+}
+
+async function scrollToBottom() {
+  await nextTick()
+  if (msgContainer.value) {
+    msgContainer.value.scrollTop = msgContainer.value.scrollHeight
   }
 }
 
 async function onClearActAs() {
   await admin.clearActAs()
   actAsInfo.value = ''
+  chatHistory.value = []
+  lastResult.value = null
   ElMessage.success('已恢复 admin 身份')
-  await detectActAs()
 }
 
-// 检测当前是否在 act-as 状态（通过尝试一个普通用户视角的 chat 判断较复杂，
-// 简化：admin 身份下 result.role 会是 admin；这里仅提示，真实状态由后端 cookie 决定）
-async function detectActAs() {
-  // 无显式"当前会话"端点；act-as 状态由后端 cookie 持有，前端展示用上次 chat 结果推断
+function roleLabel(r) {
+  return { user: '我', assistant: '助手' }[r] || r
 }
 </script>
 
 <style scoped>
-.muted {
-  color: #909399;
-  font-size: 13px;
-}
-.answer {
-  white-space: pre-wrap;
-  line-height: 1.7;
-  color: #303133;
-}
+.chat-header { display: flex; align-items: center; justify-content: space-between; }
+.chat-messages { height: 400px; overflow-y: auto; padding: 8px; }
+.chat-msg { margin-bottom: 16px; }
+.chat-role { font-size: 12px; color: #909399; margin-bottom: 4px; }
+.chat-content { padding: 10px 14px; border-radius: 8px; line-height: 1.7; white-space: pre-wrap; }
+.chat-msg.user .chat-content { background: #ecf5ff; color: #303133; }
+.chat-msg.assistant .chat-content { background: #f4f4f5; color: #303133; }
+.muted { color: #909399; }
+.center { text-align: center; padding: 40px; }
 </style>
