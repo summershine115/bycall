@@ -31,10 +31,9 @@ from bycall.agent.session_store import (
     should_compress,
 )
 from bycall.governance.capability import CapabilitySet, compute_capability_set
-from bycall.governance.models import AuditLog, Conversation, User
+from bycall.governance.models import AuditLog, Conversation, KnowledgeBase, User
 from bycall.llm import LLMClient
-from bycall.rag.retrieve import build_rag_messages, retrieve_context
-from bycall.vector_store.base import VectorStore
+from bycall.rag.retrieve import build_rag_messages
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +56,6 @@ def run_agent(
     user: User,
     question: str,
     llm: LLMClient,
-    vector_store: VectorStore | None,
     channel: str = "api",
     conversation_id: int | None = None,
 ) -> AgentResult:
@@ -65,6 +63,10 @@ def run_agent(
 
     这是治理脊柱的同步实现：身份 → 能力集 → ACL预过滤RAG → LLM → 审计。
     IM 渠道和 REST /chat 都调它，差异仅在如何拿到 user 和如何回复。
+
+    RAG 检索（参考 WeKnora per-KB collection）：
+    查用户可见的全部 KB → 每个 KB 的 collection 内按 source ACL 预过滤检索 → 合并。
+    不再接收 vector_store 参数——runner 自己查 KB 路由。
 
     会话状态（参考 Hermes Agent）：
     - ``conversation_id`` 传入时启用多轮：加载历史 + summary → 拼 messages → 存消息 → 压缩。
@@ -83,14 +85,8 @@ def run_agent(
             user=user,
         )
 
-    # 2. RAG 检索（ACL 预过滤）：只召回 knowledge_scope 内的 chunk。
-    retrieved = []
-    if vector_store is not None:
-        retrieved = retrieve_context(
-            store=vector_store,
-            question=question,
-            knowledge_scope_tags=cap.knowledge_scope_tags,
-        )
+    # 2. RAG 检索（ACL 预过滤）：跨用户可见的全部 KB collection 检索。
+    retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
 
     # 无任何可见知识域 → 不进 LLM，直接拒绝（不让 LLM 看到问题）。
     has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
@@ -215,6 +211,38 @@ def _audit(
         )
     )
     session.commit()
+
+
+def _retrieve_across_kbs(
+    session: Session, question: str, knowledge_scope_tags: list[str]
+) -> list:
+    """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
+
+    查全部 KB → 每个 KB 的 collection 用自己的维度 open → 按 source ACL 预过滤
+    检索 → 合并结果按 score 排序取 topk。
+
+    知识域为空（无权限）→ 不检索（默认隔离）。
+    admin（tags=['*']）→ 搜全部 KB（source 不预过滤）。
+    """
+    if not knowledge_scope_tags:
+        return []
+
+    from bycall.config import get_settings
+    from bycall.rag.retrieve import retrieve_multi_kb
+
+    # 查全部 KB（当前单租户，所有 KB 对所有用户可见，ACL 在 collection 内按 source 过滤）
+    kbs = list(session.exec(KnowledgeBase.select_all()).all())
+    if not kbs:
+        return []
+
+    kb_specs = [(kb.id, kb.collection_name, kb.dimension) for kb in kbs]
+
+    return retrieve_multi_kb(
+        config=get_settings().vector_store,
+        kb_specs=kb_specs,
+        question=question,
+        knowledge_scope_tags=knowledge_scope_tags,
+    )
 
 
 __all__ = ["AgentResult", "run_agent"]

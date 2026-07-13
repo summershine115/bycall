@@ -69,28 +69,16 @@ def _current_user(request: Request, session: Session) -> User:
     return user
 
 
-def _get_vector_store():
-    """打开 knowledge collection（无则 None，退化纯 LLM + 权限判定）。"""
-    from bycall.vector_store.factory import create_vector_store
-
-    try:
-        store = create_vector_store(get_settings().vector_store)
-        store.open("knowledge")
-        return store
-    except Exception:
-        return None
-
-
 @router.post("/chat", response_model=ChatResponse)
 def chat(
     body: ChatRequest,
     request: Request,
     session: Session = Depends(get_session),
-    vector_store=Depends(_get_vector_store),
 ) -> ChatResponse:
     """数据面对话：委托 run_agent 执行完整治理链路。
 
     LLM/EmbedModel 从 DB 激活的 Model 实体解析（admin 控制台管理）。
+    RAG 检索由 run_agent 内部查 KB 路由（不再从外部传 vector_store）。
     """
     from bycall.agent.session_store import get_or_create_conversation
     from bycall.llm.resolver import get_chat_model
@@ -113,7 +101,6 @@ def chat(
         user=user,
         question=body.question,
         llm=chat_model,
-        vector_store=vector_store,
         channel="api",
         conversation_id=conv.id,
     )

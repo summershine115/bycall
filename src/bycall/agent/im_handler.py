@@ -12,11 +12,9 @@ import asyncio
 import logging
 
 from bycall.agent.runner import run_agent
-from bycall.config import get_settings
 from bycall.db import session_scope
 from bycall.gateway.base import InboundMessage, ReplySender
 from bycall.gateway.identity import resolve_user_by_im
-from bycall.vector_store.factory import create_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +77,8 @@ def _run_sync(user_id: int, question: str, channel: str):
     """在线程池里同步执行治理链路（run_agent 是同步的）。
 
     LLM 从 DB 激活的 Model 实体解析（与 /chat 一致），在 session 内构造避免多开连接。
+    RAG 检索由 run_agent 内部查 KB 路由（不再从外部传 vector_store）。
     """
-    settings = get_settings()
-    try:
-        store = create_vector_store(settings.vector_store)
-        store.open("knowledge")
-    except Exception:
-        store = None
-
     with session_scope() as session:
         from bycall.agent.session_store import get_or_create_conversation
         from bycall.governance.models import User
@@ -109,7 +101,6 @@ def _run_sync(user_id: int, question: str, channel: str):
             user=user,
             question=question,
             llm=chat_model,
-            vector_store=store,
             channel=channel,
             conversation_id=conv.id,
         )
