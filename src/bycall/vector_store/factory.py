@@ -9,10 +9,15 @@ from bycall.config import VectorStoreConfig
 from bycall.vector_store.base import VectorStore
 
 
-def create_vector_store(config: VectorStoreConfig) -> VectorStore:
+def create_vector_store(
+    config: VectorStoreConfig, dimension: int | None = None
+) -> VectorStore:
     """按 ``config.backend`` 实例化一个未打开的 VectorStore。
 
     调用方负责后续 ``open(name)`` 或 ``create_collection(schema)``。
+
+    ``dimension`` 可选：覆盖 config 里的默认维度（per-KB 场景，不同 KB 用不同维度
+    的 embedding 模型）。不传则用 config.dimension（全局默认）。
     """
     backend = config.backend
     if backend == "zvec":
@@ -21,7 +26,7 @@ def create_vector_store(config: VectorStoreConfig) -> VectorStore:
 
         return ZvecStore(
             data_dir=config.data_dir,
-            dimension=config.dimension,
+            dimension=dimension if dimension is not None else config.dimension,
             read_only=config.read_only,
         )
     if backend in ("pgvector", "qdrant"):

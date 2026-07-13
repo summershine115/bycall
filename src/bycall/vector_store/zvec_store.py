@@ -121,6 +121,53 @@ class ZvecStore(VectorStore):
             gc.collect()
             logger.info("closed zvec collection %s (via gc)", self._name)
 
+    def destroy(self, name: str) -> None:
+        """永久删除 collection（zvec Collection.destroy() + GC）。
+
+        删 KB 时用。先 close 当前打开的（如果是同一个），再 destroy。
+        zvec 的 destroy 会删掉磁盘上的 collection 目录。
+        """
+        path = self._collection_path(name)
+        if not path.exists():
+            logger.info("collection %s 不存在，跳过 destroy", name)
+            return
+
+        # 如果当前正打开的是这个 collection，先关掉
+        if self._name == name:
+            self.close()
+
+        # 重新打开后 destroy
+        option = CollectionOption(read_only=0)
+        col = zvec.open(path=str(path), option=option)
+        col.destroy()
+        gc.collect()
+        logger.info("destroyed zvec collection %s @ %s", name, path)
+
+    def describe(self, name: str) -> dict:
+        """查 collection 信息（维度 / 文档数），不存在返回空 dict。
+
+        不改变当前打开的 collection——用临时 open + close 查信息。
+        """
+        path = self._collection_path(name)
+        if not path.exists() or not any(path.iterdir()):
+            return {}
+        try:
+            option = CollectionOption(read_only=1)
+            col = zvec.open(path=str(path), option=option)
+            schema = col.schema()
+            stats = col.stats()
+            info = {
+                "name": name,
+                "dimension": getattr(schema.vectors[0], "dimension", 0) if schema.vectors else 0,
+                "doc_count": getattr(stats, "doc_count", 0),
+            }
+            del col
+            gc.collect()
+            return info
+        except Exception as e:
+            logger.warning("describe collection %s 失败: %s", name, e)
+            return {}
+
     # ---------- 写 ----------
 
     def insert(self, docs: list[Chunk]) -> list[InsertResult]:

@@ -69,3 +69,14 @@ class VectorStore(ABC):
     @abstractmethod
     def close(self) -> None:
         """释放底层资源（zvec 无 close()，实现靠 del + gc；其他后端走原生 close）。"""
+
+    @abstractmethod
+    def destroy(self, name: str) -> None:
+        """永久删除 collection（删 KB 时用）。不可恢复。
+
+        与 close() 的区别：close 只释放连接，destroy 删掉磁盘数据。
+        """
+
+    @abstractmethod
+    def describe(self, name: str) -> dict:
+        """查 collection 信息（维度 / 文档数 / 大小），不存在返回空 dict。"""
