@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from bycall.config import VectorStoreConfig
 from bycall.llm.base import Message
 from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import FilterCondition, SearchRequest, SearchResult
@@ -53,6 +54,58 @@ def retrieve_context(
         )
         return []
     return results
+
+
+def retrieve_multi_kb(
+    config: VectorStoreConfig,
+    kb_specs: list[tuple[int, str, int]],
+    question: str,
+    knowledge_scope_tags: list[str],
+    topk: int = 5,
+) -> list[SearchResult]:
+    """跨多个 KB collection 检索，合并结果后按 score 排序取 topk。
+
+    每个 KB 用自己的维度建 store → open 该 KB 的 collection → 按 source ACL 预过滤
+    检索 → 合并所有 KB 的结果 → 按 score 降序取 topk。
+
+    Args:
+        config: VectorStoreConfig（读 data_dir / backend）
+        kb_specs: [(kb_id, collection_name, dimension), ...] 要检索的 KB 列表
+        question: 用户问题（走 FTS 检索）
+        knowledge_scope_tags: 角色的知识域标签（ACL 预过滤）
+        topk: 最终合并后返回的条数
+
+    返回合并排序后的 SearchResult 列表。
+    """
+    from bycall.vector_store.factory import create_vector_store
+
+    if not knowledge_scope_tags or not kb_specs:
+        return []
+
+    all_results: list[SearchResult] = []
+    for _kb_id, collection_name, dimension in kb_specs:
+        try:
+            store = create_vector_store(config, dimension=dimension)
+            store.open(collection_name)
+            try:
+                hits = retrieve_context(
+                    store=store,
+                    question=question,
+                    knowledge_scope_tags=knowledge_scope_tags,
+                    collection_name=collection_name,
+                    topk=topk,
+                )
+                all_results.extend(hits)
+            finally:
+                store.close()
+        except Exception as e:
+            logger.warning(
+                "检索 KB collection %s 失败 (dim=%s): %s", collection_name, dimension, e
+            )
+
+    # 合并后按 score 降序取 topk
+    all_results.sort(key=lambda r: r.score, reverse=True)
+    return all_results[:topk]
 
 
 def build_rag_messages(
