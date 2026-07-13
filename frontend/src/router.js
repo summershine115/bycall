@@ -13,6 +13,7 @@ const routes = [
       { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
       { path: 'knowledge', name: 'knowledge', component: () => import('./views/Knowledge.vue') },
+      { path: 'knowledge-bases', name: 'knowledge-bases', component: () => import('./views/KnowledgeBases.vue') },
       { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },

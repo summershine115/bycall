@@ -15,8 +15,11 @@
         <el-menu-item index="models" :route="{ name: 'models' }">
           <el-icon><Cpu /></el-icon><span>模型管理</span>
         </el-menu-item>
+        <el-menu-item index="knowledge-bases" :route="{ name: 'knowledge-bases' }">
+          <el-icon><Files /></el-icon><span>知识库管理</span>
+        </el-menu-item>
         <el-menu-item index="knowledge" :route="{ name: 'knowledge' }">
-          <el-icon><Collection /></el-icon><span>知识库</span>
+          <el-icon><Collection /></el-icon><span>知识库文档</span>
         </el-menu-item>
         <el-menu-item index="conversations" :route="{ name: 'conversations' }">
           <el-icon><ChatLineRound /></el-icon><span>会话管理</span>
@@ -63,7 +66,8 @@ const titles = {
   users: '用户管理',
   roles: '角色与权限',
   models: '模型管理',
-  knowledge: '知识库管理',
+  knowledge: '知识库文档',
+  'knowledge-bases': '知识库管理',
   conversations: '会话管理',
   prompts: '提示词管理',
   settings: 'IM 渠道',

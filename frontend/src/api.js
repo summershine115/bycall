@@ -81,25 +81,34 @@ export const admin = {
       .post(`/api/admin/models/${id}/activate`, null, { params: rebuild ? { rebuild: true } : {} })
       .then((r) => r.data),
   testModel: (id) => http.post(`/api/admin/models/${id}/test`).then((r) => r.data),
-  // 知识库文档管理
-  listDocuments: (source) =>
+  // 知识库管理（per-KB：每个 KB 绑定一个 embedding 模型 + 一个 zvec collection）
+  listKnowledgeBases: () => http.get('/api/admin/knowledge-bases').then((r) => r.data),
+  getKnowledgeBase: (kbId) => http.get(`/api/admin/knowledge-bases/${kbId}`).then((r) => r.data),
+  createKnowledgeBase: (data) => http.post('/api/admin/knowledge-bases', data).then((r) => r.data),
+  updateKnowledgeBase: (kbId, data) =>
+    http.put(`/api/admin/knowledge-bases/${kbId}`, data).then((r) => r.data),
+  deleteKnowledgeBase: (kbId) => http.delete(`/api/admin/knowledge-bases/${kbId}`),
+  // 知识库文档管理（绑定到 KB）
+  listDocuments: (kbId, source) =>
     http
-      .get('/api/admin/knowledge/documents', { params: source ? { source } : {} })
+      .get(`/api/admin/knowledge-bases/${kbId}/documents`, { params: source ? { source } : {} })
       .then((r) => r.data),
-  createDocument: (data) =>
-    http.post('/api/admin/knowledge/documents', data).then((r) => r.data),
-  getDocument: (id) => http.get(`/api/admin/knowledge/documents/${id}`).then((r) => r.data),
-  updateDocument: (id, data) =>
-    http.put(`/api/admin/knowledge/documents/${id}`, data).then((r) => r.data),
-  deleteDocument: (id) => http.delete(`/api/admin/knowledge/documents/${id}`),
-  reindexDocument: (id) =>
-    http.post(`/api/admin/knowledge/documents/${id}/reindex`).then((r) => r.data),
+  createDocument: (kbId, data) =>
+    http.post(`/api/admin/knowledge-bases/${kbId}/documents`, data).then((r) => r.data),
+  getDocument: (kbId, id) =>
+    http.get(`/api/admin/knowledge-bases/${kbId}/documents/${id}`).then((r) => r.data),
+  updateDocument: (kbId, id, data) =>
+    http.put(`/api/admin/knowledge-bases/${kbId}/documents/${id}`, data).then((r) => r.data),
+  deleteDocument: (kbId, id) =>
+    http.delete(`/api/admin/knowledge-bases/${kbId}/documents/${id}`),
+  reindexDocument: (kbId, id) =>
+    http.post(`/api/admin/knowledge-bases/${kbId}/documents/${id}/reindex`).then((r) => r.data),
   listSources: () => http.get('/api/admin/knowledge/sources').then((r) => r.data),
-  uploadDocument: (file, source, title) => {
+  uploadDocument: (kbId, file, source, title) => {
     const formData = new FormData()
     formData.append('file', file)
     return http
-      .post('/api/admin/knowledge/upload', formData, {
+      .post(`/api/admin/knowledge-bases/${kbId}/upload`, formData, {
         params: { source, ...(title ? { title } : {}) },
         headers: { 'Content-Type': 'multipart/form-data' },
       })
