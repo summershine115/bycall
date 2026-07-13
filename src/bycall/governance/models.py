@@ -9,7 +9,8 @@
 - SystemPrompt（版本化，激活版本下发给数据面）
 - AuditLog（append-only，谁/何时/问什么/放行/拒绝）
 - Model（LLM/向量模型实体，每种类型一个激活）
-- Document（知识库文档，source = ACL 标签，入库到 zvec knowledge collection）
+- KnowledgeBase（知识库实体，per-KB embedding 模型 + 维度 + zvec collection）
+- Document（知识库文档，属于某个 KB，source = ACL 标签）
 - Conversation + Message（会话状态层，按 (user_id, channel) 隔离，参考 Hermes SessionStore）
 - UserMemory（用户级长期记忆，跨会话持久，admin 管控）
 
@@ -229,6 +230,55 @@ class Model(SQLModel, table=True):
         return select(Model).where(Model.model_type == model_type).order_by(Model.id)
 
 
+# ============ KnowledgeBase：知识库实体（参考 WeKnora，per-KB embedding + collection）============
+
+
+class KnowledgeBase(SQLModel, table=True):
+    """知识库——一组文档的物理容器，绑定一个 embedding 模型 + 一个 zvec collection。
+
+    参考腾讯 WeKnora 的 KnowledgeBase 实体设计：每个 KB 有独立的 embedding 模型
+    （决定向量维度）、独立的 zvec collection（维度在创建时固定）、独立的切块统计。
+
+    **KB 和 source(ACL) 分离**（对齐 WeKnora）：
+    - KB 管物理存储层：embedding 模型 / 维度 / collection。
+    - source 管逻辑访问层：ACL 标签（对应角色 knowledge_scope_tags）。
+    - 一个 KB 可包含多种 source 标签的文档；一种 source 标签也可跨多个 KB。
+
+    这让管理员可以按"知识域 + 维度需求"灵活组合：例如用 1024 维的 bge-m3
+    建"产品知识库"，同时用 768 维的 bce-embedding 建"HR 知识库"，各自独立。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)  # KB 名称（如 "产品知识库"）
+    description: str = ""
+    embedding_model_id: int = Field(index=True)  # 绑定的 embedding 模型（Model.id）
+    dimension: int = 0  # 向量维度（冗余存，建 collection 时用，从 Model.embed_dimension 读）
+    collection_name: str = Field(index=True)  # zvec collection 名（确定性: f"kb_{id}"）
+    document_count: int = 0  # 文档数（冗余计数）
+    chunk_count: int = 0  # 切块总数（冗余计数）
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_name(name: str):
+        """按 name 查（唯一）。"""
+        from sqlmodel import select
+
+        return select(KnowledgeBase).where(KnowledgeBase.name == name)
+
+    @staticmethod
+    def select_all():
+        """全部 KB，按 id 升序。"""
+        from sqlmodel import select
+
+        return select(KnowledgeBase).order_by(KnowledgeBase.id)
+
+
 # ============ Document：知识库文档（参考 WeKnora Knowledge 实体）============
 
 
@@ -252,6 +302,7 @@ class Document(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    knowledge_base_id: int = Field(index=True)  # 所属 KB（决定 collection + embedding）
     title: str = Field(index=True)  # 文档标题
     source: str = Field(index=True)  # 知识域 ACL 标签（对应 Role.knowledge_scope_tags）
     content: str = ""  # 原始正文（manual/file 解析后文本）
@@ -276,6 +327,17 @@ class Document(SQLModel, table=True):
         from sqlmodel import select
 
         return select(Document).where(Document.source == source).order_by(Document.id.desc())
+
+    @staticmethod
+    def select_by_kb(knowledge_base_id: int):
+        """按所属 KB 查（列表过滤用）。"""
+        from sqlmodel import select
+
+        return (
+            select(Document)
+            .where(Document.knowledge_base_id == knowledge_base_id)
+            .order_by(Document.id.desc())
+        )
 
     @staticmethod
     def select_all():
