@@ -45,6 +45,12 @@ secrets/
 
 # ---- ZCode 工具内部 ----
 .zcode/
+.codegraph/
+
+# ---- 前端构建产物 ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
 
 # ---- Docker 卷（本地开发时数据落这里）----
 pgdata/
