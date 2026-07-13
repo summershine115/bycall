@@ -27,7 +27,9 @@ class LLMConfig(BaseSettings):
     环境变量前缀 ``BYCALL_LLM_``，例：``BYCALL_LLM_PROVIDER`` / ``BYCALL_LLM_API_KEY``。
     """
 
-    model_config = SettingsConfigDict(env_prefix="bycall_llm_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_llm_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     provider: Literal["openai", "glm"] = "openai"
     base_url: str = "https://api.openai.com/v1"
@@ -45,7 +47,9 @@ class VectorStoreConfig(BaseSettings):
     （如 text-embedding-3-small = 1536）。
     """
 
-    model_config = SettingsConfigDict(env_prefix="bycall_vector_store_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_vector_store_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     backend: Literal["zvec", "pgvector", "qdrant"] = "zvec"
     data_dir: str = "./data/zvec"
@@ -57,7 +61,9 @@ class VectorStoreConfig(BaseSettings):
 class PostgresConfig(BaseSettings):
     """PostgreSQL（状态/记忆/元数据；M0 只起服务）。前缀 ``BYCALL_POSTGRES_``。"""
 
-    model_config = SettingsConfigDict(env_prefix="bycall_postgres_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_postgres_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     dsn: str = "postgresql://bycall:bycall@localhost:5432/bycall"
     pool_size: int = 10
@@ -66,7 +72,9 @@ class PostgresConfig(BaseSettings):
 class RedisConfig(BaseSettings):
     """Redis（缓存/队列；M0 只起服务）。前缀 ``BYCALL_REDIS_``。"""
 
-    model_config = SettingsConfigDict(env_prefix="bycall_redis_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_redis_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     url: str = "redis://localhost:6379/0"
 
@@ -78,7 +86,9 @@ class IMConfig(BaseSettings):
     系统不连企微，仅用 Admin 控制台 + /chat 端点测试。
     """
 
-    model_config = SettingsConfigDict(env_prefix="bycall_im_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_im_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     enable: bool = False  # 是否启动 IM 渠道连接
     channel: Literal["wecom", "feishu"] = "wecom"
