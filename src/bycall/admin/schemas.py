@@ -238,6 +238,45 @@ class ModelTestResult(BaseModel):
     detail: str = Field(default="", description="成功时返回的样例响应片段")
 
 
+# ============ KnowledgeBase（知识库实体，参考 WeKnora）============
+
+
+class KnowledgeBaseCreate(BaseModel):
+    """创建知识库请求。
+
+    选一个 embedding 模型 → 自动读维度 → 建 zvec collection。
+    KB 和 source(ACL) 分离：KB 管维度/embedding/collection，source 管 ACL。
+    """
+
+    name: str = Field(..., description="知识库名称，全局唯一")
+    description: str = Field(default="", description="描述")
+    embedding_model_id: int = Field(..., description="绑定的 embedding 模型 ID（决定维度）")
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    """更新知识库（PATCH 语义）。只改名称/描述，不改 embedding 模型（维度锁定）。"""
+
+    name: str | None = None
+    description: str | None = None
+
+
+class KnowledgeBaseOut(BaseModel):
+    """知识库响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str
+    embedding_model_id: int
+    dimension: int
+    collection_name: str
+    document_count: int
+    chunk_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
 # ============ Document（知识库文档管理，参考 WeKnora Knowledge 实体）============
 
 
@@ -254,6 +293,7 @@ class DocumentCreate(BaseModel):
     )
     content: str = Field(..., description="文档正文（手动输入或文件解析后文本）")
     file_name: str = Field(default="", description="来源文件名（可选，用于显示）")
+    knowledge_base_id: int = Field(..., description="所属知识库 ID")
 
 
 class DocumentUpdate(BaseModel):
@@ -272,6 +312,7 @@ class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    knowledge_base_id: int
     title: str
     source: str
     status: str

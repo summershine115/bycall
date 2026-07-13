@@ -27,6 +27,9 @@ from bycall.admin.schemas import (
     DocumentIngestResult,
     DocumentOut,
     DocumentUpdate,
+    KnowledgeBaseCreate,
+    KnowledgeBaseOut,
+    KnowledgeBaseUpdate,
     MemoryCreate,
     MemoryOut,
     MemoryUpdate,
@@ -52,6 +55,7 @@ from bycall.governance.models import (
     AuditLog,
     Conversation,
     Document,
+    KnowledgeBase,
     Message,
     Model,
     Role,
@@ -828,7 +832,18 @@ def test_model(
         return ModelTestResult(ok=False, latency_ms=latency_ms, error=msg[:500])
 
 
-# ============ 知识库文档管理（参考 WeKnora Knowledge 实体）============
+# ============ 知识库管理（KnowledgeBase + Document，参考 WeKnora）============
+
+
+def _get_kb_or_404(session: Session, kb_id: int) -> KnowledgeBase:
+    """按 id 取知识库，不存在 → 404。"""
+    kb = session.get(KnowledgeBase, kb_id)
+    if kb is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"知识库不存在: {kb_id}",
+        )
+    return kb
 
 
 def _get_document_or_404(session: Session, doc_id: int) -> Document:
@@ -842,18 +857,18 @@ def _get_document_or_404(session: Session, doc_id: int) -> Document:
     return doc
 
 
-def _delete_chunks_for_doc(doc_id: int) -> None:
-    """删除 zvec knowledge collection 里某文档的所有 chunk。
+def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
+    """删除某 KB collection 里某文档的所有 chunk。
 
     用 ``delete_by_filter``（zvec 原生按标量 filter 批删）按 ``doc_id`` 字段删除。
-    chunk 入库时 ``fields`` 里带了 ``doc_id`` 标量字段，见 ``rag/ingest.py``。
+    用 KB 的 collection_name + dimension 建 store。
     """
     from bycall.config import get_settings
     from bycall.vector_store.factory import create_vector_store
     from bycall.vector_store.models import FilterCondition
 
-    store = create_vector_store(get_settings().vector_store)
-    store.open("knowledge")
+    store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+    store.open(kb.collection_name)
     try:
         store.delete_by_filter(
             [FilterCondition(field="doc_id", op="match", value=str(doc_id))]
@@ -865,19 +880,20 @@ def _delete_chunks_for_doc(doc_id: int) -> None:
 
 def _ingest_document(
     session: Session,
+    kb: KnowledgeBase,
     doc_id: int,
     title: str,
     source: str,
     content: str,
 ) -> DocumentIngestResult:
-    """同步入库：标记 processing → 查激活 embedding → 删旧 chunk → 入库 → 更新 Document。
+    """同步入库：标记 processing → 用 KB 的 embedding 模型 → 删旧 chunk → 入库 → 更新。
 
-    无激活 embedding 模型 → status=failed + 400（友好提示）。
+    embedding 模型来自 KB 绑定（不是全局激活），维度来自 KB.dimension。
     入库失败 → status=failed + error_message。
-    入库成功 → status=completed + chunk_count + embedding_model_id（维度锁定）。
+    入库成功 → status=completed + chunk_count + 更新 KB 统计。
     """
     from bycall.config import get_settings
-    from bycall.llm.resolver import get_embed_model
+    from bycall.llm.resolver import resolve_embed_model
     from bycall.rag.ingest import IngestPipeline
     from bycall.vector_store.factory import create_vector_store
 
@@ -891,36 +907,32 @@ def _ingest_document(
     session.add(doc)
     session.commit()
 
-    # 2. 查激活 embedding 模型（无激活 → failed + 400）。
-    resolved = get_embed_model(session)
-    if resolved is None:
+    # 2. 用 KB 绑定的 embedding 模型。
+    embed_entity = session.get(Model, kb.embedding_model_id)
+    if embed_entity is None:
         doc.status = "failed"
-        doc.error_message = "未激活 embedding 模型，请先在「模型管理」激活一个 embedding 模型"
+        doc.error_message = f"KB 绑定的 embedding 模型不存在 (id={kb.embedding_model_id})"
         session.add(doc)
         session.commit()
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=doc.error_message,
-        )
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=doc.error_message)
 
-    entity, embed_model = resolved
+    embed_model = resolve_embed_model(session, embed_entity)
 
     # 3. 删旧 chunk（幂等，支持 reindex）。
     try:
-        _delete_chunks_for_doc(doc_id)
+        _delete_chunks_for_doc(kb, doc_id)
     except Exception as exc:
-        # 删旧 chunk 失败不阻断入库——旧 chunk 可能本来就没有。
         import logging
 
         logging.getLogger(__name__).warning("删旧 chunk 失败 (doc_id=%s): %s", doc_id, exc)
 
-    # 4. 入库。
+    # 4. 入库（用 KB 的 collection + 维度）。
     errors: list[str] = []
     chunk_count = 0
     try:
-        store = create_vector_store(get_settings().vector_store)
+        store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
         try:
-            pipeline = IngestPipeline(store, embed_model, collection_name="knowledge")
+            pipeline = IngestPipeline(store, embed_model, collection_name=kb.collection_name)
             result = pipeline.ingest_text(content, source=source, doc_id=f"doc_{doc_id}")
             errors = result.errors
             chunk_count = result.chunk_count
@@ -929,13 +941,18 @@ def _ingest_document(
     except Exception as exc:
         errors.append(f"入库异常: {exc}")
 
-    # 5. 更新 Document。
+    # 5. 更新 Document + KB 统计。
+    old_chunk_count = doc.chunk_count
     doc.status = "completed" if not errors else "failed"
     doc.chunk_count = chunk_count
     doc.char_count = len(content)
-    doc.embedding_model_id = entity.id
+    doc.embedding_model_id = kb.embedding_model_id
     doc.error_message = "; ".join(errors) if errors else ""
     session.add(doc)
+
+    # 更新 KB 的 chunk_count（差值）+ document_count（不变，文档已存在）
+    kb.chunk_count += chunk_count - old_chunk_count
+    session.add(kb)
     session.commit()
     session.refresh(doc)
 
@@ -947,34 +964,207 @@ def _ingest_document(
     )
 
 
-@router.get("/knowledge/documents", response_model=list[DocumentOut])
+# ============ 知识库 CRUD ============
+
+
+@router.post(
+    "/knowledge-bases",
+    response_model=KnowledgeBaseOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_knowledge_base(
+    payload: KnowledgeBaseCreate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KnowledgeBase:
+    """创建知识库：选 embedding 模型 → 读维度 → 建 zvec collection。
+
+    collection_name = f"kb_{id}"，维度来自 embedding 模型的 embed_dimension。
+    name 唯一，冲突 → 409。
+    """
+    # 校验 embedding 模型存在且是 embedding 类型
+    embed_model = session.get(Model, payload.embedding_model_id)
+    if embed_model is None or embed_model.model_type != "embedding":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"embedding 模型不存在或类型不对: {payload.embedding_model_id}",
+        )
+    if not embed_model.embed_dimension or embed_model.embed_dimension <= 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"embedding 模型未设置维度: {embed_model.name}（embed_dimension={embed_model.embed_dimension}）",
+        )
+
+    # name 唯一预检
+    existing = session.exec(KnowledgeBase.select_by_name(payload.name)).first()
+    if existing is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=f"知识库名已存在: {payload.name}",
+        )
+
+    # 先建 KB 记录拿到 id（collection_name 需要 id）
+    kb = KnowledgeBase(
+        name=payload.name,
+        description=payload.description,
+        embedding_model_id=payload.embedding_model_id,
+        dimension=embed_model.embed_dimension,
+        collection_name="placeholder",  # 先占位，拿到 id 后更新
+    )
+    session.add(kb)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=f"知识库名已存在: {payload.name}",
+        ) from exc
+    session.refresh(kb)
+
+    # 更新 collection_name
+    kb.collection_name = f"kb_{kb.id}"
+    session.add(kb)
+    session.commit()
+    session.refresh(kb)
+
+    # 建 zvec collection（用 KB 的维度）
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+
+    try:
+        store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+        store.open(kb.collection_name)  # 不存在则自动按默认 schema 创建
+        store.close()
+    except Exception as exc:
+        # collection 创建失败 → 删 KB 记录回滚
+        session.delete(kb)
+        session.commit()
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"创建向量库 collection 失败: {exc}",
+        ) from exc
+
+    return kb
+
+
+@router.get("/knowledge-bases", response_model=list[KnowledgeBaseOut])
+def list_knowledge_bases(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[KnowledgeBase]:
+    """列出全部知识库。"""
+    return list(session.exec(KnowledgeBase.select_all()).all())
+
+
+@router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseOut)
+def get_knowledge_base(
+    kb_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KnowledgeBase:
+    """知识库详情。不存在 → 404。"""
+    return _get_kb_or_404(session, kb_id)
+
+
+@router.put("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseOut)
+def update_knowledge_base(
+    kb_id: int,
+    payload: KnowledgeBaseUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KnowledgeBase:
+    """更新知识库名称/描述。不改 embedding 模型（维度锁定）。"""
+    kb = _get_kb_or_404(session, kb_id)
+    if payload.name is not None and payload.name != kb.name:
+        existing = session.exec(KnowledgeBase.select_by_name(payload.name)).first()
+        if existing is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=f"知识库名已存在: {payload.name}",
+            )
+        kb.name = payload.name
+    if payload.description is not None:
+        kb.description = payload.description
+    session.add(kb)
+    session.commit()
+    session.refresh(kb)
+    return kb
+
+
+@router.delete("/knowledge-bases/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_knowledge_base(
+    kb_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除知识库：级联删 collection + 全部文档。
+
+    1. 删 zvec collection（destroy）
+    2. 删全部 Document 记录
+    3. 删 KB 记录
+    """
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+
+    kb = _get_kb_or_404(session, kb_id)
+
+    # 删 zvec collection
+    try:
+        store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+        store.destroy(kb.collection_name)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("删除 collection 失败 (kb=%s): %s", kb_id, exc)
+
+    # 删全部文档
+    docs = session.exec(Document.select_by_kb(kb_id)).all()
+    for doc in docs:
+        session.delete(doc)
+
+    # 删 KB
+    session.delete(kb)
+    session.commit()
+
+
+# ============ 文档管理（绑定到 KB）============
+
+
+@router.get("/knowledge-bases/{kb_id}/documents", response_model=list[DocumentOut])
 def list_documents(
+    kb_id: int,
     source: str | None = Query(default=None, description="按知识域标签过滤"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> list[Document]:
-    """列出文档。可选 source 过滤。按 id 倒序（最新在前）。"""
+    """列出 KB 内文档。可选 source 过滤。"""
+    _get_kb_or_404(session, kb_id)
     if source is not None:
-        rows = session.exec(Document.select_by_source(source)).all()
+        rows = session.exec(
+            select(Document).where(
+                Document.knowledge_base_id == kb_id, Document.source == source
+            )
+        ).all()
     else:
-        rows = session.exec(Document.select_all()).all()
+        rows = session.exec(Document.select_by_kb(kb_id)).all()
     return list(rows)
 
 
 @router.post(
-    "/knowledge/documents",
+    "/knowledge-bases/{kb_id}/documents",
     response_model=DocumentIngestResult,
     status_code=status.HTTP_201_CREATED,
 )
 def create_document(
+    kb_id: int,
     payload: DocumentCreate,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> DocumentIngestResult:
-    """创建文档并入库。content 非空校验后写 Document 记录 → 同步入库。
+    """在指定 KB 内创建文档并入库。"""
+    kb = _get_kb_or_404(session, kb_id)
 
-    file_name 用于显示与推断 file_type（txt/md/markdown）。
-    """
     content = payload.content.strip()
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文档正文不能为空")
@@ -987,6 +1177,7 @@ def create_document(
         file_type = ext if ext in ("txt", "md", "markdown") else ""
 
     doc = Document(
+        knowledge_base_id=kb_id,
         title=payload.title,
         source=payload.source.strip(),
         content=content,
@@ -995,34 +1186,41 @@ def create_document(
         status="pending",
     )
     session.add(doc)
+    kb.document_count += 1
+    session.add(kb)
     session.commit()
     session.refresh(doc)
 
-    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
 
 
-@router.get("/knowledge/documents/{doc_id}", response_model=DocumentOut)
+@router.get("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=DocumentOut)
 def get_document(
+    kb_id: int,
     doc_id: int,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> Document:
-    """按 id 取文档详情，不存在 → 404。"""
-    return _get_document_or_404(session, doc_id)
+    """按 id 取文档详情。"""
+    doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
+    return doc
 
 
-@router.put("/knowledge/documents/{doc_id}", response_model=DocumentOut)
+@router.put("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=DocumentOut)
 def update_document(
+    kb_id: int,
     doc_id: int,
     payload: DocumentUpdate,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> Document:
-    """更新文档标题/source。改 source 会重新入库（chunk 的 source 标签需同步）。
-
-    不改 content（M1 只支持重入库，不支持编辑正文——编辑正文走 reindex）。
-    """
+    """更新文档标题/source。改 source 会重新入库。"""
+    kb = _get_kb_or_404(session, kb_id)
     doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
 
     need_reingest = False
     if payload.title is not None:
@@ -1036,49 +1234,60 @@ def update_document(
     session.refresh(doc)
 
     if need_reingest:
-        _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+        _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
 
     session.refresh(doc)
     return doc
 
 
-@router.delete("/knowledge/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/knowledge-bases/{kb_id}/documents/{doc_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 def delete_document(
+    kb_id: int,
     doc_id: int,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
-    """删除文档：级联清理 zvec chunks + DB 记录。
-
-    zvec chunk 删除失败不阻断 DB 删除（避免残留 DB 记录造成"幽灵文档"）。
-    """
+    """删除文档：级联清理 zvec chunks + DB 记录。"""
+    kb = _get_kb_or_404(session, kb_id)
     doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
 
     try:
-        _delete_chunks_for_doc(doc_id)
+        _delete_chunks_for_doc(kb, doc_id)
     except Exception as exc:
         import logging
 
         logging.getLogger(__name__).warning("删除文档 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+
+    # 更新 KB 统计
+    kb.chunk_count -= doc.chunk_count
+    kb.document_count -= 1
+    session.add(kb)
 
     session.delete(doc)
     session.commit()
 
 
 @router.post(
-    "/knowledge/documents/{doc_id}/reindex", response_model=DocumentIngestResult
+    "/knowledge-bases/{kb_id}/documents/{doc_id}/reindex",
+    response_model=DocumentIngestResult,
 )
 def reindex_document(
+    kb_id: int,
     doc_id: int,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> DocumentIngestResult:
-    """重新入库：切换 embedding 模型后用，或修复失败文档。
-
-    等价于对现有 content 再跑一次入库流程（含删旧 chunk → 重新 embed → 写入）。
-    """
+    """重新入库。"""
+    kb = _get_kb_or_404(session, kb_id)
     doc = _get_document_or_404(session, doc_id)
-    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
+    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
 
 
 @router.get("/knowledge/sources", response_model=list[str])
@@ -1086,28 +1295,27 @@ def list_knowledge_sources(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> list[str]:
-    """列出所有已用过的 source 标签（供前端下拉 + 角色配置参考）。"""
+    """列出所有已用过的 source 标签。"""
     rows = session.exec(Document.select_distinct_sources()).all()
     return sorted(str(r) for r in rows if r)
 
 
 @router.post(
-    "/knowledge/upload",
+    "/knowledge-bases/{kb_id}/upload",
     response_model=DocumentIngestResult,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
+    kb_id: int,
     file: UploadFile,
     source: str = Query(..., description="知识域标签"),
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> DocumentIngestResult:
-    """文件上传入库：读文件内容 → 走与创建文档同样的入库流程。
+    """文件上传入库（到指定 KB）。"""
+    kb = _get_kb_or_404(session, kb_id)
 
-    支持 .txt / .md / .markdown。其他格式 → 400。
-    文件内容读取为 UTF-8 文本（二进制文件 → 400）。
-    """
     if not file.filename:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件名不能为空")
 
@@ -1134,6 +1342,7 @@ async def upload_document(
     doc_title = title or file.filename.rsplit(".", 1)[0]
 
     doc = Document(
+        knowledge_base_id=kb_id,
         title=doc_title,
         source=source.strip(),
         content=content,
@@ -1142,10 +1351,12 @@ async def upload_document(
         status="pending",
     )
     session.add(doc)
+    kb.document_count += 1
+    session.add(kb)
     session.commit()
     session.refresh(doc)
 
-    return _ingest_document(session, doc.id, doc.title, doc.source, doc.content)
+    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
 
 
 # ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============
