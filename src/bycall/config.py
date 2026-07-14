@@ -17,7 +17,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -124,6 +124,27 @@ class AppConfig(BaseSettings):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     im: IMConfig = Field(default_factory=IMConfig)
+
+    @model_validator(mode="after")
+    def _validate_prod_security(self) -> AppConfig:
+        """生产环境 fail-fast：session_secret 必须改为非默认值且 ≥32 字符。
+
+        默认值 ``bycall-dev-change-me-in-prod`` 只能用于 dev/test。生产启动时若仍是
+        默认值或太短，cookie 签名可被伪造——直接拒绝启动（比"启动了但不安全"好）。
+        """
+        if self.env != "prod":
+            return self
+        if self.session_secret == "bycall-dev-change-me-in-prod":
+            raise ValueError(
+                "生产环境（env=prod）必须设置 BYCALL_SESSION_SECRET（不能是默认值）。"
+                "请生成随机密钥：python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
+        if len(self.session_secret) < 32:
+            raise ValueError(
+                f"生产环境 session_secret 长度不足（当前 {len(self.session_secret)}，"
+                "至少 32 字符）。请用 secrets.token_urlsafe(48) 生成。"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

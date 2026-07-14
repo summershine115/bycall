@@ -15,7 +15,7 @@
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="admin123"
+            placeholder="请输入密码"
             :prefix-icon="Lock"
             show-password
             @keyup.enter="onLogin"
@@ -25,7 +25,7 @@
           登录
         </el-button>
       </el-form>
-      <p class="hint">默认账号 admin / admin123（首次部署后请改密码）</p>
+      <p class="hint">首次部署请联系管理员获取初始密码并及时修改</p>
     </el-card>
   </div>
 </template>

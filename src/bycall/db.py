@@ -90,16 +90,41 @@ def _seed_defaults() -> None:
                 )
             )
         # 默认 admin 账号
+        # dev 用固定 admin123（开发便利）；prod 用随机密码（避免默认凭证被利用）。
         if session.exec(User.select_by_name("admin")).first() is None:
-            session.add(
-                User(
-                    name="admin",
-                    display_name="管理员",
-                    role="admin",  # 特殊内置角色，policy 引擎识别
-                    password_hash=hash_password("admin123"),
-                    is_active=True,
+            import secrets as _secrets
+
+            from bycall.config import get_settings as _get_settings
+
+            if _get_settings().env == "prod":
+                # 生产：生成随机密码并打印一次（不写死、不在登录页提示）。
+                random_pw = _secrets.token_urlsafe(16)
+                session.add(
+                    User(
+                        name="admin",
+                        display_name="管理员",
+                        role="admin",
+                        password_hash=hash_password(random_pw),
+                        is_active=True,
+                    )
                 )
-            )
+                session.commit()
+                logger.warning(
+                    "生产环境已创建默认 admin 账号，随机密码（仅显示一次，请立即修改）：\n"
+                    "    %s\n"
+                    "请登录后立即在控制台修改密码。",
+                    random_pw,
+                )
+            else:
+                session.add(
+                    User(
+                        name="admin",
+                        display_name="管理员",
+                        role="admin",  # 特殊内置角色，policy 引擎识别
+                        password_hash=hash_password("admin123"),
+                        is_active=True,
+                    )
+                )
         # 默认系统提示词（v1，统一一套）
         if session.get(SystemPrompt, 1) is None:
             session.add(
