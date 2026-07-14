@@ -862,6 +862,9 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
 
     用 ``delete_by_filter``（zvec 原生按标量 filter 批删）按 ``doc_id`` 字段删除。
     用 KB 的 collection_name + dimension 建 store。
+
+    ⚠️ 入库时 doc_id 写成 ``f"doc_{doc_id}"``（见 ``_ingest_document`` / ``ingest.ingest_text``），
+    删除过滤值必须带上 ``doc_`` 前缀，否则永远删不掉旧 chunk（幽灵 chunk 可被检索）。
     """
     from bycall.config import get_settings
     from bycall.vector_store.factory import create_vector_store
@@ -871,7 +874,7 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
     store.open(kb.collection_name)
     try:
         store.delete_by_filter(
-            [FilterCondition(field="doc_id", op="match", value=str(doc_id))]
+            [FilterCondition(field="doc_id", op="match", value=f"doc_{doc_id}")]
         )
         store.flush()
     finally:

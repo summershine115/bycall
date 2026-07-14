@@ -147,6 +147,7 @@ class ZvecStore(VectorStore):
         """查 collection 信息（维度 / 文档数），不存在返回空 dict。
 
         不改变当前打开的 collection——用临时 open + close 查信息。
+        注意 zvec 的 ``schema`` / ``stats`` 是属性不是方法（Pybind11 def_property）。
         """
         path = self._collection_path(name)
         if not path.exists() or not any(path.iterdir()):
@@ -154,8 +155,8 @@ class ZvecStore(VectorStore):
         try:
             option = CollectionOption(read_only=1)
             col = zvec.open(path=str(path), option=option)
-            schema = col.schema()
-            stats = col.stats()
+            schema = col.schema
+            stats = col.stats
             info = {
                 "name": name,
                 "dimension": getattr(schema.vectors[0], "dimension", 0) if schema.vectors else 0,

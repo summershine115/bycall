@@ -201,15 +201,48 @@ def test_list_sources(client: TestClient):
 # ============ 级联删除 ============
 
 
+def _get_zvec_collection_doc_count(kb_id: int) -> int:
+    """直接读 zvec collection 的 stats.doc_count。
+
+    用于验证删除/reindex 后向量库里的文档数变化。注意 zvec 关闭重开后 FTS
+    索引可能未即时生效，所以这里用 stats（物理计数）而非 FTS 搜索。
+    """
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+    from sqlmodel import Session, create_engine
+
+    from bycall.governance.models import KnowledgeBase
+
+    settings = get_settings()
+    engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
+    with Session(engine) as s:
+        kb = s.get(KnowledgeBase, kb_id)
+        assert kb is not None, f"KB {kb_id} 不存在"
+
+    info = create_vector_store(settings.vector_store, dimension=kb.dimension).describe(
+        kb.collection_name
+    )
+    return info.get("doc_count", 0)
+
+
 def test_delete_document_cleans_chunks(client: TestClient):
-    """删文档 → 204 + zvec chunks 清理 + DB 记录删除。"""
+    """删文档 → 204 + zvec 文档数减少 + DB 记录删除。
+
+    强化原测试：不只验证 DB 记录删除，还查 zvec stats 确认 chunk 真的删掉了。
+    （之前 doc_id 过滤前缀不匹配导致 delete_by_filter 命中 0 条，旧 chunk 残留。）
+    """
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     create_resp = _create_doc(
-        client, kb_id, title="待删", source="public", content="要被删除的内容。"
+        client, kb_id, title="待删", source="public", content="要被删除的唯一内容。"
     )
     doc_id = create_resp.json()["document_id"]
-    assert create_resp.json()["chunk_count"] > 0
+    chunk_count = create_resp.json()["chunk_count"]
+    assert chunk_count > 0
+
+    # 删除前：zvec 里有 chunk
+    before = _get_zvec_collection_doc_count(kb_id)
+    assert before >= chunk_count, f"删除前 zvec 应有 ≥{chunk_count} 个文档，实际 {before}"
 
     # 删除
     del_resp = client.delete(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}")
@@ -222,6 +255,12 @@ def test_delete_document_cleans_chunks(client: TestClient):
     # 列表里也没了
     listing = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents").json()
     assert all(d["id"] != doc_id for d in listing)
+
+    # 关键：zvec 文档数应减少 chunk_count（之前 delete_by_filter 命中 0 条，不减）
+    after = _get_zvec_collection_doc_count(kb_id)
+    assert after == before - chunk_count, (
+        f"删除后 zvec 文档数应减少 {chunk_count}（before={before} after={after}）"
+    )
 
 
 def test_delete_nonexistent_returns_404(client: TestClient):
@@ -251,6 +290,39 @@ def test_reindex_document(client: TestClient):
     assert reindex_resp.status_code == 200
     assert reindex_resp.json()["ok"] is True
     assert reindex_resp.json()["chunk_count"] == original_count
+
+
+def test_reindex_does_not_leave_ghost_chunks(client: TestClient):
+    """reindex 后 chunk 数不翻倍：upsert 覆盖写 + 删旧 filter 正确。
+
+    回归幽灵 chunk bug：之前 delete 用 ``str(doc_id)`` 而入库用 ``doc_{doc_id}``，
+    reindex 的"删旧"步骤删不掉旧 chunk；加上 ingest 用 ``insert``（遇到 ALREADY_EXISTS
+    静默失败但报 success=True），导致旧内容残留、新内容没写入。
+    现在改用 upsert + 正确 filter，reindex 后文档数应不变（覆盖写）。
+    """
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    create_resp = _create_doc(
+        client, kb_id, title="重入库", source="public", content="唯一的重入库内容。"
+    )
+    doc_id = create_resp.json()["document_id"]
+    original_count = create_resp.json()["chunk_count"]
+    before = _get_zvec_collection_doc_count(kb_id)
+    assert before == original_count, f"初始文档数应为 {original_count}，实际 {before}"
+
+    # reindex
+    reindex_resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex"
+    )
+    assert reindex_resp.status_code == 200
+    assert reindex_resp.json()["ok"] is True
+
+    # 关键：reindex 后 chunk 数应等于 original_count（upsert 覆盖，不是 insert 追加）
+    assert reindex_resp.json()["chunk_count"] == original_count
+    after = _get_zvec_collection_doc_count(kb_id)
+    assert after == original_count, (
+        f"reindex 后文档数应不变（={original_count}），实际 {after}（幽灵 chunk 累积）"
+    )
 
 
 # ============ 更新 ============

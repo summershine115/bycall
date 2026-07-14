@@ -55,6 +55,12 @@ class IngestPipeline:
 
         embedding 用 embed_model.embed 批量（分批每批 ≤64 条避免超时）。
         每个 chunk 的 source/doc_id 写进 fields，id 用 ``{doc_id}_{idx}``。
+
+        用 ``upsert``（按 id 覆盖写）而非 ``insert``：chunk id 是确定性的
+        （``{doc_id}_{idx}``），同一文档 reindex 时 id 不变，upsert 天然幂等——
+        即使旧 chunk 未被 delete_by_filter 清掉（zvec 软删除后 insert 会报
+        ALREADY_EXISTS），upsert 也能覆盖。
+
         返回 IngestResult(success, chunk_count, errors)。
         """
         errors: list[str] = []
@@ -97,14 +103,21 @@ class IngestPipeline:
                 )
             )
 
-        # 4. 写库 + flush。
+        # 4. 写库 + flush。用 upsert 覆盖写（幂等，兼容 reindex + 软删除残留）。
+        #    逐条检查 InsertResult.ok——单条失败不阻断整体，但收集失败的 chunk id。
         try:
-            self._store.insert(chunks)
+            results = self._store.upsert(chunks)
             self._store.flush()
         except Exception as e:
             logger.error("入库写库失败: %s", e)
             errors.append(f"写库失败: {e}")
             return IngestResult(success=False, chunk_count=len(chunks), errors=errors)
+
+        failed_ids = [r.id for r in results if not r.ok]
+        if failed_ids:
+            msg = f"{len(failed_ids)} 条 chunk 写入失败: {failed_ids[:10]}"
+            logger.warning(msg)
+            errors.append(msg)
 
         return IngestResult(success=True, chunk_count=len(chunks), errors=errors)
 
