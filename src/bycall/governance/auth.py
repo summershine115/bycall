@@ -19,13 +19,18 @@ from bycall.governance.security import verify_password
 
 @dataclass
 class SessionData:
-    """会话内容。签进 cookie。"""
+    """会话内容。签进 cookie。
+
+    ``password_version`` 存登录时密码哈希的前 8 字符——改密后旧 cookie 的
+    password_version 与 DB 不匹配，守卫据此使旧会话失效（不需等 cookie 过期）。
+    """
 
     user_id: int
     user_name: str
     role: str
     is_admin: bool
     act_as_user_id: int | None = None  # dev: admin 扮演的普通用户 id（None=不扮演）
+    password_version: str = ""  # password_hash[:8]，改密后旧会话立即失效
 
 
 def create_session_serializer() -> URLSafeTimedSerializer:
@@ -55,6 +60,7 @@ def load_session_cookie(token: str, max_age: int = 86400) -> SessionData | None:
             act_as_user_id=int(payload["act_as_user_id"])
             if payload.get("act_as_user_id") is not None
             else None,
+            password_version=str(payload.get("password_version", "")),
         )
     except (KeyError, TypeError, ValueError):
         # payload 结构异常（非预期字段/类型），视作无效会话。
@@ -103,6 +109,7 @@ def set_act_as(session: Session, admin: User, target_user_id: int) -> SessionDat
         role=admin.role,
         is_admin=True,
         act_as_user_id=target.id,
+        password_version=admin.password_hash[:8] if admin.password_hash else "",
     )
 
 
@@ -127,4 +134,5 @@ def _session_data_for_user(user: User) -> SessionData:
         role=user.role,
         is_admin=user.role == "admin",
         act_as_user_id=None,
+        password_version=user.password_hash[:8] if user.password_hash else "",
     )

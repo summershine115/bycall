@@ -122,9 +122,14 @@ def _register_session_routes(app: FastAPI) -> None:
 
 
 def _require_admin_session(request: Request) -> None:
-    """admin 守卫：校验签名 cookie 且当前会话是 admin。
+    """admin 守卫：每请求重查 DB，校验签名 cookie + 当前用户仍是 active admin。
 
-    替换了 admin/api.py 里的占位 ``_require_admin``——现在控制面受真实会话保护。
+    不能只信 cookie 里缓存的 is_admin——admin 被禁用 / 改密 / 降级为 member 后，
+    旧 cookie 必须立即失效。每次请求重查 DB 校验：
+    1. 用户存在且 is_active=True
+    2. role=='admin'
+    3. password_version（password_hash[:8]）与 cookie 一致——改密后旧会话失效
+    任一不满足 → 401（让前端重新登录）。
     """
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -132,6 +137,24 @@ def _require_admin_session(request: Request) -> None:
     data = load_session_cookie(token)
     if data is None or not data.is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
+
+    # 每请求重查 DB：确认当前仍是 active admin 且密码未改。
+    from bycall.governance.models import User
+
+    session_gen = get_session()
+    db = next(session_gen)
+    try:
+        user = db.get(User, data.user_id)
+    finally:
+        db.close()
+
+    if (
+        user is None
+        or not user.is_active
+        or user.role != "admin"
+        or (user.password_hash[:8] if user.password_hash else "") != data.password_version
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已失效，请重新登录")
 
 
 def _mount_spa(app: FastAPI) -> None:
