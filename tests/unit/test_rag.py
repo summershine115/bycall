@@ -249,15 +249,17 @@ class TestBuildRagMessages:
             retrieved=retrieved,
         )
         assert len(messages) == 3
-        # 第 1 条：控制面 system prompt
+        # 第 1 条：控制面 system prompt + 防御声明（提示词注入缓解）
         assert messages[0].role == "system"
-        assert messages[0].content == "你是数字员工。"
-        # 第 2 条：知识库上下文（system，含来源与文本）
+        assert messages[0].content.startswith("你是数字员工。")
+        assert "以本段规则为准" in messages[0].content  # 防御声明
+        # 第 2 条：知识库上下文（system，含来源与文本 + 不可信边界标注）
         assert messages[1].role == "system"
         assert "[sales]" in messages[1].content
         assert "知识片段 A" in messages[1].content
         assert "[hr]" in messages[1].content
         assert "知识片段 B" in messages[1].content
+        assert "参考资料" in messages[1].content  # 边界标注
         # 第 3 条：用户问题
         assert messages[2].role == "user"
         assert messages[2].content == "报价流程是什么？"
