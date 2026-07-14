@@ -107,9 +107,7 @@ def run_agent(
         summary = conv.summary if conv is not None else ""
         history = load_message_history(session, conversation_id)
         user_memories = load_user_memory(session, user.id) if user.id is not None else []
-        rag_context = "\n\n".join(
-            f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved
-        )
+        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
         messages = build_conversation_messages(
             system_prompt=cap.system_prompt,
             rag_context=rag_context,
@@ -213,13 +211,11 @@ def _audit(
     session.commit()
 
 
-def _retrieve_across_kbs(
-    session: Session, question: str, knowledge_scope_tags: list[str]
-) -> list:
+def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: list[str]) -> list:
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
-    查全部 KB → 每个 KB 的 collection 用自己的维度 open → 按 source ACL 预过滤
-    检索 → 合并结果按 score 排序取 topk。
+    查全部 KB → 每个 KB 用各自绑定的 embedding 模型 embed query → 该 KB 的 collection
+    内做向量+FTS 混合检索（source ACL 预过滤）→ 跨 KB 用 RRF 融合取 topk。
 
     知识域为空（无权限）→ 不检索（默认隔离）。
     admin（tags=['*']）→ 搜全部 KB（source 不预过滤）。
@@ -235,9 +231,10 @@ def _retrieve_across_kbs(
     if not kbs:
         return []
 
-    kb_specs = [(kb.id, kb.collection_name, kb.dimension) for kb in kbs]
+    kb_specs = [(kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id) for kb in kbs]
 
     return retrieve_multi_kb(
+        session=session,
         config=get_settings().vector_store,
         kb_specs=kb_specs,
         question=question,

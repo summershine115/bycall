@@ -247,3 +247,86 @@ def test_capability_falls_back_to_empty_prompt_when_no_active(db_session):
     user = _make_user(db_session, "heidi", role="member")
     cap = compute_capability_set(db_session, user)
     assert cap.system_prompt == ""
+
+
+# ============ 角色 prompt 绑定（system_prompt_version） ============
+
+
+def test_role_bound_prompt_overrides_global(db_session):
+    """角色绑定了 system_prompt_version → 用该版本，而非全局激活版。"""
+    # 新增 v2（不激活），让 sales 角色绑定它。
+    v2_content = "你是销售专员，用专业话术回答客户。"
+    db_session.add(
+        SystemPrompt(version=2, label="sales_prompt", content=v2_content, is_active=False)
+    )
+    db_session.flush()
+
+    db_session.add(
+        Role(
+            name="sales",
+            config=RoleConfig(
+                allowed_tools=["kb_search"],
+                knowledge_scope_tags=["sales"],
+                level=2,
+                system_prompt_version=2,
+            ),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "ivan", role="sales")
+
+    cap = compute_capability_set(db_session, user)
+    assert cap.system_prompt == v2_content
+    # 不等于全局激活版（v1）
+    assert cap.system_prompt != get_active_system_prompt(db_session)
+
+
+def test_role_without_bound_prompt_uses_global(db_session):
+    """角色未绑定 system_prompt_version（None）→ 用全局激活版（后向兼容）。"""
+    db_session.add(
+        Role(
+            name="hr",
+            config=RoleConfig(
+                allowed_tools=["kb_search"],
+                knowledge_scope_tags=["hr"],
+                level=1,
+                system_prompt_version=None,
+            ),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "judy", role="hr")
+
+    cap = compute_capability_set(db_session, user)
+    assert cap.system_prompt == get_active_system_prompt(db_session)
+
+
+def test_role_bound_prompt_deleted_falls_back_to_global(db_session):
+    """角色绑定的版本已被删除 → fallback 全局激活版（不阻断，记 warning）。"""
+    # sales 绑定 v99（根本不存在），应 fallback 到全局激活的 v1。
+    db_session.add(
+        Role(
+            name="sales",
+            config=RoleConfig(
+                allowed_tools=["kb_search"],
+                knowledge_scope_tags=["sales"],
+                level=2,
+                system_prompt_version=99,
+            ),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "karl", role="sales")
+
+    cap = compute_capability_set(db_session, user)
+    assert cap.system_prompt == get_active_system_prompt(db_session)
+
+
+def test_admin_ignores_role_bound_prompt(db_session):
+    """admin 内置角色始终用全局激活版（不走 Role 绑定）。"""
+    # admin 无 Role 表记录，不受 system_prompt_version 影响。
+    admin = db_session.exec(User.select_by_name("admin")).first()
+    assert admin is not None
+
+    cap = compute_capability_set(db_session, admin)
+    assert cap.system_prompt == get_active_system_prompt(db_session)
