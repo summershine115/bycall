@@ -24,9 +24,19 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
 
     每条消息独立 session（IM 是长连接事件流，不复用请求级 session）。
     LLM/vector_store 每次新建（M1.5 简化；M5 可换池化）。
+
+    ⚠️ 群聊消息在权限模型完成前一律拒绝：当前 session_key 仅 ``{channel}:{user_id}``，
+    不含 chat_id——群聊会让有权限用户的机密答案发到整个群、私聊与群聊串历史。
+    拒绝发生在身份映射之前（不泄露是否绑定、是否有权）。
     """
     text = msg.text.strip()
     if not text:
+        return
+
+    # 0. 群聊守卫：chat_id 非空 = 群聊消息，在群聊权限模型完成前直接拒绝。
+    if msg.chat_id:
+        await sender.send_text("群聊暂未开放，请在私聊中使用数字员工。")
+        logger.info("IM 群聊消息被拒: channel=%s chat_id=%s", msg.channel, msg.chat_id)
         return
 
     # 1. 身份映射：IM user_id → Bycall User（邀请制，未绑定则拒绝）。
