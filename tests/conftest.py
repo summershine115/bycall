@@ -16,6 +16,10 @@ def _reset_settings():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+    # 同步重置限流器单例（避免跨用例共享内存计数器）。
+    from bycall.governance.ratelimit import reset_limiter
+
+    reset_limiter()
 
 
 @pytest.fixture

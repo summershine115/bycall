@@ -96,12 +96,25 @@ def _register_session_routes(app: FastAPI) -> None:
 
     @app.post("/api/login", tags=["session"])
     def login_route(
+        request: Request,
         response: Response,
         name: str = Form(...),
         password: str = Form(...),
         session: Session = Depends(get_session),
     ) -> dict[str, bool]:
-        """admin 登录。成功设置签名 cookie（httpOnly）。"""
+        """admin 登录。成功设置签名 cookie（httpOnly）。
+
+        带限流：按 IP+账号 维度，5 次/15 分钟，超限 → 429（防暴力破解）。
+        """
+        from bycall.governance.ratelimit import RATE_LIMIT_LOGIN, get_limiter
+
+        # 限流：IP + 账号维度。
+        client_ip = request.client.host if request.client else "unknown"
+        rate_key = f"login:{client_ip}:{name}"
+        limiter = get_limiter()
+        if not limiter.allow(rate_key, **RATE_LIMIT_LOGIN):
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "登录尝试过于频繁，请稍后再试")
+
         data = login(session, name, password)
         if data is None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号或密码错误")

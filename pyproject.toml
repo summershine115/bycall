@@ -30,6 +30,8 @@ dependencies = [
     "passlib[bcrypt]>=1.7",  # admin 密码哈希
     # M1.5 IM 接入（企微智能机器人长连接）
     "wecom-aibot-python-sdk>=1.0.2",
+    # 限流（登录/聊天防暴力破解 + 费用 DoS）
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

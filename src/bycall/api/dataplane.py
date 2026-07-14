@@ -104,6 +104,13 @@ def chat(
         )
     _, chat_model = resolved
 
+    # 限流：按 user_id 维度，30 次/分钟（防费用 DoS）。
+    from bycall.governance.ratelimit import RATE_LIMIT_CHAT, get_limiter
+
+    rate_key = f"chat:{user.id}"
+    if not get_limiter().allow(rate_key, **RATE_LIMIT_CHAT):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
+
     # 多轮会话：按 (user_id, channel) 查/建会话，传入 run_agent 启用历史。
     conv = get_or_create_conversation(session, user.id, "api")
 
