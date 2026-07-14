@@ -71,6 +71,9 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # 内置保留角色名：不允许在 Role 表里建记录（policy 引擎对 "admin" 直接放全权）。
 _RESERVED_ROLE_NAMES = frozenset({"admin"})
 
+# 上传文件大小上限：10MB。超过 → 413，避免超大文件全量读入内存导致 OOM。
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
 
 def _require_admin() -> None:
     """占位 admin 守卫。集成阶段替换为基于 session 的真实认证。
@@ -1329,7 +1332,15 @@ async def upload_document(
             detail=f"不支持的文件类型: .{ext}（仅支持 txt/md/markdown）",
         )
 
-    raw = await file.read()
+    # 文件大小限制：最多读 MAX_UPLOAD_BYTES + 1 字节，超限 → 413。
+    # 避免全量 file.read() 把超大文件读进内存导致 OOM。
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"文件过大（上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
+        )
+
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError as exc:

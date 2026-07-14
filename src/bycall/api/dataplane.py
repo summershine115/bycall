@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dataplane"])
 
+# 问题长度上限：防止超长输入拖慢检索 + LLM 费用 DoS。
+# 4000 字符 ≈ 2000-4000 token（中英混合），足够任何正常提问。
+MAX_QUESTION_LEN = 4000
+
 
 class ChatRequest(BaseModel):
     """数据面对话请求。question 来自用户输入。"""
@@ -82,6 +86,13 @@ def chat(
     """
     from bycall.agent.session_store import get_or_create_conversation
     from bycall.llm.resolver import get_chat_model
+
+    # 输入长度限制：超长问题 → 400（防费用/性能 DoS）。
+    if len(body.question) > MAX_QUESTION_LEN:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"问题过长（{len(body.question)} 字符，上限 {MAX_QUESTION_LEN}）",
+        )
 
     user = _current_user(request, session)
     # 从 DB 激活的 chat Model 实体构造 ChatModel；无激活模型则报错提示

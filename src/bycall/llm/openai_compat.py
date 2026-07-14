@@ -45,6 +45,7 @@ class OpenAIChatModel(ChatModel):
             model=self._model,
             messages=payload,
             temperature=temperature,
+            max_tokens=2048,  # 费用控制：限制输出长度，防止恶意/异常输入导致天价账单
         )
         # 取首条 assistant 回复；空 choices 视为空回复而非报错（鲁棒性）。
         return resp.choices[0].message.content or "" if resp.choices else ""
