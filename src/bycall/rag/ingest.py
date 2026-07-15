@@ -113,13 +113,20 @@ class IngestPipeline:
             errors.append(f"写库失败: {e}")
             return IngestResult(success=False, chunk_count=len(chunks), errors=errors)
 
+        if len(results) != len(chunks):
+            errors.append(f"写入结果数量不匹配: chunks={len(chunks)} results={len(results)}")
         failed_ids = [r.id for r in results if not r.ok]
         if failed_ids:
             msg = f"{len(failed_ids)} 条 chunk 写入失败: {failed_ids[:10]}"
             logger.warning(msg)
             errors.append(msg)
 
-        return IngestResult(success=True, chunk_count=len(chunks), errors=errors)
+        successful_count = sum(1 for r in results if r.ok)
+        return IngestResult(
+            success=not errors,
+            chunk_count=successful_count,
+            errors=errors,
+        )
 
     def ingest_text(self, text: str, source: str, doc_id: str = "") -> IngestResult:
         """便利方法：单段文本入库（自动生成 doc_id）。"""

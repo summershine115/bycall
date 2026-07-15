@@ -19,6 +19,7 @@ from bycall.governance.auth import (
     load_session_cookie,
     login,
     make_session_cookie,
+    password_version,
     set_act_as,
 )
 from bycall.governance.security import hash_password
@@ -178,6 +179,7 @@ def test_set_act_as_prod_raises(db_env, monkeypatch):
     from bycall.db import session_scope
 
     monkeypatch.setenv("BYCALL_ENV", "prod")
+    monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
     get_settings.cache_clear()
     assert get_settings().env == "prod"
 
@@ -236,3 +238,11 @@ def test_clear_act_as_returns_admin_session(db_env):
     assert result.act_as_user_id is None
     assert result.user_id == admin_id
     assert result.is_admin is True
+
+
+def test_password_version_uses_full_hash_not_bcrypt_prefix():
+    """bcrypt 固定前缀相同也必须得到不同会话版本。"""
+    first = "$2b$12$a" + "x" * 52
+    second = "$2b$12$a" + "y" * 52
+    assert first[:8] == second[:8]
+    assert password_version(first) != password_version(second)

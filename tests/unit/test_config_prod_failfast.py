@@ -38,11 +38,22 @@ def test_prod_valid_secret_accepted(monkeypatch):
     """prod + 合法 session_secret（≥32 且非默认）→ 正常构造。"""
     monkeypatch.setenv("BYCALL_ENV", "prod")
     monkeypatch.setenv("BYCALL_SESSION_SECRET", "a" * 48)  # 48 字符随机级密钥（测试用重复字符）
+    monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "b" * 48)
     get_settings.cache_clear()
 
     settings = get_settings()
     assert settings.env == "prod"
     assert settings.session_secret == "a" * 48
+
+
+def test_prod_missing_encryption_key_rejected(monkeypatch):
+    monkeypatch.setenv("BYCALL_ENV", "prod")
+    monkeypatch.setenv("BYCALL_SESSION_SECRET", "a" * 48)
+    monkeypatch.delenv("BYCALL_SECRET_ENCRYPTION_KEY", raising=False)
+    get_settings.cache_clear()
+
+    with pytest.raises(ValidationError, match="SECRET_ENCRYPTION_KEY"):
+        get_settings()
 
 
 def test_dev_default_secret_allowed(monkeypatch):

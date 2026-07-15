@@ -55,6 +55,7 @@ from bycall.governance.models import (
     AuditLog,
     Conversation,
     Document,
+    IMBinding,
     KnowledgeBase,
     Message,
     Model,
@@ -95,6 +96,8 @@ def _audit_admin(
     不单独 commit——由调用方在业务 commit 时一起提交（与数据面审计一致）。
     """
     import json
+
+    request.state.admin_audited = True
 
     from bycall.governance.auth import load_session_cookie
 
@@ -168,17 +171,30 @@ def _check_im_bindings_unique(
     """
     if not bindings:
         return
-    users = session.exec(select(User)).all()
-    for other in users:
-        if exclude_user_id is not None and other.id == exclude_user_id:
-            continue
-        other_bindings = other.im_bindings or {}
-        for channel, im_id in bindings.items():
-            if other_bindings.get(channel) == im_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"IM 账号 {channel}:{im_id} 已绑定用户 {other.name}",
-                )
+    for channel, im_id in bindings.items():
+        existing = session.exec(
+            select(IMBinding).where(
+                IMBinding.channel == channel,
+                IMBinding.im_user_id == im_id,
+            )
+        ).first()
+        if existing is not None and existing.user_id != exclude_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"IM 账号 {channel}:{im_id} 已绑定其他用户",
+            )
+
+
+def _replace_im_bindings(session: Session, user_id: int, bindings: dict[str, str]) -> None:
+    """同步规范化绑定表；唯一约束负责兜住并发写入竞争。"""
+    existing = session.exec(select(IMBinding).where(IMBinding.user_id == user_id)).all()
+    for binding in existing:
+        session.delete(binding)
+    session.flush()
+    for channel, im_id in bindings.items():
+        if not channel.strip() or not im_id.strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "IM channel 和 user_id 不能为空")
+        session.add(IMBinding(user_id=user_id, channel=channel.strip(), im_user_id=im_id.strip()))
 
 
 # ============ 用户 ============
@@ -205,6 +221,8 @@ def create_user(
     )
     session.add(user)
     try:
+        session.flush()
+        _replace_im_bindings(session, user.id, user.im_bindings)
         session.commit()
     except IntegrityError as exc:
         # name 唯一约束冲突（其他唯一键目前没有）。
@@ -288,9 +306,17 @@ def update_user(
     if payload.im_bindings is not None:
         _check_im_bindings_unique(session, payload.im_bindings, exclude_user_id=user.id)
         user.im_bindings = payload.im_bindings
+        _replace_im_bindings(session, user.id, payload.im_bindings)
 
     session.add(user)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="IM 绑定已被其他用户占用",
+        ) from exc
     session.refresh(user)
     _audit_admin(
         session,
@@ -543,19 +569,21 @@ def list_settings(
     _admin: None = Depends(_require_admin),
 ) -> list[dict]:
     """返回所有运行时设置。secret 字段脱敏（绝不回显明文）。"""
+    from bycall.governance.secrets import decrypt_secret
     from bycall.governance.settings_store import mask_secret
 
     rows = session.exec(SystemSetting.select_all()).all()
     out = []
     for r in rows:
-        value = mask_secret(r.value) if r.is_secret else r.value
+        plain_value = decrypt_secret(r.value) if r.is_secret else r.value
+        value = mask_secret(plain_value) if r.is_secret else plain_value
         out.append(
             {
                 "key": r.key,
                 "value": value,
                 "is_secret": r.is_secret,
                 "description": r.description,
-                "is_set": bool(r.value),
+                "is_set": bool(plain_value),
             }
         )
     return out
@@ -709,7 +737,10 @@ def clear_act_as_route(
 
 def _model_to_out(model: Model) -> ModelOut:
     """把 Model ORM 行转 ModelOut：api_key 脱敏 + has_api_key 标记。绝不回显明文。"""
+    from bycall.governance.secrets import decrypt_secret
     from bycall.governance.settings_store import mask_secret
+
+    api_key = decrypt_secret(model.api_key)
 
     return ModelOut(
         id=model.id,  # type: ignore[arg-type]
@@ -719,8 +750,8 @@ def _model_to_out(model: Model) -> ModelOut:
         source=model.source,
         provider=model.provider,
         base_url=model.base_url,
-        api_key_masked=mask_secret(model.api_key),
-        has_api_key=bool(model.api_key),
+        api_key_masked=mask_secret(api_key),
+        has_api_key=bool(api_key),
         embed_dimension=model.embed_dimension,
         is_active=model.is_active,
         description=model.description,
@@ -801,6 +832,8 @@ def create_model(
     if payload.is_active:
         _deactivate_same_type(session, payload.model_type)
 
+    from bycall.governance.secrets import encrypt_secret
+
     model = Model(
         name=payload.name,
         display_name=payload.display_name,
@@ -808,7 +841,7 @@ def create_model(
         source=payload.source,
         provider=payload.provider,
         base_url=payload.base_url,
-        api_key=payload.api_key,
+        api_key=encrypt_secret(payload.api_key),
         embed_dimension=payload.embed_dimension,
         description=payload.description,
         is_active=payload.is_active,
@@ -855,7 +888,9 @@ def update_model(
         model.description = payload.description
     if payload.api_key is not None and "***" not in payload.api_key:
         # 含 *** 的脱敏占位符（前端回填）→ 用户没真改密钥，跳过；否则更新。
-        model.api_key = payload.api_key
+        from bycall.governance.secrets import encrypt_secret
+
+        model.api_key = encrypt_secret(payload.api_key)
 
     session.add(model)
     session.commit()
@@ -941,6 +976,8 @@ def test_model(
     """
     import time
 
+    from bycall.governance.secrets import decrypt_secret
+
     model = _get_model_or_404(session, model_id)
 
     try:
@@ -952,7 +989,7 @@ def test_model(
     try:
         client = OpenAI(
             base_url=model.base_url or None,
-            api_key=model.api_key or "EMPTY",
+            api_key=decrypt_secret(model.api_key) or "EMPTY",
             timeout=15,
         )
         if model.model_type == "embedding":
@@ -1074,9 +1111,17 @@ def _ingest_document(
     try:
         _delete_chunks_for_doc(kb, doc_id)
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("删旧 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+        error = f"删除旧索引失败: {exc}"
+        doc.status = "failed"
+        doc.error_message = error
+        session.add(doc)
+        session.commit()
+        return DocumentIngestResult(
+            ok=False,
+            document_id=doc_id,
+            chunk_count=doc.chunk_count,
+            errors=[error],
+        )
 
     # 4. 入库（用 KB 的 collection + 维度）。
     errors: list[str] = []
@@ -1262,14 +1307,15 @@ def delete_knowledge_base(
 
     kb = _get_kb_or_404(session, kb_id)
 
-    # 删 zvec collection
+    # 向量数据删除失败时必须保留 DB 元数据，避免返回成功却遗留不可治理的数据。
     try:
         store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
         store.destroy(kb.collection_name)
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("删除 collection 失败 (kb=%s): %s", kb_id, exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"删除知识库向量数据失败，元数据已保留: {exc}",
+        ) from exc
 
     # 删全部文档
     docs = session.exec(Document.select_by_kb(kb_id)).all()
@@ -1377,10 +1423,14 @@ def update_document(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
 
     need_reingest = False
+    old_source = doc.source
     if payload.title is not None:
         doc.title = payload.title
     if payload.source is not None and payload.source != doc.source:
-        doc.source = payload.source.strip()
+        new_source = payload.source.strip()
+        if not new_source:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="知识域标签不能为空")
+        doc.source = new_source
         need_reingest = True
 
     session.add(doc)
@@ -1388,7 +1438,16 @@ def update_document(
     session.refresh(doc)
 
     if need_reingest:
-        _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+        result = _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+        if not result.ok:
+            # 旧 chunk 若仍存在，其 ACL 仍是 old_source；DB 必须回滚到相同授权状态。
+            doc.source = old_source
+            session.add(doc)
+            session.commit()
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="文档 ACL 更新失败，source 已回滚: " + "; ".join(result.errors),
+            )
 
     session.refresh(doc)
     return doc
@@ -1414,9 +1473,10 @@ def delete_document(
     try:
         _delete_chunks_for_doc(kb, doc_id)
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("删除文档 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"删除文档向量数据失败，元数据已保留: {exc}",
+        ) from exc
 
     # 审计（在删记录前记录）
     _audit_admin(session, request, "delete_document", f"Doc({doc.title}, kb={kb.name})", before=doc)

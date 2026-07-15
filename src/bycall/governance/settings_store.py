@@ -77,6 +77,10 @@ def set_setting_value(
     description: str = "",
 ) -> None:
     """写一个设置值（upsert）。调用方负责 commit。"""
+    if is_secret:
+        from bycall.governance.secrets import encrypt_secret
+
+        value = encrypt_secret(value)
     existing = session.exec(SystemSetting.select_by_key(key)).first()
     if existing is None:
         session.add(
@@ -109,7 +113,13 @@ def _read_db(key: str, session: Session | None) -> str | None:
             return None
     try:
         row = session.exec(SystemSetting.select_by_key(key)).first()
-        return row.value if row is not None else None
+        if row is None:
+            return None
+        if row.is_secret:
+            from bycall.governance.secrets import decrypt_secret
+
+            return decrypt_secret(row.value)
+        return row.value
     except Exception:
         logger.debug("settings_store: 读取 %s 失败，降级到环境变量", key)
         return None

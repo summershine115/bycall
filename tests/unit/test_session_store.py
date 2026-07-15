@@ -142,7 +142,7 @@ class TestBuildConversationMessages:
         assert len(messages) == 3
         assert messages[0].role == "system"
         assert "你是数字员工" in messages[0].content
-        assert messages[1].role == "system"
+        assert messages[1].role == "user"
         assert "报价流程" in messages[1].content
         assert messages[2].role == "user"
         assert messages[2].content == "报价流程是什么？"
@@ -171,8 +171,8 @@ class TestBuildConversationMessages:
         assert messages[3].role == "user"
         assert messages[3].content == "新问题"
 
-    def test_summary_injected_into_system(self):
-        """summary 作为 system message 注入（不是 user message）。"""
+    def test_summary_keeps_user_privilege(self):
+        """LLM 生成的 summary 作为 user 上下文，不能提升为 system。"""
         messages = build_conversation_messages(
             system_prompt="你是数字员工。",
             rag_context="",
@@ -180,9 +180,11 @@ class TestBuildConversationMessages:
             history=[],
             summary="之前讨论了报价流程",
         )
-        assert len(messages) == 2  # system + user
-        assert "对话摘要" in messages[0].content
-        assert "之前讨论了报价流程" in messages[0].content
+        assert len(messages) == 3  # system + summary(user) + current user
+        assert messages[1].role == "user"
+        assert "conversation_summary" in messages[1].content
+        assert "之前讨论了报价流程" in messages[1].content
+        assert "之前讨论了报价流程" not in messages[0].content
 
     def test_user_memory_injected_into_system(self):
         """用户记忆作为 system message 注入。"""

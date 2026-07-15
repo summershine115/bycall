@@ -13,10 +13,13 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
@@ -43,9 +46,11 @@ def create_app() -> FastAPI:
         title="Bycall",
         description="企业级数字员工 Agent（控制面 + 数据面）",
         version=__version__,
-        docs_url="/docs",
+        docs_url=None if settings.env == "prod" else "/docs",
         redoc_url=None,
     )
+
+    _register_security_middleware(app)
 
     # ---- 健康检查（无认证）----
     app.include_router(health.router, tags=["health"])
@@ -106,13 +111,19 @@ def _register_session_routes(app: FastAPI) -> None:
 
         带限流：按 IP+账号 维度，5 次/15 分钟，超限 → 429（防暴力破解）。
         """
-        from bycall.governance.ratelimit import RATE_LIMIT_LOGIN, get_limiter
+        from bycall.governance.ratelimit import (
+            RATE_LIMIT_LOGIN,
+            RATE_LIMIT_LOGIN_IP,
+            get_limiter,
+        )
 
         # 限流：IP + 账号维度。
         client_ip = request.client.host if request.client else "unknown"
         rate_key = f"login:{client_ip}:{name}"
         limiter = get_limiter()
-        if not limiter.allow(rate_key, **RATE_LIMIT_LOGIN):
+        if not limiter.allow(f"login-ip:{client_ip}", **RATE_LIMIT_LOGIN_IP) or not limiter.allow(
+            rate_key, **RATE_LIMIT_LOGIN
+        ):
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "登录尝试过于频繁，请稍后再试")
 
         data = login(session, name, password)
@@ -134,14 +145,14 @@ def _register_session_routes(app: FastAPI) -> None:
         return {"ok": True}
 
 
-def _require_admin_session(request: Request) -> None:
+def _require_admin_session(request: Request, session: Session = Depends(get_session)) -> None:
     """admin 守卫：每请求重查 DB，校验签名 cookie + 当前用户仍是 active admin。
 
     不能只信 cookie 里缓存的 is_admin——admin 被禁用 / 改密 / 降级为 member 后，
     旧 cookie 必须立即失效。每次请求重查 DB 校验：
     1. 用户存在且 is_active=True
     2. role=='admin'
-    3. password_version（password_hash[:8]）与 cookie 一致——改密后旧会话失效
+    3. password_version（完整密码哈希的 SHA-256 指纹）与 cookie 一致——改密后旧会话失效
     任一不满足 → 401（让前端重新登录）。
     """
     token = request.cookies.get(SESSION_COOKIE)
@@ -152,22 +163,90 @@ def _require_admin_session(request: Request) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
 
     # 每请求重查 DB：确认当前仍是 active admin 且密码未改。
+    from bycall.governance.auth import password_version
     from bycall.governance.models import User
 
-    session_gen = get_session()
-    db = next(session_gen)
-    try:
-        user = db.get(User, data.user_id)
-    finally:
-        db.close()
+    user = session.get(User, data.user_id)
 
     if (
         user is None
         or not user.is_active
         or user.role != "admin"
-        or (user.password_hash[:8] if user.password_hash else "") != data.password_version
+        or not hmac.compare_digest(password_version(user.password_hash), data.password_version)
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "会话已失效，请重新登录")
+
+
+def _register_security_middleware(app: FastAPI) -> None:
+    """统一补 CSRF、请求体上限、安全响应头和控制面兜底审计。"""
+
+    unsafe_methods = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    @app.middleware("http")
+    async def security_middleware(request: Request, call_next):
+        # 浏览器携带会话 cookie 发起写请求时，拒绝跨站 Origin / Fetch Metadata。
+        if request.method in unsafe_methods:
+            origin = request.headers.get("origin")
+            host = request.headers.get("host", "")
+            if origin and urlsplit(origin).netloc.lower() != host.lower():
+                return JSONResponse(status_code=403, content={"detail": "跨站请求已拒绝"})
+            if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+                return JSONResponse(status_code=403, content={"detail": "跨站请求已拒绝"})
+
+        # Content-Length 可在解析 JSON/multipart 前提前拒绝；流式/无长度上传仍由端点限额兜底。
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > 12 * 1024 * 1024:
+                    return JSONResponse(status_code=413, content={"detail": "请求体过大"})
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Content-Length 无效"})
+
+        response = await call_next(request)
+
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        if get_settings().env == "prod":
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+
+        if request.path_params is not None:
+            _audit_admin_request_if_needed(request, response.status_code, unsafe_methods)
+        return response
+
+
+def _audit_admin_request_if_needed(
+    request: Request, status_code: int, unsafe_methods: frozenset[str]
+) -> None:
+    """为尚未写详细审计的控制面写操作补一条通用审计，失败尝试也记录。"""
+    if not request.url.path.startswith("/api/admin/") or request.method not in unsafe_methods:
+        return
+    if status_code < 400 and getattr(request.state, "admin_audited", False):
+        return
+
+    try:
+        from bycall.db import session_scope
+        from bycall.governance.models import AuditLog
+
+        data = load_session_cookie(request.cookies.get(SESSION_COOKIE, ""))
+        with session_scope() as session:
+            session.add(
+                AuditLog(
+                    user_id=data.user_id if data else None,
+                    user_name=data.user_name if data else "unknown",
+                    channel="admin",
+                    action=f"{request.method.lower()}_admin_api",
+                    question=request.url.path,
+                    decision="allowed" if status_code < 400 else "error",
+                    detail=f"status={status_code}",
+                )
+            )
+    except Exception:
+        logger.exception("控制面兜底审计写入失败")
 
 
 def _mount_spa(app: FastAPI) -> None:
@@ -177,7 +256,8 @@ def _mount_spa(app: FastAPI) -> None:
     SPA history 模式：所有非 API/非静态路径 fallback 到 index.html。
     """
     dist = _frontend_dist_dir()
-    if not dist.exists():
+    index_path = dist / "index.html"
+    if not index_path.is_file():
         logger.info("frontend/dist 不存在，跳过 SPA 托管（开发模式用 Vite dev server :5173）")
         return
 
@@ -187,7 +267,7 @@ def _mount_spa(app: FastAPI) -> None:
         app.mount("/assets", StaticFiles(directory=str(assets)), name="spa-assets")
 
     # SPA fallback：非 API 路径返回 index.html（history 模式路由）
-    index_html = (dist / "index.html").read_text(encoding="utf-8")
+    index_html = index_path.read_text(encoding="utf-8")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):

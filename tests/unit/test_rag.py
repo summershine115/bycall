@@ -236,7 +236,7 @@ class TestRetrieveContext:
 
 class TestBuildRagMessages:
     def test_message_structure(self):
-        """消息结构：system prompt + context system + user question。"""
+        """消息结构：system prompt + context user + user question。"""
         from bycall.vector_store.models import SearchResult
 
         retrieved = [
@@ -253,8 +253,8 @@ class TestBuildRagMessages:
         assert messages[0].role == "system"
         assert messages[0].content.startswith("你是数字员工。")
         assert "以本段规则为准" in messages[0].content  # 防御声明
-        # 第 2 条：知识库上下文（system，含来源与文本 + 不可信边界标注）
-        assert messages[1].role == "system"
+        # 第 2 条：知识库上下文（user，含来源与文本 + 不可信边界标注）
+        assert messages[1].role == "user"
         assert "[sales]" in messages[1].content
         assert "知识片段 A" in messages[1].content
         assert "[hr]" in messages[1].content
@@ -265,8 +265,8 @@ class TestBuildRagMessages:
         assert messages[2].content == "报价流程是什么？"
 
     def test_empty_retrieved_still_has_context_msg(self):
-        """无检索结果时第二条 system 仍存在（内容空）。"""
+        """无检索结果时第二条 user context 仍存在（内容空）。"""
         messages = build_rag_messages(system_prompt="你是数字员工。", question="问题", retrieved=[])
         assert len(messages) == 3
-        assert messages[1].role == "system"
-        assert "知识库" in messages[1].content
+        assert messages[1].role == "user"
+        assert "knowledge_context" in messages[1].content

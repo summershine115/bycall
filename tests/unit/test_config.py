@@ -20,6 +20,7 @@ def test_env_override_top_level(monkeypatch):
     """顶层字段 ``BYCALL_ENV`` / ``BYCALL_DEBUG`` 可被环境变量覆盖。"""
     monkeypatch.setenv("BYCALL_ENV", "prod")
     monkeypatch.setenv("BYCALL_DEBUG", "false")
+    monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
     get_settings.cache_clear()
     config = get_settings()
     assert config.env == "prod"

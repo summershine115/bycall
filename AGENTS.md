@@ -25,7 +25,7 @@ make install          # 装依赖（editable + dev）到当前环境
 make dev              # 起 API（热重载 :8000，PYTHONPATH=src）
 make ci-local         # 本地模拟 CI：lint + unit test（无需外部服务）
 make test-unit        # 仅单元测试
-make test-integration # 集成测试（需先 make docker-up）
+make test-integration # integration 目录测试（当前使用临时依赖/mock，无需 docker）
 make lint             # ruff check
 make fmt              # ruff format + check --fix
 make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
@@ -64,7 +64,7 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 
 ## 5. 关键现状（避免误判）
 
-- **当前为无状态单轮对话**：`run_agent` 每次只拼 `[system, RAG, user]` 三条消息，不保留历史。会话/消息持久化层规划在 **M3 记忆层**（product-design.md §2.4 / §6）。M3 之前身份隔离与配置共享已成立，但"上下文不共享"尚无意义——因为没有上下文。
+- **当前已启用基础多轮会话**：`run_agent` 按 `conversation_id` 加载历史、摘要和管理员维护的用户记忆。企微群聊在群成员共同授权模型落地前一律拒绝，避免私聊/群聊串历史和群内越权披露。
 - **模型全局激活唯一**：`Model.is_active` 同类型只能一个；`get_chat_model(session)` 全系统共用。per-session 模型（`Conversation.model_id` 可空外键）是 M3 预留。
 - **IM 渠道单例 + 热重载**：`gateway/manager.py` 的 `ChannelManager` 单例；admin 改凭证后 `reload()` 只重启那一个渠道，HTTP 服务不动。
 

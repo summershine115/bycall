@@ -70,8 +70,79 @@ def init_db() -> None:
     from bycall.governance import models as _gov_models  # noqa: F401
 
     SQLModel.metadata.create_all(get_engine())
+    _ensure_schema_compatibility()
     _seed_defaults()
+    _migrate_im_bindings()
+    _migrate_plaintext_secrets()
     logger.info("DB initialized with default data")
+
+
+def _ensure_schema_compatibility() -> None:
+    """为尚未接入 Alembic 的早期部署补最小、幂等的新增列迁移。"""
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    if "auditlog" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("auditlog")}
+    missing = {"before", "after"} - columns
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for column in sorted(missing):
+            connection.execute(
+                text(f"ALTER TABLE auditlog ADD COLUMN \"{column}\" VARCHAR NOT NULL DEFAULT ''")
+            )
+
+
+def _migrate_plaintext_secrets() -> None:
+    """把升级前的明文模型/系统密钥原地迁移为 enc:v1 密文。"""
+    from sqlmodel import select
+
+    from bycall.governance.models import Model, SystemSetting
+    from bycall.governance.secrets import encrypt_secret, is_encrypted_secret
+
+    with session_scope() as session:
+        for model in session.exec(select(Model)).all():
+            if model.api_key and not is_encrypted_secret(model.api_key):
+                model.api_key = encrypt_secret(model.api_key)
+                session.add(model)
+        for setting in session.exec(select(SystemSetting).where(SystemSetting.is_secret)).all():
+            if setting.value and not is_encrypted_secret(setting.value):
+                setting.value = encrypt_secret(setting.value)
+                session.add(setting)
+
+
+def _migrate_im_bindings() -> None:
+    """把历史 User.im_bindings JSON 幂等迁移到带唯一约束的规范化表。"""
+    from sqlmodel import select
+
+    from bycall.governance.models import IMBinding, User
+
+    with session_scope() as session:
+        existing = {
+            (row.channel, row.im_user_id): row.user_id
+            for row in session.exec(select(IMBinding)).all()
+        }
+        for user in session.exec(select(User)).all():
+            for channel, im_user_id in (user.im_bindings or {}).items():
+                key = (channel, im_user_id)
+                owner = existing.get(key)
+                if owner is not None and owner != user.id:
+                    raise RuntimeError(
+                        f"检测到重复 IM 绑定 {channel}:{im_user_id}，"
+                        f"同时属于 user_id={owner} 和 user_id={user.id}"
+                    )
+                if owner is None:
+                    session.add(
+                        IMBinding(
+                            user_id=user.id,
+                            channel=channel,
+                            im_user_id=im_user_id,
+                        )
+                    )
+                    existing[key] = user.id
 
 
 def _seed_defaults() -> None:
@@ -89,32 +160,27 @@ def _seed_defaults() -> None:
                     config=RoleConfig(allowed_tools=[], knowledge_scope_tags=[], level=0),
                 )
             )
-        # 默认 admin 账号
-        # dev 用固定 admin123（开发便利）；prod 用随机密码（避免默认凭证被利用）。
+        # 默认 admin 账号：dev 保留固定密码；prod 必须由部署方显式提供一次性引导密码。
         if session.exec(User.select_by_name("admin")).first() is None:
-            import secrets as _secrets
-
             from bycall.config import get_settings as _get_settings
 
             if _get_settings().env == "prod":
-                # 生产：生成随机密码并打印一次（不写死、不在登录页提示）。
-                random_pw = _secrets.token_urlsafe(16)
+                bootstrap_password = _get_settings().bootstrap_admin_password.get_secret_value()
+                if len(bootstrap_password) < 12:
+                    raise RuntimeError(
+                        "首次生产启动必须设置至少 12 字符的 "
+                        "BYCALL_BOOTSTRAP_ADMIN_PASSWORD；创建 admin 后可移除。"
+                    )
                 session.add(
                     User(
                         name="admin",
                         display_name="管理员",
                         role="admin",
-                        password_hash=hash_password(random_pw),
+                        password_hash=hash_password(bootstrap_password),
                         is_active=True,
                     )
                 )
-                session.commit()
-                logger.warning(
-                    "生产环境已创建默认 admin 账号，随机密码（仅显示一次，请立即修改）：\n"
-                    "    %s\n"
-                    "请登录后立即在控制台修改密码。",
-                    random_pw,
-                )
+                logger.warning("生产环境已创建 bootstrap admin；请立即修改密码并移除引导密码。")
             else:
                 session.add(
                     User(

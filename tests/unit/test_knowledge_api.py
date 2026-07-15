@@ -402,6 +402,48 @@ def test_upload_non_utf8_returns_400(client: TestClient):
     assert resp.status_code == 400
 
 
+def test_delete_document_keeps_metadata_when_vector_delete_fails(client: TestClient, monkeypatch):
+    """向量删除失败必须 fail-closed，不能制造仍可检索的幽灵 chunk。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    created = _create_doc(client, kb_id, title="保留元数据", source="public", content="内容")
+    doc_id = created.json()["document_id"]
+
+    import bycall.admin.api as admin_api
+
+    monkeypatch.setattr(
+        admin_api,
+        "_delete_chunks_for_doc",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("zvec unavailable")),
+    )
+    response = client.delete(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}")
+    assert response.status_code == 503
+    assert client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").status_code == 200
+
+
+def test_source_change_rolls_back_when_vector_delete_fails(client: TestClient, monkeypatch):
+    """ACL 更新失败时 DB source 必须回滚到旧授权状态。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    created = _create_doc(client, kb_id, title="ACL 文档", source="public", content="内容")
+    doc_id = created.json()["document_id"]
+
+    import bycall.admin.api as admin_api
+
+    monkeypatch.setattr(
+        admin_api,
+        "_delete_chunks_for_doc",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("zvec unavailable")),
+    )
+    response = client.put(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}",
+        json={"source": "hr"},
+    )
+    assert response.status_code == 503
+    detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
+    assert detail["source"] == "public"
+
+
 # ============ 文档详情 404 ============
 
 

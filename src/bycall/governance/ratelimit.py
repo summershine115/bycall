@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 限流维度预设。
 RATE_LIMIT_LOGIN = {"limit": 5, "window": 900}  # 5 次 / 15 分钟
+RATE_LIMIT_LOGIN_IP = {"limit": 50, "window": 900}  # 单 IP 总量，防随机用户名绕过
 RATE_LIMIT_CHAT = {"limit": 30, "window": 60}  # 30 次 / 分钟
 
 
@@ -37,7 +38,7 @@ class RateLimiter:
     def __init__(self) -> None:
         self._redis = None
         self._mode: Literal["redis", "memory"] = "memory"
-        self._memory: dict[str, tuple[int, float]] = {}  # key → (count, window_start)
+        self._memory: dict[str, tuple[int, float, int]] = {}  # key → (count, start, window)
         self._lock = Lock()
         self._try_connect_redis()
 
@@ -53,7 +54,7 @@ class RateLimiter:
             client.ping()
             self._redis = client
             self._mode = "redis"
-            logger.info("限流器已连接 Redis: %s", url)
+            logger.info("限流器已连接 Redis")
         except Exception as e:
             self._redis = None
             self._mode = "memory"
@@ -86,21 +87,25 @@ class RateLimiter:
         """进程内固定窗口：dict + 过期清理。"""
         now = time.monotonic()
         with self._lock:
-            count, window_start = self._memory.get(key, (0, now))
+            count, window_start, _stored_window = self._memory.get(key, (0, now, window))
             # 窗口过期 → 重置。
             if now - window_start >= window:
                 count = 0
                 window_start = now
             count += 1
-            self._memory[key] = (count, window_start)
+            self._memory[key] = (count, window_start, window)
             # 顺便清理过期 key（惰性，避免开线程）。
             if len(self._memory) > 10000:
-                self._purge_expired(now, window)
+                self._purge_expired(now)
+            if len(self._memory) > 10000:
+                # 攻击者可用随机用户名制造高基数 key；过期清理后仍超限则淘汰最旧项。
+                oldest = min(self._memory, key=lambda item: self._memory[item][1])
+                del self._memory[oldest]
             return count <= limit
 
-    def _purge_expired(self, now: float, max_window: int) -> None:
+    def _purge_expired(self, now: float) -> None:
         """清理过期计数（防止内存无限增长）。"""
-        expired = [k for k, (_, ts) in self._memory.items() if now - ts >= max_window]
+        expired = [k for k, (_, ts, window) in self._memory.items() if now - ts >= window]
         for k in expired:
             del self._memory[k]
 
@@ -126,6 +131,7 @@ def reset_limiter() -> None:
 __all__ = [
     "RATE_LIMIT_CHAT",
     "RATE_LIMIT_LOGIN",
+    "RATE_LIMIT_LOGIN_IP",
     "RateLimiter",
     "get_limiter",
     "reset_limiter",

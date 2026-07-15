@@ -92,13 +92,13 @@ def test_patch_user_password_and_fields(client: TestClient):
     """PATCH 改密码 + display_name，再 GET 确认更新（且仍不泄漏 hash）。"""
     create = client.post(
         "/api/admin/users",
-        json={"name": "carol", "display_name": "旧名", "password": "pw1"},
+        json={"name": "carol", "display_name": "旧名", "password": "password1"},
     ).json()
     uid = create["id"]
 
     resp = client.patch(
         f"/api/admin/users/{uid}",
-        json={"display_name": "新名", "password": "pw2"},
+        json={"display_name": "新名", "password": "password2"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["display_name"] == "新名"

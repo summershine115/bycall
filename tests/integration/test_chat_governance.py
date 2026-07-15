@@ -151,6 +151,7 @@ class TestACLPrefiltering:
         """prod 环境下 act-as 被拒（PermissionError → 403）。"""
         _login(client)
         monkeypatch.setenv("BYCALL_ENV", "prod")
+        monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
         get_settings.cache_clear()
         resp = client.post("/api/admin/act-as", params={"target_user_id": 999})
         assert resp.status_code in (403, 404)

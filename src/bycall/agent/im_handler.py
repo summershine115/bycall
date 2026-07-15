@@ -18,6 +18,8 @@ from bycall.gateway.identity import resolve_user_by_im
 
 logger = logging.getLogger(__name__)
 
+MAX_IM_QUESTION_LEN = 4000
+
 
 async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
     """IM 消息 → 治理链路 → 回复。
@@ -31,6 +33,10 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
     """
     text = msg.text.strip()
     if not text:
+        return
+
+    if len(text) > MAX_IM_QUESTION_LEN:
+        await sender.send_text(f"问题过长，请控制在 {MAX_IM_QUESTION_LEN} 字符以内。")
         return
 
     # 0. 群聊守卫：chat_id 非空 = 群聊消息，在群聊权限模型完成前直接拒绝。
@@ -50,6 +56,16 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         logger.info(
             "IM 消息被拒（未绑定用户）: channel=%s im_user_id=%s", msg.channel, msg.im_user_id
         )
+        return
+
+    # REST 与 IM 共用 user_id 额度，避免换渠道绕过费用限流。
+    from bycall.governance.ratelimit import RATE_LIMIT_CHAT, get_limiter
+
+    allowed = await asyncio.to_thread(
+        lambda: get_limiter().allow(f"chat:{user_id}", **RATE_LIMIT_CHAT)
+    )
+    if not allowed:
+        await sender.send_text("请求过于频繁，请稍后再试。")
         return
 
     # 2. 先回一句"正在处理"（流式，提升体验），然后异步跑治理链路。

@@ -28,6 +28,7 @@ dependencies = [
     "python-multipart>=0.0.9",  # form 解析
     "itsdangerous>=2.2",  # session cookie 签名
     "passlib[bcrypt]>=1.7",  # admin 密码哈希
+    "cryptography>=42.0",  # DB 中模型/IM 密钥的 Fernet 加密
     # M1.5 IM 接入（企微智能机器人长连接）
     "wecom-aibot-python-sdk>=1.0.2",
     # 限流（登录/聊天防暴力破解 + 费用 DoS）

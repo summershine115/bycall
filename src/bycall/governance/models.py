@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from pydantic import BaseModel
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from bycall.governance.json_types import DictJSONType, PydanticJSONType
@@ -121,6 +121,17 @@ class User(SQLModel, table=True):
         return select(User).where(User.is_active == True)  # noqa: E712
 
 
+class IMBinding(SQLModel, table=True):
+    """规范化 IM 身份映射；数据库唯一约束是身份可信根的最终防线。"""
+
+    __table_args__ = (UniqueConstraint("channel", "im_user_id", name="uq_im_identity"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    channel: str = Field(index=True)
+    im_user_id: str = Field(index=True)
+
+
 # ============ SystemPrompt ============
 
 
@@ -203,7 +214,7 @@ class Model(SQLModel, table=True):
     source: str = "remote"  # "remote" / "local"（local 预留 Ollama）
     provider: str = "generic"  # provider 标识（见 llm/providers.py）
     base_url: str = ""  # API 地址（remote 必填）
-    api_key: str = ""  # 密钥（明文落库，API 脱敏返回；后续可加密）
+    api_key: str = ""  # 密钥（enc:v1 Fernet 密文；API 脱敏返回）
     # 仅 embedding 类型用：向量维度（如 1536/1024/768）。
     # 用于向量库 collection schema + 切换模型时的维度不匹配检测。
     embed_dimension: int = 0

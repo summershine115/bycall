@@ -120,6 +120,10 @@ class AppConfig(BaseSettings):
     log_level: str = "INFO"
     # session cookie 签名密钥，生产必改（环境变量 BYCALL_SESSION_SECRET）。
     session_secret: str = "bycall-dev-change-me-in-prod"
+    # DB 敏感字段加密根密钥。dev 为空时回退 session_secret；prod 必须独立配置。
+    secret_encryption_key: SecretStr = SecretStr("")
+    # 仅首次生产启动且 DB 尚无 admin 时使用；创建成功后可从环境移除。
+    bootstrap_admin_password: SecretStr = SecretStr("")
 
     # default_factory 让子模型每次按当前环境变量构造，而非 import 时固化。
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -147,6 +151,14 @@ class AppConfig(BaseSettings):
                 f"生产环境 session_secret 长度不足（当前 {len(self.session_secret)}，"
                 "至少 32 字符）。请用 secrets.token_urlsafe(48) 生成。"
             )
+        encryption_key = self.secret_encryption_key.get_secret_value()
+        if len(encryption_key) < 32:
+            raise ValueError(
+                "生产环境必须设置至少 32 字符的 BYCALL_SECRET_ENCRYPTION_KEY，"
+                "且应与 BYCALL_SESSION_SECRET 不同。"
+            )
+        if encryption_key == self.session_secret:
+            raise ValueError("生产环境的密钥加密根密钥不能与 session_secret 相同。")
         return self
 
 

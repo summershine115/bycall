@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -21,7 +22,7 @@ from bycall.governance.security import verify_password
 class SessionData:
     """会话内容。签进 cookie。
 
-    ``password_version`` 存登录时密码哈希的前 8 字符——改密后旧 cookie 的
+    ``password_version`` 存登录时密码哈希的 SHA-256 指纹——改密后旧 cookie 的
     password_version 与 DB 不匹配，守卫据此使旧会话失效（不需等 cookie 过期）。
     """
 
@@ -30,7 +31,14 @@ class SessionData:
     role: str
     is_admin: bool
     act_as_user_id: int | None = None  # dev: admin 扮演的普通用户 id（None=不扮演）
-    password_version: str = ""  # password_hash[:8]，改密后旧会话立即失效
+    password_version: str = ""  # password_hash 指纹，改密后旧会话立即失效
+
+
+def password_version(password_hash: str) -> str:
+    """返回不可逆、稳定的会话版本；避免截断 bcrypt 固定前缀造成碰撞。"""
+    if not password_hash:
+        return ""
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:24]
 
 
 def create_session_serializer() -> URLSafeTimedSerializer:
@@ -109,7 +117,7 @@ def set_act_as(session: Session, admin: User, target_user_id: int) -> SessionDat
         role=admin.role,
         is_admin=True,
         act_as_user_id=target.id,
-        password_version=admin.password_hash[:8] if admin.password_hash else "",
+        password_version=password_version(admin.password_hash),
     )
 
 
@@ -134,5 +142,5 @@ def _session_data_for_user(user: User) -> SessionData:
         role=user.role,
         is_admin=user.role == "admin",
         act_as_user_id=None,
-        password_version=user.password_hash[:8] if user.password_hash else "",
+        password_version=password_version(user.password_hash),
     )

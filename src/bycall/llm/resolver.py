@@ -40,9 +40,11 @@ def resolve_chat_model(
     目前所有 provider 都走 OpenAI 兼容协议，直接构造 ``OpenAIChatModel``。
     未来出现非兼容 provider 时，按 ``model.provider`` 分支扩展。
     """
+    from bycall.governance.secrets import decrypt_secret
+
     return OpenAIChatModel(
         base_url=model.base_url,
-        api_key=model.api_key,
+        api_key=decrypt_secret(model.api_key),
         model=model.name,
         timeout=timeout,
     )
@@ -59,9 +61,11 @@ def resolve_embed_model(
     目前所有 provider 都走 OpenAI 兼容协议，直接构造 ``OpenAIEmbedModel``。
     ``embed_dimension`` 用于向量库 schema 对齐与切换模型时的维度不匹配检测。
     """
+    from bycall.governance.secrets import decrypt_secret
+
     return OpenAIEmbedModel(
         base_url=model.base_url,
-        api_key=model.api_key,
+        api_key=decrypt_secret(model.api_key),
         model=model.name,
         dimension=model.embed_dimension,
         timeout=timeout,

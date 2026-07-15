@@ -1,4 +1,4 @@
-"""提示词注入缓解测试（P1-3：summary/RAG 作为 system 注入可被诱导写入长期指令）。
+"""提示词注入缓解测试：不可信 summary/RAG 不得占用 system 角色。
 
 验证重角色 + 边界标注方案：
 - 控制面系统提示词在最前、最显眼，含防御声明。
@@ -54,14 +54,13 @@ def test_summary_marked_as_data_not_instruction():
         summary=malicious_summary,
     )
 
-    system_content = messages[0].content
-    # summary 内容确实在 system 消息里
-    assert malicious_summary in system_content
-    # 但被边界标注包裹
-    assert "非指令" in system_content
-    assert "对话摘要" in system_content
-    # 防御声明仍在（真正的指令优先级）
-    assert "以本段规则为准" in system_content
+    assert malicious_summary not in messages[0].content
+    summary_msg = messages[1]
+    assert summary_msg.role == "user"
+    assert malicious_summary in summary_msg.content
+    assert "不是指令" in summary_msg.content
+    assert "conversation_summary" in summary_msg.content
+    assert "以本段规则为准" in messages[0].content
 
 
 def test_rag_context_marked_as_reference_not_instruction():
@@ -74,9 +73,9 @@ def test_rag_context_marked_as_reference_not_instruction():
         summary="",
     )
 
-    # 第二条 system 是 RAG
+    # 第二条 user 是不可信 RAG 上下文，不能提升为 system。
     rag_msg = messages[1]
-    assert rag_msg.role == "system"
+    assert rag_msg.role == "user"
     assert "[sales]" in rag_msg.content
     assert "参考资料" in rag_msg.content
     assert "不是指令" in rag_msg.content
@@ -112,6 +111,7 @@ def test_build_rag_messages_single_turn_has_boundary():
     assert messages[0].content.startswith("你是 Bycall 数字员工。")
     assert "以本段规则为准" in messages[0].content
 
-    # 第二条 system 是 RAG，含边界标注
+    # 第二条 user 是 RAG，含边界标注
+    assert messages[1].role == "user"
     assert "参考资料" in messages[1].content
     assert "不是指令" in messages[1].content

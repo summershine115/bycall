@@ -108,3 +108,45 @@ def test_group_empty_text_not_processed():
 
     # 空文本先于群聊守卫拦截，不回复任何消息
     sender.send_text.assert_not_awaited()
+
+
+def test_overlong_private_message_rejected_before_identity_lookup():
+    msg = InboundMessage(
+        channel="wecom",
+        im_user_id="user_a",
+        text="x" * 4001,
+        raw_frame={},
+        chat_id="",
+    )
+    sender = _make_sender()
+    with patch("bycall.agent.im_handler.resolve_user_by_im") as mock_resolve:
+        asyncio.run(handle_im_message(msg, sender))
+    sender.send_text.assert_awaited_once()
+    assert "过长" in sender.send_text.call_args.args[0]
+    mock_resolve.assert_not_called()
+
+
+def test_private_message_rate_limit_shared_with_rest():
+    msg = InboundMessage(
+        channel="wecom",
+        im_user_id="user_a",
+        text="正常问题",
+        raw_frame={},
+        chat_id="",
+    )
+    sender = _make_sender()
+    user = MagicMock(id=123)
+    limiter = MagicMock()
+    limiter.allow.return_value = False
+
+    with (
+        patch("bycall.agent.im_handler.session_scope") as mock_scope,
+        patch("bycall.agent.im_handler.resolve_user_by_im", return_value=user),
+        patch("bycall.governance.ratelimit.get_limiter", return_value=limiter),
+    ):
+        mock_scope.return_value.__enter__ = MagicMock(return_value=MagicMock())
+        mock_scope.return_value.__exit__ = MagicMock(return_value=None)
+        asyncio.run(handle_im_message(msg, sender))
+
+    limiter.allow.assert_called_once_with("chat:123", limit=30, window=60)
+    assert "频繁" in sender.send_text.call_args.args[0]

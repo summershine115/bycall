@@ -33,7 +33,10 @@ class UserCreate(BaseModel):
     display_name: str = Field(default="", description="显示名")
     role: str = Field(default="member", description="角色名（Role.name 或内置 admin）")
     password: str | None = Field(
-        default=None, description="明文密码，不传则留空（IM 用户无需密码）"
+        default=None,
+        min_length=8,
+        max_length=128,
+        description="明文密码，不传则留空（IM 用户无需密码）",
     )
     is_active: bool = Field(default=True, description="是否启用")
     im_bindings: dict[str, str] | None = Field(
@@ -51,7 +54,9 @@ class UserUpdate(BaseModel):
     display_name: str | None = None
     role: str | None = None
     is_active: bool | None = None
-    password: str | None = Field(default=None, description="传非空值即改密码")
+    password: str | None = Field(
+        default=None, min_length=8, max_length=128, description="传非空值即改密码"
+    )
     im_bindings: dict[str, str] | None = Field(
         default=None, description="更新 IM 绑定，校验全局唯一"
     )
@@ -154,6 +159,8 @@ class AuditOut(BaseModel):
     decision: str
     detail: str
     answer: str
+    before: str = ""
+    after: str = ""
     created_at: datetime
 
 
@@ -196,7 +203,7 @@ class ModelCreate(BaseModel):
     source: str = Field(default="remote", description='"remote" / "local"')
     provider: str = Field(default="generic", description="provider 标识（见 llm/providers.py）")
     base_url: str = Field(default="", description="API 地址（remote 必填）")
-    api_key: str = Field(default="", description="密钥，明文落库、API 脱敏返回")
+    api_key: str = Field(default="", description="密钥，加密落库、API 脱敏返回")
     embed_dimension: int = Field(default=0, description="向量维度（仅 embedding 用）")
     description: str = Field(default="", description="备注说明")
     is_active: bool = Field(default=False, description="创建时是否直接激活同类型其他置 False")

@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from bycall.governance.models import User
+from bycall.governance.models import IMBinding, User
 
 
 def resolve_user_by_im(session: Session, channel: str, im_user_id: str) -> User | None:
@@ -35,6 +35,17 @@ def resolve_user_by_im(session: Session, channel: str, im_user_id: str) -> User 
         # 空身份（frame 缺 from.userid）无法映射，直接拒绝，避免误匹配到空绑定。
         return None
 
+    binding = session.exec(
+        select(IMBinding).where(
+            IMBinding.channel == channel,
+            IMBinding.im_user_id == im_user_id,
+        )
+    ).first()
+    if binding is not None:
+        user = session.get(User, binding.user_id)
+        return user if user is not None and user.is_active else None
+
+    # 兼容尚未执行启动迁移或测试直接插入的旧 JSON 记录。
     candidates = session.exec(User.select_by_im(channel, im_user_id)).all()
     for user in candidates:
         bindings = user.im_bindings or {}
