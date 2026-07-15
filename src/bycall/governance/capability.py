@@ -13,11 +13,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from sqlmodel import Session, select
 
 from bycall.governance.models import Role, SystemPrompt, User
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,13 +57,26 @@ def get_active_system_prompt(session: Session) -> str:
     return active.content if active is not None else ""
 
 
+def get_system_prompt_by_version(session: Session, version: int) -> str | None:
+    """按版本号查 SystemPrompt 内容。不存在返回 None。
+
+    供角色 prompt 绑定用（``RoleConfig.system_prompt_version``）：
+    角色绑定某版本但该版本已被删除时，调用方据 None fallback 全局激活版本。
+    """
+    stmt = select(SystemPrompt).where(SystemPrompt.version == version)
+    row = session.exec(stmt).first()
+    return row.content if row is not None else None
+
+
 def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     """从用户记录计算当前能力集。
 
     - 普通用户：取 ``user.role`` 对应的 ``Role.config``（allowed_tools /
-      knowledge_scope_tags / level），叠加当前激活的 SystemPrompt.content。
+      knowledge_scope_tags / level / system_prompt_version）。若角色绑定了
+      ``system_prompt_version``，用该版本提示词；否则用全局激活版本（后向兼容）。
     - admin 内置角色：``is_admin=True``，``allowed_tools=['*']``、
-      ``knowledge_scope_tags=['*']``、``level=999``（最高）。system_prompt 仍取激活版本。
+      ``knowledge_scope_tags=['*']``、``level=999``（最高）。system_prompt 取全局激活版本
+      （admin 是运维角色，不按业务角色定制提示词）。
     - ``is_active=False`` 用户：抛 ``PermissionError("用户已被禁用")``。
     - role 对应的 Role 记录不存在（除 admin 外）：抛 ``PermissionError("角色未定义: {role}")``。
 
@@ -70,8 +86,8 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     if not user.is_active:
         raise PermissionError("用户已被禁用")
 
-    # 2. 激活系统提示词对所有角色一视同仁（M1 全公司统一一套）。
-    system_prompt = get_active_system_prompt(session)
+    # 2. 全局激活的系统提示词（admin 用；普通用户若未绑定角色版本也作 fallback）。
+    global_prompt = get_active_system_prompt(session)
 
     # 3. admin 内置角色：不走 Role 表，直接给通配 + 最高职级。
     if user.role == "admin":
@@ -82,7 +98,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
             allowed_tools=["*"],
             knowledge_scope_tags=["*"],
             level=999,
-            system_prompt=system_prompt,
+            system_prompt=global_prompt,
             is_admin=True,
         )
 
@@ -92,6 +108,20 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
         raise PermissionError(f"角色未定义: {user.role}")
 
     config = role_record.config
+    # 角色绑定了 prompt 版本 → 用该版本；绑定但版本被删 → fallback 全局激活。
+    system_prompt = global_prompt
+    if config.system_prompt_version is not None:
+        role_prompt = get_system_prompt_by_version(session, config.system_prompt_version)
+        if role_prompt is not None:
+            system_prompt = role_prompt
+        else:
+            # 绑定的版本已被删除：记 warning（不阻断），fallback 全局激活。
+            logger.warning(
+                "角色 %s 绑定的提示词版本 %s 不存在，fallback 全局激活版本",
+                user.role,
+                config.system_prompt_version,
+            )
+
     return CapabilitySet(
         user_id=user.id,
         user_name=user.name,

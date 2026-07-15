@@ -29,6 +29,14 @@
       <el-table-column label="职级" width="80">
         <template #default="{ row }">{{ row.config.level }}</template>
       </el-table-column>
+      <el-table-column label="提示词" min-width="140">
+        <template #default="{ row }">
+          <el-tag v-if="row.config.system_prompt_version" size="small" type="warning">
+            v{{ row.config.system_prompt_version }}
+          </el-tag>
+          <span v-else class="muted">全局</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
@@ -63,6 +71,17 @@
           <el-input-number v-model="form.level" :min="0" :max="999" />
           <div class="muted small">ABAC 用：机密资源按 resource_level ≤ user_level 放行</div>
         </el-form-item>
+        <el-form-item label="系统提示词">
+          <el-select v-model="form.system_prompt_version" placeholder="使用全局激活版本" clearable style="width: 100%">
+            <el-option
+              v-for="p in prompts"
+              :key="p.version"
+              :label="`v${p.version}${p.label ? ' - ' + p.label : ''}${p.is_active ? '（激活中）' : ''}`"
+              :value="p.version"
+            />
+          </el-select>
+          <div class="muted small">绑定后该角色用此版本提示词；留空 = 用全局激活版本</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -79,25 +98,35 @@ import { admin } from '../api'
 
 const loading = ref(true)
 const roles = ref([])
+const prompts = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
-const form = reactive({ name: '', description: '', level: 0 })
+const form = reactive({ name: '', description: '', level: 0, system_prompt_version: null })
 const toolsInput = ref('')
 const scopeInput = ref('')
 
 async function load() {
   loading.value = true
   try {
-    roles.value = await admin.listRoles()
+    ;[roles.value] = await Promise.all([admin.listRoles(), loadPrompts()])
   } finally {
     loading.value = false
   }
 }
 
+async function loadPrompts() {
+  // 加载提示词版本列表供下拉选择（忽略失败，失败时下拉为空仍可用）
+  try {
+    prompts.value = await admin.listPrompts()
+  } catch {
+    prompts.value = []
+  }
+}
+
 function openCreate() {
   editing.value = false
-  Object.assign(form, { name: '', description: '', level: 0 })
+  Object.assign(form, { name: '', description: '', level: 0, system_prompt_version: null })
   toolsInput.value = ''
   scopeInput.value = ''
   dialogVisible.value = true
@@ -109,6 +138,7 @@ function openEdit(row) {
     name: row.name,
     description: row.description,
     level: row.config.level,
+    system_prompt_version: row.config.system_prompt_version ?? null,
   })
   form._original_name = row.name
   toolsInput.value = (row.config.allowed_tools || []).join(', ')
@@ -129,6 +159,7 @@ async function onSave() {
     allowed_tools: parseList(toolsInput.value),
     knowledge_scope_tags: parseList(scopeInput.value),
     level: form.level,
+    system_prompt_version: form.system_prompt_version || null,
   }
   try {
     if (editing.value) {

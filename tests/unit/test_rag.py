@@ -17,8 +17,9 @@ from bycall.config import get_settings
 from bycall.llm.base import EmbedModel
 from bycall.rag.chunking import Document, documents_to_pre_chunks, split_document
 from bycall.rag.ingest import IngestPipeline
-from bycall.rag.retrieve import build_rag_messages, retrieve_context
+from bycall.rag.retrieve import _rrf_fuse, build_rag_messages, retrieve_context
 from bycall.vector_store.factory import create_vector_store
+from bycall.vector_store.models import SearchResult
 
 # 测试用小维度，快速且与 mock embed 对齐。
 DIM = 8
@@ -270,3 +271,123 @@ class TestBuildRagMessages:
         assert len(messages) == 3
         assert messages[1].role == "user"
         assert "knowledge_context" in messages[1].content
+
+
+# ============ 6. retrieve_context 混合检索（vector + FTS） ============
+
+
+class TestRetrieveContextHybrid:
+    """验证 retrieve_context 传 query_vector 时走混合检索（vector + FTS）。
+
+    mock embed 基于 sha256 派生向量（见 make_mock_embed_model），相同文本向量相同，
+    因此用入库文本本身作 query 时向量路必命中该 chunk——这断言"向量路被触发"。
+    """
+
+    def test_with_query_vector_hits_semantic(self, rag_env: Path):
+        """传 query_vector 时走混合检索，命中语义近邻 chunk。"""
+        store, pipeline = _make_store_and_pipeline(rag_env)
+        embed_model = make_mock_embed_model(DIM)
+        docs = [
+            Document(doc_id="s1", text="销售流程与报价审批流程。", source="sales"),
+            Document(doc_id="h1", text="招聘流程与入职流程。", source="hr"),
+        ]
+        pipeline.ingest_documents(docs)
+
+        # 用入库原文作 query → 向量路必然命中（sha256 相同 → 向量相同 → cosine=1）。
+        query_vec = embed_model.embed(["销售流程与报价审批流程。"])[0]
+        hits = retrieve_context(
+            store,
+            "销售流程与报价审批流程。",
+            knowledge_scope_tags=["*"],
+            query_vector=query_vec,
+            topk=10,
+        )
+        assert len(hits) > 0
+        # 向量路应命中 s1（query 与 s1 向量相同）。
+        assert any(h.fields.get("source") == "sales" for h in hits)
+        store.close()
+
+    def test_without_query_vector_degrades_to_fts(self, rag_env: Path):
+        """不传 query_vector → 退化为纯 FTS（后向兼容）。"""
+        store, pipeline = _make_store_and_pipeline(rag_env)
+        docs = [Document(doc_id="s1", text="销售流程与报价审批流程。", source="sales")]
+        pipeline.ingest_documents(docs)
+
+        hits = retrieve_context(
+            store, "报价", knowledge_scope_tags=["*"], query_vector=None, topk=10
+        )
+        assert len(hits) > 0
+        store.close()
+
+
+# ============ 7. _rrf_fuse 跨 KB RRF 融合 ============
+
+
+class TestRrfFuse:
+    """纯函数测试：不依赖 zvec，直接构造 SearchResult 列表验证 RRF 数学正确。"""
+
+    def test_empty_input_returns_empty(self):
+        """空列表输入 → 空输出。"""
+        assert _rrf_fuse([], k=60, topk=5) == []
+
+    def test_single_kb_preserves_ranking(self):
+        """单 KB 结果：RRF 排序与原排名一致（仅 score 被替换）。"""
+        kb1 = [
+            SearchResult(id="a", score=0.9, text="A", fields={}),
+            SearchResult(id="b", score=0.5, text="B", fields={}),
+            SearchResult(id="c", score=0.1, text="C", fields={}),
+        ]
+        fused = _rrf_fuse([kb1], k=60, topk=5)
+        assert [r.id for r in fused] == ["a", "b", "c"]
+        # RRF 分 = 1/(60+rank)，rank 从 1 起计。
+        assert fused[0].score == pytest.approx(1.0 / 61)
+        assert fused[1].score == pytest.approx(1.0 / 62)
+        assert fused[2].score == pytest.approx(1.0 / 63)
+
+    def test_cross_kb_accumulates_score(self):
+        """同一 doc 在多个 KB 命中 → RRF 分累加，排名提升。"""
+        # doc_a 在 KB1 排第 1，KB2 排第 1 → 分数最高。
+        # doc_b 在 KB1 排第 2，KB2 未出现 → 分数较低。
+        kb1 = [
+            SearchResult(id="a", score=10.0, text="A", fields={}),
+            SearchResult(id="b", score=5.0, text="B", fields={}),
+        ]
+        kb2 = [
+            SearchResult(id="a", score=0.01, text="A", fields={}),  # 原始分极低
+        ]
+        fused = _rrf_fuse([kb1, kb2], k=60, topk=5)
+        # doc_a 在两个 KB 都第 1：2 * (1/61)
+        # doc_b 只在 KB1 第 2：1/62
+        assert fused[0].id == "a"
+        assert fused[0].score == pytest.approx(2.0 / 61)
+        assert fused[1].id == "b"
+        assert fused[1].score == pytest.approx(1.0 / 62)
+
+    def test_rank_based_not_score_based(self):
+        """RRF 只看排名不看原始 score：高原始分但低排名的 doc 不应优先。"""
+        # KB1 里 doc_x 原始分 999（FTS 高分），但排第 2（rank=2）。
+        # KB1 里 doc_y 原始分 0.1，但排第 1（rank=1）。
+        kb1 = [
+            SearchResult(id="y", score=0.1, text="Y", fields={}),
+            SearchResult(id="x", score=999.0, text="X", fields={}),
+        ]
+        fused = _rrf_fuse([kb1], k=60, topk=5)
+        # RRF 按排名 → y（rank=1）应在 x（rank=2）之前，尽管 y 原始分远低。
+        assert fused[0].id == "y"
+        assert fused[1].id == "x"
+
+    def test_topk_limit(self):
+        """topk 截断：返回不超过 topk 条。"""
+        kb1 = [SearchResult(id=f"d{i}", score=float(i), text=str(i), fields={}) for i in range(10)]
+        fused = _rrf_fuse([kb1], k=60, topk=3)
+        assert len(fused) == 3
+        assert [r.id for r in fused] == ["d0", "d1", "d2"]
+
+    def test_doc_content_preserved_from_first_hit(self):
+        """doc 冲突时保留首次出现的内容（text/fields）。"""
+        kb1 = [SearchResult(id="a", score=1.0, text="来自KB1", fields={"source": "sales"})]
+        kb2 = [SearchResult(id="a", score=0.5, text="来自KB2", fields={"source": "hr"})]
+        fused = _rrf_fuse([kb1, kb2], k=60, topk=5)
+        assert len(fused) == 1
+        assert fused[0].text == "来自KB1"
+        assert fused[0].fields == {"source": "sales"}

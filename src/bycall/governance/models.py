@@ -48,11 +48,15 @@ class RoleConfig(BaseModel):
     - ``knowledge_scope_tags``：可见知识域标签（如 ["sales","public","hr"]）。
       RAG 预过滤时翻译成 ``source IN (...)``。
     - ``level``：职级，用于 ABAC（机密资源按 ``resource_level <= user_level`` 放行）。
+    - ``system_prompt_version``：角色绑定的系统提示词版本（``SystemPrompt.version``）。
+      非空时该角色用此版本提示词（而非全局激活版），实现按角色差异化 LLM 行为；
+      为 None 时 fallback 全局激活版本（后向兼容，M1 行为不变）。
     """
 
     allowed_tools: list[str] = Field(default_factory=list)
     knowledge_scope_tags: list[str] = Field(default_factory=list)
     level: int = 0
+    system_prompt_version: int | None = None
     # 预留：M3 接入时加 max_iterations / rate_limit 等。
 
 
