@@ -58,7 +58,13 @@ def _seed_user(name, role, scope_tags):
     """建角色 + 用户（带 im_bindings 便于身份映射命中）。"""
     with session_scope() as s:
         if role != "member":
-            s.add(Role(name=role, description="", config=RoleConfig(knowledge_scope_tags=scope_tags, level=1)))
+            s.add(
+                Role(
+                    name=role,
+                    description="",
+                    config=RoleConfig(knowledge_scope_tags=scope_tags, level=1),
+                )
+            )
         s.add(
             User(
                 name=name,

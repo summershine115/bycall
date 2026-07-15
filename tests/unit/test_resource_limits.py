@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine
 
@@ -28,9 +27,7 @@ def app_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     from bycall.api.app import create_app
@@ -91,9 +88,7 @@ def test_openai_chat_model_sends_max_tokens():
     """OpenAIChatModel.chat 带 max_tokens=2048（费用控制）。"""
     from bycall.llm.openai_compat import OpenAIChatModel
 
-    model = OpenAIChatModel(
-        base_url="http://fake", api_key="fake", model="gpt-4o-mini"
-    )
+    model = OpenAIChatModel(base_url="http://fake", api_key="fake", model="gpt-4o-mini")
 
     # mock client 捕获调用参数
     mock_completions = MagicMock()

@@ -192,7 +192,9 @@ def _seed_default_model(
         )
 
 
-def _seed_setting(session, key: str, value: str, description: str, *, is_secret: bool = False) -> None:
+def _seed_setting(
+    session, key: str, value: str, description: str, *, is_secret: bool = False
+) -> None:
     """灌一个默认设置（幂等：key 已存在则跳过）。"""
     from bycall.governance.models import SystemSetting
     from bycall.governance.settings_store import set_setting_value

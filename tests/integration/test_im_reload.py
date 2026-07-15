@@ -22,7 +22,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     monkeypatch.setenv("BYCALL_IM_ENABLE", "false")  # 初始不启用
     get_settings.cache_clear()
-    set_engine(create_engine(f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False}))
+    set_engine(
+        create_engine(f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False})
+    )
     init_db()
     reset_channel_manager()
     from bycall.api.app import create_app
@@ -56,7 +58,13 @@ def test_reload_with_fake_credentials(client):
     """
     client.put(
         "/api/admin/settings",
-        json={"settings": {"im.enable": "true", "im.wecom_bot_id": "fake_id", "im.wecom_bot_secret": "fake_secret"}},
+        json={
+            "settings": {
+                "im.enable": "true",
+                "im.wecom_bot_id": "fake_id",
+                "im.wecom_bot_secret": "fake_secret",
+            }
+        },
     )
     resp = client.post("/api/admin/im/reload")
     assert resp.status_code == 200

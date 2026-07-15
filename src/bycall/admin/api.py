@@ -293,8 +293,12 @@ def update_user(
     session.commit()
     session.refresh(user)
     _audit_admin(
-        session, request, "update_user", f"User({user.name})",
-        before=json.loads(before_snapshot), after=user,
+        session,
+        request,
+        "update_user",
+        f"User({user.name})",
+        before=json.loads(before_snapshot),
+        after=user,
     )
     session.commit()
     return user
@@ -397,8 +401,12 @@ def update_role(
     session.commit()
     session.refresh(role)
     _audit_admin(
-        session, request, "update_role", f"Role({role.name})",
-        before=json.loads(before_snapshot), after=role,
+        session,
+        request,
+        "update_role",
+        f"Role({role.name})",
+        before=json.loads(before_snapshot),
+        after=role,
     )
     session.commit()
     return role
@@ -588,7 +596,10 @@ def update_settings(
         updated.append(key)
     session.commit()
     _audit_admin(
-        session, request, "update_settings", ",".join(updated),
+        session,
+        request,
+        "update_settings",
+        ",".join(updated),
         after={"updated": updated, "skipped": skipped},
     )
     session.commit()
@@ -866,9 +877,7 @@ def delete_model(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="不能删除当前激活的模型，请先激活其他同类模型再删",
         )
-    _audit_admin(
-        session, request, "delete_model", f"Model({model.name})", before=model
-    )
+    _audit_admin(session, request, "delete_model", f"Model({model.name})", before=model)
     session.delete(model)
     session.commit()
 
@@ -913,9 +922,7 @@ def activate_model(
     session.add(model)
     session.commit()
     session.refresh(model)
-    _audit_admin(
-        session, request, "activate_model", f"Model({model.name})", after=model
-    )
+    _audit_admin(session, request, "activate_model", f"Model({model.name})", after=model)
     session.commit()
     return {"ok": True, "model": _model_to_out(model).model_dump(mode="json")}
 
@@ -1017,9 +1024,7 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
     store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
     store.open(kb.collection_name)
     try:
-        store.delete_by_filter(
-            [FilterCondition(field="doc_id", op="match", value=f"doc_{doc_id}")]
-        )
+        store.delete_by_filter([FilterCondition(field="doc_id", op="match", value=f"doc_{doc_id}")])
         store.flush()
     finally:
         store.close()
@@ -1272,9 +1277,7 @@ def delete_knowledge_base(
         session.delete(doc)
 
     # 审计（在删 KB 记录前记录）
-    _audit_admin(
-        session, request, "delete_knowledge_base", f"KB({kb.name})", before=kb
-    )
+    _audit_admin(session, request, "delete_knowledge_base", f"KB({kb.name})", before=kb)
 
     # 删 KB
     session.delete(kb)
@@ -1295,9 +1298,7 @@ def list_documents(
     _get_kb_or_404(session, kb_id)
     if source is not None:
         rows = session.exec(
-            select(Document).where(
-                Document.knowledge_base_id == kb_id, Document.source == source
-            )
+            select(Document).where(Document.knowledge_base_id == kb_id, Document.source == source)
         ).all()
     else:
         rows = session.exec(Document.select_by_kb(kb_id)).all()
@@ -1418,9 +1419,7 @@ def delete_document(
         logging.getLogger(__name__).warning("删除文档 chunk 失败 (doc_id=%s): %s", doc_id, exc)
 
     # 审计（在删记录前记录）
-    _audit_admin(
-        session, request, "delete_document", f"Doc({doc.title}, kb={kb.name})", before=doc
-    )
+    _audit_admin(session, request, "delete_document", f"Doc({doc.title}, kb={kb.name})", before=doc)
 
     # 更新 KB 统计
     kb.chunk_count -= doc.chunk_count

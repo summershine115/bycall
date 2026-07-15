@@ -47,7 +47,9 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
 
     if user_id is None:
         await sender.send_text("您还未被授权使用数字员工，请联系管理员邀请您加入。")
-        logger.info("IM 消息被拒（未绑定用户）: channel=%s im_user_id=%s", msg.channel, msg.im_user_id)
+        logger.info(
+            "IM 消息被拒（未绑定用户）: channel=%s im_user_id=%s", msg.channel, msg.im_user_id
+        )
         return
 
     # 2. 先回一句"正在处理"（流式，提升体验），然后异步跑治理链路。

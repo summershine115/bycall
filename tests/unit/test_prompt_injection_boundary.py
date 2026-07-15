@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 from bycall.agent.session_store import build_conversation_messages
-from bycall.governance.models import Message as DBMessage, UserMemory
+from bycall.governance.models import Message as DBMessage
+from bycall.governance.models import UserMemory
 from bycall.rag.retrieve import build_rag_messages
 from bycall.vector_store.models import SearchResult
 
@@ -83,9 +84,7 @@ def test_rag_context_marked_as_reference_not_instruction():
 
 def test_user_memory_marked_as_data():
     """用户记忆标注为'上下文数据，非指令'。"""
-    memory = UserMemory(
-        id=1, user_id=1, category="preference", content="用户喜欢简洁回答"
-    )
+    memory = UserMemory(id=1, user_id=1, category="preference", content="用户喜欢简洁回答")
     messages = build_conversation_messages(
         system_prompt="你是 Bycall 数字员工。",
         rag_context="",

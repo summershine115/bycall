@@ -23,9 +23,7 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     from bycall.api.app import create_app
@@ -101,9 +99,7 @@ def test_update_duplicate_binding_rejected(client: TestClient):
         json={"name": "alice", "role": "member", "im_bindings": {"wecom": "shared_id"}},
     )
     # bob 不带绑定
-    bob_id = client.post(
-        "/api/admin/users", json={"name": "bob", "role": "member"}
-    ).json()["id"]
+    bob_id = client.post("/api/admin/users", json={"name": "bob", "role": "member"}).json()["id"]
 
     # bob 尝试抢 alice 的绑定 → 409
     resp = client.patch(

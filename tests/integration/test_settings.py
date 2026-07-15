@@ -20,7 +20,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("BYCALL_VECTOR_STORE_DIMENSION", "16")
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
-    set_engine(create_engine(f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False}))
+    set_engine(
+        create_engine(f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False})
+    )
     init_db()
     from bycall.api.app import create_app
 
@@ -32,7 +34,9 @@ def client(tmp_path, monkeypatch):
 
 def test_list_settings_masks_im_secrets(client):
     """/settings 返回的 IM secret 字段脱敏（绝不回显明文）。"""
-    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "bot-secret-12345678"}})
+    client.put(
+        "/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "bot-secret-12345678"}}
+    )
     resp = client.get("/api/admin/settings")
     assert resp.status_code == 200
     settings = {s["key"]: s for s in resp.json()}

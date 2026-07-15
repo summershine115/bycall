@@ -39,9 +39,7 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_VECTOR_STORE_DATA_DIR", str(tmp_path / "zvec"))
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     app = FastAPI()
@@ -183,9 +181,7 @@ def test_update_kb_description(client: TestClient):
     """更新描述 → 200。"""
     mid = _create_embedding_model(client)
     kb = _create_kb(client, mid, name="描述库").json()
-    resp = client.put(
-        f"/api/admin/knowledge-bases/{kb['id']}", json={"description": "新描述"}
-    )
+    resp = client.put(f"/api/admin/knowledge-bases/{kb['id']}", json={"description": "新描述"})
     assert resp.status_code == 200
     assert resp.json()["description"] == "新描述"
 

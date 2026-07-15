@@ -223,7 +223,8 @@ class Model(SQLModel, table=True):
         from sqlmodel import select
 
         return select(Model).where(
-            Model.model_type == model_type, Model.is_active == True  # noqa: E712
+            Model.model_type == model_type,
+            Model.is_active == True,  # noqa: E712
         )
 
     @staticmethod
@@ -405,8 +406,10 @@ class Conversation(SQLModel, table=True):
         """按 user_id 查（列表过滤）。"""
         from sqlmodel import select
 
-        return select(Conversation).where(Conversation.user_id == user_id).order_by(
-            Conversation.id.desc()
+        return (
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.id.desc())
         )
 
     @staticmethod

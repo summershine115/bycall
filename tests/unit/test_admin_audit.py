@@ -9,11 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, create_engine
 
-from bycall.admin.api import router as admin_router
 from bycall.config import get_settings
 from bycall.db import init_db, set_engine
 from bycall.governance.models import AuditLog
@@ -27,9 +25,7 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     # 用完整 create_app（含会话守卫，这样 _audit_admin 能从 cookie 解析操作者）
@@ -50,9 +46,9 @@ def _count_audit_logs(db_path: str, action: str | None = None) -> int:
     with Session(engine) as s:
         if action:
             return len(
-                s.query(AuditLog).filter(
-                    AuditLog.channel == "admin", AuditLog.action == action
-                ).all()
+                s.query(AuditLog)
+                .filter(AuditLog.channel == "admin", AuditLog.action == action)
+                .all()
             )
         return len(s.query(AuditLog).filter(AuditLog.channel == "admin").all())
 
@@ -77,9 +73,12 @@ def test_create_user_audit_records_operator(client: TestClient):
     settings = get_settings()
     engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
     with Session(engine) as s:
-        log = s.query(AuditLog).filter(
-            AuditLog.channel == "admin", AuditLog.action == "create_user"
-        ).order_by(AuditLog.id.desc()).first()
+        log = (
+            s.query(AuditLog)
+            .filter(AuditLog.channel == "admin", AuditLog.action == "create_user")
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
         assert log is not None
         assert log.user_name == "admin"  # 操作者是登录的 admin
         assert "bob" in log.after  # after 快照含新用户名
@@ -89,9 +88,7 @@ def test_delete_user_audited(client: TestClient):
     """delete_user → 审计 action='delete_user'。"""
     _login(client)
     # 先建一个用户
-    uid = client.post(
-        "/api/admin/users", json={"name": "charlie", "role": "member"}
-    ).json()["id"]
+    uid = client.post("/api/admin/users", json={"name": "charlie", "role": "member"}).json()["id"]
     before = _count_audit_logs(None, "delete_user")
 
     resp = client.delete(f"/api/admin/users/{uid}")
@@ -106,7 +103,11 @@ def test_create_role_audited(client: TestClient):
     _login(client)
     resp = client.post(
         "/api/admin/roles",
-        json={"name": "sales", "description": "销售", "config": {"allowed_tools": [], "knowledge_scope_tags": ["sales"], "level": 0}},
+        json={
+            "name": "sales",
+            "description": "销售",
+            "config": {"allowed_tools": [], "knowledge_scope_tags": ["sales"], "level": 0},
+        },
     )
     assert resp.status_code == 201
     assert _count_audit_logs(None, "create_role") >= 1
@@ -131,9 +132,12 @@ def test_audit_masks_sensitive_fields(client: TestClient):
     settings = get_settings()
     engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
     with Session(engine) as s:
-        log = s.query(AuditLog).filter(
-            AuditLog.action == "create_user"
-        ).order_by(AuditLog.id.desc()).first()
+        log = (
+            s.query(AuditLog)
+            .filter(AuditLog.action == "create_user")
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
         assert log is not None
         # password_hash 被脱敏，不是明文
         assert "secret123" not in log.after

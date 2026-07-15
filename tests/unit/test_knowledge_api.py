@@ -50,9 +50,7 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_VECTOR_STORE_DATA_DIR", str(tmp_path / "zvec"))
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     # mock embedding：embed 返回 sha256 派生的归一化向量
@@ -207,11 +205,11 @@ def _get_zvec_collection_doc_count(kb_id: int) -> int:
     用于验证删除/reindex 后向量库里的文档数变化。注意 zvec 关闭重开后 FTS
     索引可能未即时生效，所以这里用 stats（物理计数）而非 FTS 搜索。
     """
-    from bycall.config import get_settings
-    from bycall.vector_store.factory import create_vector_store
     from sqlmodel import Session, create_engine
 
+    from bycall.config import get_settings
     from bycall.governance.models import KnowledgeBase
+    from bycall.vector_store.factory import create_vector_store
 
     settings = get_settings()
     engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
@@ -284,9 +282,7 @@ def test_reindex_document(client: TestClient):
     doc_id = create_resp.json()["document_id"]
     original_count = create_resp.json()["chunk_count"]
 
-    reindex_resp = client.post(
-        f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex"
-    )
+    reindex_resp = client.post(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
     assert reindex_resp.status_code == 200
     assert reindex_resp.json()["ok"] is True
     assert reindex_resp.json()["chunk_count"] == original_count
@@ -311,9 +307,7 @@ def test_reindex_does_not_leave_ghost_chunks(client: TestClient):
     assert before == original_count, f"初始文档数应为 {original_count}，实际 {before}"
 
     # reindex
-    reindex_resp = client.post(
-        f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex"
-    )
+    reindex_resp = client.post(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
     assert reindex_resp.status_code == 200
     assert reindex_resp.json()["ok"] is True
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from bycall.config import AppConfig, get_settings
+from bycall.config import get_settings
 
 
 def test_prod_default_secret_rejected(monkeypatch):
@@ -37,9 +37,7 @@ def test_prod_short_secret_rejected(monkeypatch):
 def test_prod_valid_secret_accepted(monkeypatch):
     """prod + 合法 session_secret（≥32 且非默认）→ 正常构造。"""
     monkeypatch.setenv("BYCALL_ENV", "prod")
-    monkeypatch.setenv(
-        "BYCALL_SESSION_SECRET", "a" * 48
-    )  # 48 字符随机级密钥（测试用重复字符）
+    monkeypatch.setenv("BYCALL_SESSION_SECRET", "a" * 48)  # 48 字符随机级密钥（测试用重复字符）
     get_settings.cache_clear()
 
     settings = get_settings()

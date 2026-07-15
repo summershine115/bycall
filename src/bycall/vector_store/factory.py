@@ -9,9 +9,7 @@ from bycall.config import VectorStoreConfig
 from bycall.vector_store.base import VectorStore
 
 
-def create_vector_store(
-    config: VectorStoreConfig, dimension: int | None = None
-) -> VectorStore:
+def create_vector_store(config: VectorStoreConfig, dimension: int | None = None) -> VectorStore:
     """按 ``config.backend`` 实例化一个未打开的 VectorStore。
 
     调用方负责后续 ``open(name)`` 或 ``create_collection(schema)``。

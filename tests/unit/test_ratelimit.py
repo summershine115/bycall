@@ -63,9 +63,7 @@ def app_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     from bycall.api.app import create_app
@@ -77,13 +75,9 @@ def app_client(tmp_path: Path, monkeypatch):
 def test_login_rate_limit_integration(app_client: TestClient):
     """集成：连续 5 次错误登录后第 6 次 → 429。"""
     for _ in range(5):
-        resp = app_client.post(
-            "/api/login", data={"name": "admin", "password": "wrong"}
-        )
+        resp = app_client.post("/api/login", data={"name": "admin", "password": "wrong"})
         assert resp.status_code == 401
 
     # 第 6 次 → 429（即使密码正确也被限流）
-    resp = app_client.post(
-        "/api/login", data={"name": "admin", "password": "admin123"}
-    )
+    resp = app_client.post("/api/login", data={"name": "admin", "password": "admin123"})
     assert resp.status_code == 429

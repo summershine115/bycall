@@ -107,9 +107,7 @@ def run_agent(
         summary = conv.summary if conv is not None else ""
         history = load_message_history(session, conversation_id)
         user_memories = load_user_memory(session, user.id) if user.id is not None else []
-        rag_context = "\n\n".join(
-            f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved
-        )
+        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
         messages = build_conversation_messages(
             system_prompt=cap.system_prompt,
             rag_context=rag_context,
@@ -213,9 +211,7 @@ def _audit(
     session.commit()
 
 
-def _retrieve_across_kbs(
-    session: Session, question: str, knowledge_scope_tags: list[str]
-) -> list:
+def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: list[str]) -> list:
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
     查全部 KB → 每个 KB 的 collection 用自己的维度 open → 按 source ACL 预过滤

@@ -8,11 +8,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine
 
-from bycall.admin.api import router as admin_router
 from bycall.config import get_settings
 from bycall.db import init_db, set_engine
 
@@ -31,9 +29,7 @@ def app_client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "dev")
     get_settings.cache_clear()
 
-    set_engine(
-        create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    )
+    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
     init_db()
 
     from bycall.api.app import create_app
@@ -75,9 +71,7 @@ def test_admin_disabled_revokes_session(app_client: TestClient):
         s.add(admin)
 
     # 旧 cookie 立即失效 → 401（用 headers 带旧 cookie，绕过 client 自动管理）
-    resp = app_client.get(
-        "/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"}
-    )
+    resp = app_client.get("/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"})
     assert resp.status_code == 401
 
 
@@ -101,9 +95,7 @@ def test_admin_password_change_revokes_session(app_client: TestClient):
         s.add(admin)
 
     # 旧 cookie 因 password_version 不匹配 → 401
-    resp = app_client.get(
-        "/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"}
-    )
+    resp = app_client.get("/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"})
     assert resp.status_code == 401
 
     # 新密码登录拿到新 cookie → 正常
@@ -132,9 +124,7 @@ def test_admin_demoted_revokes_session(app_client: TestClient):
         s.add(admin)
 
     # 旧 cookie：is_admin 仍 True（cookie 缓存），但 DB role=member → 守卫拒绝
-    resp = app_client.get(
-        "/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"}
-    )
+    resp = app_client.get("/api/admin/users", headers={"Cookie": f"{SESSION_COOKIE}={cookie}"})
     assert resp.status_code == 401
 
 

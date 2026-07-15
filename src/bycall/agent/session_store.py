@@ -51,9 +51,7 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3)
 
 
-def get_or_create_conversation(
-    session: Session, user_id: int, channel: str
-) -> Conversation:
+def get_or_create_conversation(session: Session, user_id: int, channel: str) -> Conversation:
     """按 session_key = ``{channel}:{user_id}`` 查/建会话。
 
     永不过期：一个 (user_id, channel) 永远对应一条 Conversation。
@@ -230,9 +228,7 @@ def compress_history(
     to_compress = history[:-keep_recent] if keep_recent > 0 else history
 
     # 构造压缩 prompt：让 LLM 增量更新摘要
-    conversation_text = "\n".join(
-        f"{m.role}: {m.content}" for m in to_compress
-    )
+    conversation_text = "\n".join(f"{m.role}: {m.content}" for m in to_compress)
 
     prompt_parts = [
         "请将以下对话历史压缩成简洁的摘要，保留关键信息（用户意图、已确认的事实、未解决的问题）。",

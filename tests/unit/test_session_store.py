@@ -219,7 +219,12 @@ class TestShouldCompress:
 
         # 12 条消息，每条 token_count=1，远低于 4000 阈值
         history = [
-            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content="短", token_count=1)
+            Msg(
+                conversation_id=1,
+                role="user" if i % 2 == 0 else "assistant",
+                content="短",
+                token_count=1,
+            )
             for i in range(12)
         ]
         assert should_compress(history) is False
@@ -230,7 +235,12 @@ class TestShouldCompress:
 
         # 20 条消息，每条 token_count=300 → 总 6000 > 4000 阈值
         history = [
-            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content="x" * 900, token_count=300)
+            Msg(
+                conversation_id=1,
+                role="user" if i % 2 == 0 else "assistant",
+                content="x" * 900,
+                token_count=300,
+            )
             for i in range(20)
         ]
         assert should_compress(history) is True
@@ -248,7 +258,11 @@ class TestCompressHistory:
         mock_llm.chat.return_value = "用户讨论了报价流程和审批步骤。"
 
         history = [
-            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content=f"内容{i}" * 100)
+            Msg(
+                conversation_id=1,
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"内容{i}" * 100,
+            )
             for i in range(20)
         ]
 
@@ -265,7 +279,11 @@ class TestCompressHistory:
         mock_llm.chat.return_value = "更新后的摘要"
 
         history = [
-            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content=f"内容{i}" * 100)
+            Msg(
+                conversation_id=1,
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"内容{i}" * 100,
+            )
             for i in range(20)
         ]
 
@@ -283,7 +301,11 @@ class TestCompressHistory:
         mock_llm.chat.side_effect = Exception("LLM 不可用")
 
         history = [
-            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content=f"内容{i}" * 100)
+            Msg(
+                conversation_id=1,
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"内容{i}" * 100,
+            )
             for i in range(20)
         ]
 

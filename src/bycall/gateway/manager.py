@@ -103,9 +103,7 @@ class ChannelManager:
         if not get_setting_bool("im.enable", default=False, env_var="BYCALL_IM_ENABLE"):
             return None, "IM 未启用（im.enable=false）"
 
-        bot_id = get_setting_value(
-            "im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID"
-        )
+        bot_id = get_setting_value("im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID")
         bot_secret = get_setting_value(
             "im.wecom_bot_secret", default="", env_var="BYCALL_IM_WECOM_BOT_SECRET"
         )

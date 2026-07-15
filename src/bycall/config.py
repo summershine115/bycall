@@ -48,7 +48,10 @@ class VectorStoreConfig(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="bycall_vector_store_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_prefix="bycall_vector_store_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     backend: Literal["zvec", "pgvector", "qdrant"] = "zvec"
@@ -137,7 +140,7 @@ class AppConfig(BaseSettings):
         if self.session_secret == "bycall-dev-change-me-in-prod":
             raise ValueError(
                 "生产环境（env=prod）必须设置 BYCALL_SESSION_SECRET（不能是默认值）。"
-                "请生成随机密钥：python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+                '请生成随机密钥：python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
         if len(self.session_secret) < 32:
             raise ValueError(

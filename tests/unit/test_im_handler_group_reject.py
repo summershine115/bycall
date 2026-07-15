@@ -39,9 +39,11 @@ def test_group_message_is_rejected():
     sender = _make_sender()
 
     # patch run_agent 确保它不被调用
-    with patch("bycall.agent.im_handler.run_agent") as mock_run, \
-         patch("bycall.agent.im_handler.session_scope"), \
-         patch("bycall.agent.im_handler.resolve_user_by_im") as mock_resolve:
+    with (
+        patch("bycall.agent.im_handler.run_agent") as mock_run,
+        patch("bycall.agent.im_handler.session_scope"),
+        patch("bycall.agent.im_handler.resolve_user_by_im") as mock_resolve,
+    ):
         asyncio.run(handle_im_message(msg, sender))
 
     # 回复了拒绝语
@@ -72,11 +74,13 @@ def test_private_message_passes_through():
     )
     sender = _make_sender()
 
-    with patch("bycall.agent.im_handler.session_scope") as mock_scope, \
-         patch(
-             "bycall.agent.im_handler.resolve_user_by_im",
-             return_value=None,  # 未绑定 → 友好拒绝
-         ):
+    with (
+        patch("bycall.agent.im_handler.session_scope") as mock_scope,
+        patch(
+            "bycall.agent.im_handler.resolve_user_by_im",
+            return_value=None,  # 未绑定 → 友好拒绝
+        ),
+    ):
         mock_scope.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_scope.return_value.__exit__ = MagicMock(return_value=None)
         asyncio.run(handle_im_message(msg, sender))
