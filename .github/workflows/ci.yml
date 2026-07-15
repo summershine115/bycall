@@ -39,10 +39,10 @@ jobs:
         run: |
           pip install -U pip
           pip install -e ".[dev]"
-      # unit 测试不需外部服务（zvec 嵌入式，FastAPI 用 TestClient）。
-      # integration 标记的测试需 postgres/redis，CI 里暂跳过。
-      - name: Run unit tests
-        run: pytest tests/unit -q
+      # 当前 tests/integration 也使用临时 SQLite/zvec + mock LLM，无外部依赖。
+      # 治理链路、撤权和多轮隔离测试属于安全门禁，必须与 unit 一起执行。
+      - name: Run all local tests
+        run: pytest tests -q
 
   build:
     name: Build (docker)

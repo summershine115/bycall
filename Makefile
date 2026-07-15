@@ -1,6 +1,6 @@
 # Bycall 常用开发入口。目标名保持简洁、跨平台一致（需 GNU make）。
 # Python 解释器固定 3.12（本机 python3.12）。
-PY := python3.12
+PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3.12)
 PKG := src/bycall
 VENV := .venv
 
@@ -19,13 +19,14 @@ install:  ## 安装运行时 + 开发依赖到当前环境
 dev:  ## 本地启动 API（热重载，端口 8000）
 	PYTHONPATH=src $(PY) -m uvicorn bycall.api.app:create_app --factory --reload --port 8000
 
-test: test-unit  ## 跑全部测试（默认仅 unit；integration 需外部服务）
+test:  ## 跑全部本地测试（unit + 使用临时依赖的 integration）
+	$(PY) -m pytest tests -q
 
 test-unit:  ## 仅跑单元测试
 	$(PY) -m pytest tests/unit -q
 
-test-integration:  ## 跑集成测试（需先 docker-up）
-	$(PY) -m pytest tests/integration -q -m integration
+test-integration:  ## 跑 integration 目录（当前无需 docker，均使用临时依赖/mock）
+	$(PY) -m pytest tests/integration -q
 
 lint:  ## 静态检查
 	$(PY) -m ruff check $(PKG) tests
@@ -37,7 +38,7 @@ fmt:  ## 格式化
 check: lint  ## CI 本地等价检查（lint only；test/build 在 CI 里跑）
 	$(PY) -m ruff format --check $(PKG) tests
 
-ci-local: lint test-unit  ## 本地模拟 CI：lint + unit test
+ci-local: lint test  ## 本地模拟 CI：lint + 全部本地测试
 
 docker-up:  ## 起 postgres + redis（内网无公网友好；zvec 嵌入式无独立服务）
 	docker compose up -d postgres redis
