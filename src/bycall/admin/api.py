@@ -74,6 +74,69 @@ _RESERVED_ROLE_NAMES = frozenset({"admin"})
 # 上传文件大小上限：10MB。超过 → 413，避免超大文件全量读入内存导致 OOM。
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
+# 审计日志中需要脱敏的字段名（值不落审计，只记 "<masked>"）。
+_SENSITIVE_FIELDS = frozenset({"password_hash", "api_key", "value", "secret"})
+
+
+def _audit_admin(
+    session: Session,
+    request: Request,
+    action: str,
+    entity: str = "",
+    *,
+    before: object = None,
+    after: object = None,
+) -> None:
+    """写一条控制面审计日志。
+
+    从 request cookie 解析操作者身份（user_id/user_name）。变更前后值序列化成
+    JSON 字符串存 before/after 列；敏感字段（password_hash/api_key/secret）脱敏。
+
+    不单独 commit——由调用方在业务 commit 时一起提交（与数据面审计一致）。
+    """
+    import json
+
+    from bycall.governance.auth import load_session_cookie
+
+    operator_id: int | None = None
+    operator_name = "unknown"
+    token = request.cookies.get("bycall_session")
+    if token:
+        data = load_session_cookie(token)
+        if data is not None:
+            operator_id = data.user_id
+            operator_name = data.user_name
+
+    def _safe(obj: object) -> str:
+        """序列化对象，敏感字段脱敏。"""
+        if obj is None:
+            return ""
+        if isinstance(obj, str):
+            return obj
+        # SQLModel/SQLModel 实例 → dict
+        if hasattr(obj, "model_dump"):
+            d = obj.model_dump()
+        elif isinstance(obj, dict):
+            d = dict(obj)
+        else:
+            return str(obj)
+        for k in list(d.keys()):
+            if any(s in k.lower() for s in _SENSITIVE_FIELDS):
+                d[k] = "<masked>"
+        return json.dumps(d, ensure_ascii=False, default=str)
+
+    session.add(
+        AuditLog(
+            user_id=operator_id,
+            user_name=operator_name,
+            channel="admin",
+            action=action,
+            question=entity,
+            before=_safe(before),
+            after=_safe(after),
+        )
+    )
+
 
 def _require_admin() -> None:
     """占位 admin 守卫。集成阶段替换为基于 session 的真实认证。
@@ -101,6 +164,7 @@ def _require_role_exists(session: Session, role_name: str) -> Role:
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def create_user(
     payload: UserCreate,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> User:
@@ -123,6 +187,8 @@ def create_user(
             detail=f"用户名已存在: {payload.name}",
         ) from exc
     session.refresh(user)
+    _audit_admin(session, request, "create_user", f"User({user.name})", after=user)
+    session.commit()
     return user
 
 
@@ -156,6 +222,7 @@ def get_user(
 def update_user(
     user_id: int,
     payload: UserUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> User:
@@ -169,6 +236,11 @@ def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"用户不存在: {user_id}",
         )
+
+    # 审计：记录变更前快照
+    import json
+
+    before_snapshot = json.dumps(user.model_dump(), default=str)
 
     if payload.display_name is not None:
         user.display_name = payload.display_name
@@ -188,12 +260,18 @@ def update_user(
     session.add(user)
     session.commit()
     session.refresh(user)
+    _audit_admin(
+        session, request, "update_user", f"User({user.name})",
+        before=json.loads(before_snapshot), after=user,
+    )
+    session.commit()
     return user
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(
     user_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
@@ -215,6 +293,8 @@ def delete_user(
     user.is_active = False
     session.add(user)
     session.commit()
+    _audit_admin(session, request, "delete_user", f"User({user.name})", before=user)
+    session.commit()
 
 
 # ============ 角色 ============
@@ -223,6 +303,7 @@ def delete_user(
 @router.post("/roles", response_model=RoleOut, status_code=status.HTTP_201_CREATED)
 def create_role(
     payload: RoleCreate,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> Role:
@@ -248,6 +329,8 @@ def create_role(
             detail=f"角色已存在: {payload.name}",
         ) from exc
     session.refresh(role)
+    _audit_admin(session, request, "create_role", f"Role({role.name})", after=role)
+    session.commit()
     return role
 
 
@@ -265,11 +348,15 @@ def list_roles(
 def update_role(
     name: str,
     payload: RoleUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> Role:
     """更新角色的 description / config。不存在 → 404。"""
     role = _require_role_exists(session, name)
+    import json
+
+    before_snapshot = json.dumps(role.model_dump(), default=str)
     if payload.description is not None:
         role.description = payload.description
     if payload.config is not None:
@@ -277,12 +364,18 @@ def update_role(
     session.add(role)
     session.commit()
     session.refresh(role)
+    _audit_admin(
+        session, request, "update_role", f"Role({role.name})",
+        before=json.loads(before_snapshot), after=role,
+    )
+    session.commit()
     return role
 
 
 @router.delete("/roles/{name}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_role(
     name: str,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
@@ -302,6 +395,7 @@ def delete_role(
         )
     session.delete(role)
     session.commit()
+    _audit_admin(session, request, "delete_role", f"Role({name})", before={"name": name})
 
 
 # ============ 系统提示词 ============
@@ -430,6 +524,7 @@ def list_settings(
 @router.put("/settings", response_model=dict)
 def update_settings(
     body: SettingsBatchUpdate,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> dict:
@@ -459,6 +554,11 @@ def update_settings(
             description=existing.description,
         )
         updated.append(key)
+    session.commit()
+    _audit_admin(
+        session, request, "update_settings", ",".join(updated),
+        after={"updated": updated, "skipped": skipped},
+    )
     session.commit()
     return {"ok": True, "updated": updated, "skipped": skipped}
 
@@ -723,6 +823,7 @@ def update_model(
 @router.delete("/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_model(
     model_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
@@ -733,6 +834,9 @@ def delete_model(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="不能删除当前激活的模型，请先激活其他同类模型再删",
         )
+    _audit_admin(
+        session, request, "delete_model", f"Model({model.name})", before=model
+    )
     session.delete(model)
     session.commit()
 
@@ -740,6 +844,7 @@ def delete_model(
 @router.post("/models/{model_id}/activate", response_model=dict)
 def activate_model(
     model_id: int,
+    request: Request,
     rebuild: bool = Query(
         default=False,
         description="embedding 维度变化时是否确认重建知识库索引",
@@ -776,6 +881,10 @@ def activate_model(
     session.add(model)
     session.commit()
     session.refresh(model)
+    _audit_admin(
+        session, request, "activate_model", f"Model({model.name})", after=model
+    )
+    session.commit()
     return {"ok": True, "model": _model_to_out(model).model_dump(mode="json")}
 
 
@@ -1101,6 +1210,7 @@ def update_knowledge_base(
 @router.delete("/knowledge-bases/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_knowledge_base(
     kb_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
@@ -1128,6 +1238,11 @@ def delete_knowledge_base(
     docs = session.exec(Document.select_by_kb(kb_id)).all()
     for doc in docs:
         session.delete(doc)
+
+    # 审计（在删 KB 记录前记录）
+    _audit_admin(
+        session, request, "delete_knowledge_base", f"KB({kb.name})", before=kb
+    )
 
     # 删 KB
     session.delete(kb)
@@ -1253,6 +1368,7 @@ def update_document(
 def delete_document(
     kb_id: int,
     doc_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
@@ -1268,6 +1384,11 @@ def delete_document(
         import logging
 
         logging.getLogger(__name__).warning("删除文档 chunk 失败 (doc_id=%s): %s", doc_id, exc)
+
+    # 审计（在删记录前记录）
+    _audit_admin(
+        session, request, "delete_document", f"Doc({doc.title}, kb={kb.name})", before=doc
+    )
 
     # 更新 KB 统计
     kb.chunk_count -= doc.chunk_count

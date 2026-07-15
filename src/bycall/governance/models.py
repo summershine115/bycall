@@ -151,9 +151,10 @@ class SystemPrompt(SQLModel, table=True):
 
 
 class AuditLog(SQLModel, table=True):
-    """审计日志（append-only）。每次数据面交互都落一条。
+    """审计日志（append-only）。数据面交互 + 控制面管理操作都落一条。
 
-    记录：谁、何时、问了什么、被放行/拒绝了什么、LLM 回了什么。
+    数据面：记录谁、何时、问了什么、被放行/拒绝了什么、LLM 回了什么。
+    控制面：记录操作者、动作（create_user/update_role 等）、变更前后值。
     合规与事后排查的命脉。
     """
 
@@ -161,11 +162,14 @@ class AuditLog(SQLModel, table=True):
     user_id: int | None = Field(default=None, index=True)
     user_name: str = Field(default="", index=True)
     channel: str = Field(default="api")  # im/api/admin
-    action: str = Field(index=True)  # chat / tool_call / auth / deny
-    question: str = ""
-    decision: str = ""  # allowed / denied / error
+    action: str = Field(index=True)  # chat / create_user / update_role / delete_kb ...
+    question: str = ""  # 数据面：用户问题；控制面：操作目标实体
+    decision: str = ""  # allowed / denied / error（数据面用）
     detail: str = ""  # 拒绝原因 / 工具名 / 检索命中等
-    answer: str = ""
+    answer: str = ""  # 数据面：LLM 回复；控制面：未用
+    # 控制面变更审计：变更前/后的 JSON 快照（敏感字段已脱敏）。
+    before: str = ""
+    after: str = ""
     created_at: datetime = Field(
         default_factory=_now_utc,
         sa_column=Column(DateTime, default=_now_utc, index=True),
