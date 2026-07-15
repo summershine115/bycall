@@ -26,6 +26,7 @@ class UserCreate(BaseModel):
     """创建用户请求。
 
     ``password`` 可选——不传时由 admin 在控制面后续设置（或 IM 用户根本不需要密码）。
+    ``im_bindings`` 可选——绑定时校验 (channel, im_user_id) 全局唯一（防误绑到他人）。
     """
 
     name: str = Field(..., description="登录名/业务标识，全局唯一")
@@ -35,18 +36,25 @@ class UserCreate(BaseModel):
         default=None, description="明文密码，不传则留空（IM 用户无需密码）"
     )
     is_active: bool = Field(default=True, description="是否启用")
+    im_bindings: dict[str, str] | None = Field(
+        default=None, description="IM 绑定 {channel: im_user_id}，校验全局唯一"
+    )
 
 
 class UserUpdate(BaseModel):
     """更新用户请求（PATCH 语义：仅传入字段生效）。
 
     传 ``password`` 表示改密码；传 ``role`` 会校验目标角色存在。
+    传 ``im_bindings`` 更新 IM 绑定（校验全局唯一）。
     """
 
     display_name: str | None = None
     role: str | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, description="传非空值即改密码")
+    im_bindings: dict[str, str] | None = Field(
+        default=None, description="更新 IM 绑定，校验全局唯一"
+    )
 
 
 class UserOut(BaseModel):

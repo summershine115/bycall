@@ -158,6 +158,29 @@ def _require_role_exists(session: Session, role_name: str) -> Role:
     return role
 
 
+def _check_im_bindings_unique(
+    session: Session, bindings: dict[str, str], exclude_user_id: int | None = None
+) -> None:
+    """校验 IM 绑定全局唯一：每个 (channel, im_user_id) 只能绑一个用户。
+
+    遍历全部用户（SQLite 下 JSON 列查询受限，Python 侧过滤），冲突 → 409。
+    这闭环了身份绑定：避免同一 IM 账号绑到多个 Bycall 用户导致映射到错误的人。
+    """
+    if not bindings:
+        return
+    users = session.exec(select(User)).all()
+    for other in users:
+        if exclude_user_id is not None and other.id == exclude_user_id:
+            continue
+        other_bindings = other.im_bindings or {}
+        for channel, im_id in bindings.items():
+            if other_bindings.get(channel) == im_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"IM 账号 {channel}:{im_id} 已绑定用户 {other.name}",
+                )
+
+
 # ============ 用户 ============
 
 
@@ -168,13 +191,17 @@ def create_user(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> User:
-    """创建用户。密码哈希后入库；name 唯一，冲突 → 409。"""
+    """创建用户。密码哈希后入库；name 唯一，冲突 → 409。IM 绑定校验全局唯一。"""
+    # 校验 IM 绑定唯一（闭环身份映射，避免同一 IM 账号绑多个用户）。
+    if payload.im_bindings:
+        _check_im_bindings_unique(session, payload.im_bindings)
     user = User(
         name=payload.name,
         display_name=payload.display_name,
         role=payload.role,
         password_hash=hash_password(payload.password) if payload.password else "",
         is_active=payload.is_active,
+        im_bindings=payload.im_bindings or {},
     )
     session.add(user)
     try:
@@ -256,6 +283,11 @@ def update_user(
 
     if payload.password is not None:
         user.password_hash = hash_password(payload.password)
+
+    # 更新 IM 绑定（校验全局唯一，排除当前用户自己）。
+    if payload.im_bindings is not None:
+        _check_im_bindings_unique(session, payload.im_bindings, exclude_user_id=user.id)
+        user.im_bindings = payload.im_bindings
 
     session.add(user)
     session.commit()
