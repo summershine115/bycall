@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -410,3 +411,19 @@ class MemoryOut(BaseModel):
     content: str
     created_at: datetime
     updated_at: datetime
+
+
+# ============ Tool（工具目录，M3 工具治理）============
+
+
+class ToolOut(BaseModel):
+    """工具目录条目（只读）。
+
+    工具不是 DB 实体（实现是代码，见 ``tools/registry.py``），本 schema 仅用于
+    控制面 ``GET /api/admin/tools`` 列出已注册工具目录，供 admin 在角色编辑时
+    渲染 ``allowed_tools`` 多选框。``parameters`` 是 JSON Schema（OpenAI function calling 惯例）。
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, Any]

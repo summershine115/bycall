@@ -18,13 +18,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 from sqlmodel import create_engine
 
 from bycall.api.app import create_app
 from bycall.config import get_settings
 from bycall.db import init_db, set_engine
 from bycall.llm import resolver
-from bycall.llm.base import LLMClient
 
 
 @pytest.fixture
@@ -49,14 +50,17 @@ def client(env, monkeypatch):
     mock LLM 记录收到的 messages，返回固定回答，便于断言历史注入。
     登录为 admin（admin API 需要会话认证）。
     """
-    mock_llm = MagicMock(spec=LLMClient)
+    mock_llm = MagicMock(spec=BaseChatModel)
     call_log: list[list] = []
 
-    def chat(messages, **kwargs):
+    # M3：对话模型是 LangChain BaseChatModel，.invoke(messages) -> AIMessage。
+    # bind_tools 在 graph 内调用，mock 需返回自身。
+    def invoke(messages, **kwargs):
         call_log.append(messages)
-        return f"这是第 {len(call_log)} 轮的回答"
+        return AIMessage(content=f"这是第 {len(call_log)} 轮的回答")
 
-    mock_llm.chat.side_effect = chat
+    mock_llm.invoke.side_effect = invoke
+    mock_llm.bind_tools.return_value = mock_llm
     fake_model = SimpleNamespace(id=1, name="mock-chat")
     monkeypatch.setattr(resolver, "get_chat_model", lambda session: (fake_model, mock_llm))
 

@@ -18,6 +18,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 from sqlmodel import Session, create_engine
 
 from bycall.config import LLMConfig
@@ -268,14 +270,16 @@ def _seed_models(session: Session) -> None:
 
 
 def test_create_chat_model_from_db(tmp_path):
-    """create_chat_model 从 DB 激活 chat 实体构造 OpenAIChatModel（智谱 endpoint）。"""
+    """create_chat_model 从 DB 激活 chat 实体构造 ChatOpenAI（智谱 endpoint）。"""
     session = _new_session(tmp_path)
     _seed_models(session)
     chat = create_chat_model(session)
     assert chat is not None
-    assert isinstance(chat, OpenAIChatModel)
-    # 实例应从 Model 实体取 base_url / api_key / name。
-    assert str(chat._client.base_url).rstrip("/") == "https://open.bigmodel.cn/api/paas/v4"  # type: ignore[attr-defined]
+    # M3：对话模型统一切到 langchain-openai 的 ChatOpenAI（原生 bind_tools）。
+    assert isinstance(chat, ChatOpenAI)
+    assert isinstance(chat, BaseChatModel)
+    # 实例应从 Model 实体取 base_url。
+    assert str(chat.openai_api_base).rstrip("/") == "https://open.bigmodel.cn/api/paas/v4"
 
 
 def test_create_embed_model_from_db(tmp_path):
@@ -307,18 +311,20 @@ def test_resolver_get_chat_model_pair(tmp_path):
     assert pair is not None
     entity, model = pair
     assert entity.name == "glm-4-flash"
-    assert isinstance(model, ChatModel)
+    # M3：model 现在是 ChatOpenAI（BaseChatModel），不再是自研 ChatModel。
+    assert isinstance(model, BaseChatModel)
 
 
 # ============ 6. factory 兼容入口（config 兜底）============
 
 
 def test_create_llm_client_config_fallback():
-    """无 session 时，create_llm_client 走 config 兜底，返回 OpenAIChatModel。"""
+    """无 session 时，create_llm_client 走 config 兜底，返回 ChatOpenAI。"""
     config = LLMConfig(provider="openai", api_key="sk-test", model="gpt-4o-mini")
     client = create_llm_client(config)
-    assert isinstance(client, OpenAIChatModel)
-    assert isinstance(client, ChatModel)
+    # M3：兜底路径也构造 ChatOpenAI。
+    assert isinstance(client, ChatOpenAI)
+    assert isinstance(client, BaseChatModel)
 
 
 def test_create_llm_client_prefers_db_when_session(tmp_path):
@@ -326,9 +332,9 @@ def test_create_llm_client_prefers_db_when_session(tmp_path):
     session = _new_session(tmp_path)
     _seed_models(session)
     client = create_llm_client(config=None, session=session)
-    assert isinstance(client, OpenAIChatModel)
+    assert isinstance(client, ChatOpenAI)
     # DB 里是智谱 endpoint，证明走的是 DB 路径而非 config 默认 openai。
-    assert str(client._client.base_url).rstrip("/") == "https://open.bigmodel.cn/api/paas/v4"  # type: ignore[attr-defined]
+    assert str(client.openai_api_base).rstrip("/") == "https://open.bigmodel.cn/api/paas/v4"
 
 
 def test_create_llm_client_config_fallback_when_no_active(tmp_path):
@@ -336,6 +342,6 @@ def test_create_llm_client_config_fallback_when_no_active(tmp_path):
     session = _new_session(tmp_path)
     config = LLMConfig(provider="openai", api_key="sk-test", model="gpt-4o-mini")
     client = create_llm_client(config, session=session)
-    assert isinstance(client, OpenAIChatModel)
+    assert isinstance(client, ChatOpenAI)
     # config 默认是 OpenAI 官方 endpoint（非 DB 的智谱）。
-    assert str(client._client.base_url).rstrip("/") == "https://api.openai.com/v1"  # type: ignore[attr-defined]
+    assert str(client.openai_api_base).rstrip("/") == "https://api.openai.com/v1"

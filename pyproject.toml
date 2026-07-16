@@ -33,6 +33,11 @@ dependencies = [
     "wecom-aibot-python-sdk>=1.0.2",
     # 限流（登录/聊天防暴力破解 + 费用 DoS）
     "redis>=5.0",
+    # M3 工具治理：LangGraph 编排（StateGraph + ToolNode）+ OpenAI 兼容对话模型
+    # 渐进式引入：只用编排+工具能力，Checkpointer/PostgresSaver 留后续（见 ADR-0002）
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "langchain-core>=0.3",
 ]
 
 [project.optional-dependencies]

@@ -7,25 +7,28 @@
 2. **传入 config（兼容旧路径）**：``create_llm_client(config)`` 仍按 ``LLMConfig``
    构造，供未接入 DB 的旧调用点（如纯单元测试、IM handler 早期初始化）兜底。
 
+M3 变更（见 ADR-0002）：对话模型统一切到 ``langchain-openai`` 的 ``ChatOpenAI``
+（原生 ``bind_tools``，供 LangGraph ``ToolNode`` 消费）。``create_chat_model`` /
+``create_llm_client`` 返回 ``BaseChatModel``；``create_embed_model`` 仍返回自研
+``EmbedModel``（向量化独立于对话链路）。
+
 兼容说明：
 - ``create_llm_client`` 保留旧签名，内部优先走 DB（若 ``session`` 可用且 DB 有激活
-  chat 模型），否则回退到 config 构造。返回 ``ChatModel``（``LLMClient`` 已是
-  ``ChatModel`` 子类，类型兼容）。它**不再**承担向量化职责——需要 embed 的调用方
-  改用 ``create_embed_model``。
-- 旧返回的 ``LLMClient``（chat+embed 合一）已不存在；保留类型别名让历史 import 不崩。
+  chat 模型），否则回退到 config 构造。返回 ``BaseChatModel``。
 """
 
 from __future__ import annotations
 
+from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
-from bycall.llm.base import ChatModel, EmbedModel, LLMClient
+from bycall.llm.base import EmbedModel
 
 # ============ 新入口：DB 激活实体驱动 ============
 
 
-def create_chat_model(session: Session, *, timeout: float = 60.0) -> ChatModel | None:
-    """从 DB 激活的 chat 模型构造 ChatModel。无激活 chat 模型返回 None。
+def create_chat_model(session: Session, *, timeout: float = 60.0) -> BaseChatModel | None:
+    """从 DB 激活的 chat 模型构造 ChatOpenAI（BaseChatModel）。无激活 chat 模型返回 None。
 
     admin 在控制面改激活模型后，下次调用即时生效。
     """
@@ -52,23 +55,19 @@ def create_embed_model(session: Session, *, timeout: float = 60.0) -> EmbedModel
 # ============ 兼容入口：config 驱动 ============
 
 
-def create_llm_client(config=None, *, session: Session | None = None) -> LLMClient:
-    """兼容入口：返回一个对话模型（``ChatModel``，即 ``LLMClient``）。
+def create_llm_client(config=None, *, session: Session | None = None) -> BaseChatModel:
+    """兼容入口：返回一个对话模型（``BaseChatModel``，即 ``ChatOpenAI``）。
 
     优先级：DB 激活 chat 实体（``session`` 可用且 DB 有数据）> config 兜底。
     admin 改 DB 后下一条消息即时生效。
-
-    ⚠️ 返回值只承担对话（``chat``）。旧调用方若曾依赖 ``.embed()``，需改用
-    ``create_embed_model``。保留 ``LLMClient`` 返回类型仅为类型兼容（它是
-    ``ChatModel`` 的子类）。
     """
     # 1. 优先：DB 激活实体
     if session is not None:
         chat = create_chat_model(session)
         if chat is not None:
-            return chat  # type: ignore[return-value]  # ChatModel 是 LLMClient 的子集
+            return chat
 
-    # 2. 兜底：从 config（.env / LLMConfig / SimpleNamespace）构造对话模型。
+    # 2. 兜底：从 config（.env / LLMConfig / SimpleNamespace）构造 ChatOpenAI。
     #    用 getattr 容错（部分测试传 SimpleNamespace）。
     cfg_base_url = getattr(config, "base_url", "https://api.openai.com/v1")
     _key = getattr(config, "api_key", None)
@@ -76,9 +75,9 @@ def create_llm_client(config=None, *, session: Session | None = None) -> LLMClie
     cfg_model = getattr(config, "model", "gpt-4o-mini")
     cfg_timeout = float(getattr(config, "timeout", 60.0))
 
-    from bycall.llm.openai_compat import OpenAIChatModel
+    from langchain_openai import ChatOpenAI
 
-    return OpenAIChatModel(
+    return ChatOpenAI(
         base_url=cfg_base_url,
         api_key=cfg_api_key,
         model=cfg_model,
