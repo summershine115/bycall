@@ -1,12 +1,13 @@
-"""LLM 抽象测试：拆分后的 ChatModel / EmbedModel 端到端 + resolver + factory。
+"""LLM 抽象测试：EmbedModel 端到端 + resolver + factory。
 
 覆盖：
-- ``OpenAIChatModel.chat`` 走通（mock SDK 响应）
 - ``OpenAIEmbedModel.embed`` 返回对齐的向量 + ``dimension`` property
-- GLM 兼容层（``GLMClient`` = ``OpenAIChatModel`` + 智谱默认 URL）
-- ``LLMClient`` 复合接口的 async 兜底（chat 路径）
-- ``resolver``：DB 激活 ``Model`` 实体 → ChatModel / EmbedModel
-- ``factory``：``create_chat_model`` / ``create_embed_model`` / ``create_llm_client``
+- ``EmbedModel.aembed`` async 兜底
+- ``resolver``：DB 激活 ``Model`` 实体 → ChatOpenAI / EmbedModel
+- ``factory``：``create_chat_model`` / ``create_embed_model``
+
+对话模型（M3）已切到 ``langchain-openai`` 的 ``ChatOpenAI``，自研 chat 抽象与 GLM
+兼容层已移除（见 ADR-0002），不再测试。
 
 所有 LLM 调用用 mock SDK client，不连真实 API。
 """
@@ -22,11 +23,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from sqlmodel import Session, create_engine
 
-from bycall.config import LLMConfig
-from bycall.llm.base import ChatModel, EmbedModel, LLMClient, Message
-from bycall.llm.factory import create_chat_model, create_embed_model, create_llm_client
-from bycall.llm.glm import GLM_DEFAULT_BASE_URL, GLMClient
-from bycall.llm.openai_compat import OpenAIChatModel, OpenAIEmbedModel
+from bycall.llm.base import EmbedModel
+from bycall.llm.factory import create_chat_model, create_embed_model
+from bycall.llm.openai_compat import OpenAIEmbedModel
 
 
 @pytest.fixture(autouse=True)
@@ -46,8 +45,8 @@ def _reset_global_engine():
 def _fake_openai_api_key(monkeypatch):
     """OpenAI SDK 构造时若 key 为空会报错；测试统一灌一个假 key，避免真连网。
 
-    DB 驱动测试会真实构造 ``OpenAIChatModel`` / ``OpenAIEmbedModel``（不注入 mock），
-    需要绕过 SDK 的凭据校验。不设环境变量则构造阶段即抛 OpenAIError。
+    DB 驱动测试会真实构造 ``OpenAIEmbedModel``（不注入 mock），需要绕过 SDK 的凭据
+    校验。不设环境变量则构造阶段即抛 OpenAIError。
     """
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     yield
@@ -56,26 +55,10 @@ def _fake_openai_api_key(monkeypatch):
 # ============ 工具：构造 mock openai client ============
 
 
-def _mock_chat_response(text: str) -> object:
-    """构造 chat.completions.create 的假响应。"""
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
-
-
 def _mock_embed_response(vectors: list[list[float]]) -> object:
     """构造 embeddings.create 的假响应（带 index 验证对齐逻辑）。"""
     data = [SimpleNamespace(embedding=v, index=i) for i, v in enumerate(vectors)]
     return SimpleNamespace(data=data)
-
-
-def _make_chat_model(model: str = "gpt-4o-mini") -> tuple[OpenAIChatModel, MagicMock]:
-    """构造 OpenAIChatModel 并注入 mock SDK client，返回 (model, mock)。"""
-    chat = OpenAIChatModel(
-        base_url="https://api.openai.com/v1", api_key="sk-test", model=model, timeout=60.0
-    )
-    mock = MagicMock()
-    mock.chat.completions.create.return_value = _mock_chat_response("hello back")
-    chat._set_client(mock)  # type: ignore[attr-defined]
-    return chat, mock
 
 
 def _make_embed_model(
@@ -103,34 +86,7 @@ def _kwargs_model(mock_method: MagicMock) -> str:
     return call.kwargs.get("model") or ""
 
 
-# ============ 1. ChatModel.chat 端到端（mock）============
-
-
-def test_chat_returns_assistant_text():
-    chat, mock = _make_chat_model()
-    reply = chat.chat([Message(role="user", content="hi")])
-    assert reply == "hello back"
-    mock.chat.completions.create.assert_called_once()
-    # 验证消息透传正确
-    call_kwargs = mock.chat.completions.create.call_args.kwargs
-    assert call_kwargs["messages"] == [{"role": "user", "content": "hi"}]
-    assert call_kwargs["model"] == "gpt-4o-mini"
-
-
-def test_chat_empty_choices_returns_empty():
-    chat, mock = _make_chat_model()
-    mock.chat.completions.create.return_value = SimpleNamespace(choices=[])
-    assert chat.chat([Message(role="user", content="hi")]) == ""
-
-
-def test_chat_model_is_chat_model():
-    chat, _ = _make_chat_model()
-    assert isinstance(chat, ChatModel)
-    # OpenAIChatModel 只承担对话，不应是 EmbedModel。
-    assert not isinstance(chat, EmbedModel)
-
-
-# ============ 2. EmbedModel.embed 端到端（mock）============
+# ============ 1. EmbedModel.embed 端到端（mock）============
 
 
 def test_embed_returns_aligned_vectors():
@@ -170,44 +126,9 @@ def test_embed_dimension_property():
 def test_embed_model_is_embed_model():
     embed, _ = _make_embed_model()
     assert isinstance(embed, EmbedModel)
-    # OpenAIEmbedModel 只承担向量化，不应是 ChatModel。
-    assert not isinstance(embed, ChatModel)
 
 
-# ============ 3. GLM 兼容层 ============
-
-
-def test_glm_default_base_url():
-    """GLMClient 不传 base_url 时用智谱默认端点（openai SDK 会规范化加尾斜杠）。"""
-    client = GLMClient(api_key="sk-test")
-    base = str(client._client.base_url).rstrip("/")  # type: ignore[attr-defined]
-    assert base == GLM_DEFAULT_BASE_URL
-
-
-def test_glm_client_is_openai_chat_model():
-    """GLMClient 复用 OpenAIChatModel 兼容协议，且只承担对话。"""
-    client = GLMClient(api_key="sk-test")
-    assert isinstance(client, OpenAIChatModel)
-    assert isinstance(client, ChatModel)
-    assert not isinstance(client, EmbedModel)
-
-
-# ============ 4. LLMClient 复合接口 + async 兜底 ============
-
-
-def test_llm_client_composite_iface():
-    """LLMClient 是 ChatModel + EmbedModel 复合体，mock spec 能同时拿到 chat/embed。"""
-    m = MagicMock(spec=LLMClient)
-    assert hasattr(m, "chat")
-    assert hasattr(m, "embed")
-    assert hasattr(m, "dimension")
-
-
-@pytest.mark.asyncio
-async def test_async_chat_falls_back_to_sync():
-    chat, _ = _make_chat_model()
-    reply = await chat.achat([Message(role="user", content="hi")])
-    assert reply == "hello back"
+# ============ 2. EmbedModel async 兜底 ============
 
 
 @pytest.mark.asyncio
@@ -217,7 +138,7 @@ async def test_async_embed_falls_back_to_sync():
     assert vecs == [[0.1, 0.2], [0.3, 0.4]]
 
 
-# ============ 5. resolver + factory（DB 驱动）============
+# ============ 3. resolver + factory（DB 驱动）============
 
 
 def _new_session(tmp_path: Path) -> Session:
@@ -311,37 +232,5 @@ def test_resolver_get_chat_model_pair(tmp_path):
     assert pair is not None
     entity, model = pair
     assert entity.name == "glm-4-flash"
-    # M3：model 现在是 ChatOpenAI（BaseChatModel），不再是自研 ChatModel。
+    # M3：model 是 ChatOpenAI（BaseChatModel）。
     assert isinstance(model, BaseChatModel)
-
-
-# ============ 6. factory 兼容入口（config 兜底）============
-
-
-def test_create_llm_client_config_fallback():
-    """无 session 时，create_llm_client 走 config 兜底，返回 ChatOpenAI。"""
-    config = LLMConfig(provider="openai", api_key="sk-test", model="gpt-4o-mini")
-    client = create_llm_client(config)
-    # M3：兜底路径也构造 ChatOpenAI。
-    assert isinstance(client, ChatOpenAI)
-    assert isinstance(client, BaseChatModel)
-
-
-def test_create_llm_client_prefers_db_when_session(tmp_path):
-    """有 session 且 DB 有激活 chat 模型时，create_llm_client 走 DB 而非 config。"""
-    session = _new_session(tmp_path)
-    _seed_models(session)
-    client = create_llm_client(config=None, session=session)
-    assert isinstance(client, ChatOpenAI)
-    # DB 里是智谱 endpoint，证明走的是 DB 路径而非 config 默认 openai。
-    assert str(client.openai_api_base).rstrip("/") == "https://open.bigmodel.cn/api/paas/v4"
-
-
-def test_create_llm_client_config_fallback_when_no_active(tmp_path):
-    """有 session 但 DB 无激活模型时，create_llm_client 回退到 config 构造。"""
-    session = _new_session(tmp_path)
-    config = LLMConfig(provider="openai", api_key="sk-test", model="gpt-4o-mini")
-    client = create_llm_client(config, session=session)
-    assert isinstance(client, ChatOpenAI)
-    # config 默认是 OpenAI 官方 endpoint（非 DB 的智谱）。
-    assert str(client.openai_api_base).rstrip("/") == "https://api.openai.com/v1"

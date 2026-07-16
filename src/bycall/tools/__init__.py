@@ -13,8 +13,9 @@ LLM 的工具列表 = 「该角色可用工具集」，无权工具 LLM 根本�
   ``CapabilitySet.allowed_tools`` → ``gateway.filter_tools`` → ``gateway.to_langchain_tools``
     → ``agent/graph.py`` 的 ``ToolNode``（LLM 只见过滤后的列表）
 
-M3 不预置内置工具（只搭框架）。后续工具按需在业务模块里 ``register``；
-M4 MCP 网关落地后，MCP 工具在启动时动态注册进同一张表，对本包透明。
+内置工具见 ``builtins``（随包导入自动注册：``current_time`` / ``calculator`` /
+``whoami``）。新增自定义工具只需 ``register(ToolSpec(...))`` 或 ``@register_tool``
+装饰一个函数；M4 MCP 网关落地后，MCP 工具在启动时动态注册进同一张表，对本包透明。
 """
 
 from bycall.tools.base import ToolSpec
@@ -37,3 +38,9 @@ __all__ = [
     "register_tool",
     "to_langchain_tools",
 ]
+
+# 注册触发点：import 本包即连带注册内置工具（builtins 模块顶层有 register 调用）。
+# 放在 __all__ 之后、所有公开符号 import 之后，确保 register/get_all_tools 已就绪。
+# REST /chat、IM 渠道、控制面 GET /api/admin/tools 都间接 import 了 tools.gateway，
+# 而 gateway 由本 __init__ 导入——故挂在 import 链上能覆盖全部数据面路径。
+from bycall.tools import builtins  # noqa: F401
