@@ -3,20 +3,25 @@
 统一"哪个是当前激活模型"的查询，供工厂（``factory.py``）和调用方复用。
 admin 在控制台改激活模型后，下次查询即时生效（DB 即真值，无需重启）。
 
-解析策略（参考 WeKnora）：目前所有 provider（openai/zhipu/aliyun/deepseek/
-siliconflow/moonshot/ollama/generic）都提供 OpenAI 兼容端点，因此统一分发到
-``OpenAIChatModel`` / ``OpenAIEmbedModel``；``Model.provider`` 字段只用于 UI 展示
-默认 URL（见 ``llm/providers.py``），不参与分发。未来若出现非兼容协议的 provider，
-在此处按 ``model.provider`` 增加分支即可。
+解析策略（参考 WeKnora）：所有 provider（openai/zhipu/aliyun/deepseek/
+siliconflow/moonshot/ollama/generic）都提供 OpenAI 兼容端点。
+
+- **对话模型**（M3）：用 ``langchain-openai`` 的 ``ChatOpenAI``（原生 ``bind_tools``，
+  供 LangGraph ``ToolNode`` 消费），替代已 deprecated 的 ``OpenAIChatModel``。
+- **向量化模型**：继续用自研 ``OpenAIEmbedModel``（RAG 入库/检索，独立于对话）。
+
+``Model.provider`` 字段只用于 UI 展示默认 URL（见 ``llm/providers.py``），不参与分发。
+未来若出现非兼容协议的 provider，在此处按 ``model.provider`` 增加分支即可。
 """
 
 from __future__ import annotations
 
+from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
 from bycall.governance.models import Model
-from bycall.llm.base import ChatModel, EmbedModel
-from bycall.llm.openai_compat import OpenAIChatModel, OpenAIEmbedModel
+from bycall.llm.base import EmbedModel
+from bycall.llm.openai_compat import OpenAIEmbedModel
 
 # ============ 实体查询 ============
 
@@ -34,15 +39,22 @@ def resolve_chat_model(
     model: Model,
     *,
     timeout: float = 60.0,
-) -> ChatModel:
-    """Model 实体 → ChatModel 实例。
+) -> BaseChatModel:
+    """Model 实体 → ChatOpenAI 实例（BaseChatModel）。
 
-    目前所有 provider 都走 OpenAI 兼容协议，直接构造 ``OpenAIChatModel``。
-    未来出现非兼容 provider 时，按 ``model.provider`` 分支扩展。
+    M3 起对话模型统一用 ``langchain-openai`` 的 ``ChatOpenAI``：原生支持
+    ``bind_tools``（function calling），供 LangGraph ``ToolNode`` 消费。
+    ``base_url`` 可指向任意 OpenAI 兼容端点，覆盖现有全部 provider。
+
+    返回 ``BaseChatModel`` 而非自研 ``ChatModel``——``ChatOpenAI`` 的调用契约是
+    ``.invoke(messages) -> AIMessage``（含 ``content`` + ``tool_calls``），
+    不再是自研 ``chat(messages) -> str``。
     """
+    from langchain_openai import ChatOpenAI
+
     from bycall.governance.secrets import decrypt_secret
 
-    return OpenAIChatModel(
+    return ChatOpenAI(
         base_url=model.base_url,
         api_key=decrypt_secret(model.api_key),
         model=model.name,
@@ -58,7 +70,7 @@ def resolve_embed_model(
 ) -> EmbedModel:
     """Model 实体 → EmbedModel 实例。
 
-    目前所有 provider 都走 OpenAI 兼容协议，直接构造 ``OpenAIEmbedModel``。
+    向量化继续用自研 ``OpenAIEmbedModel``（RAG 入库/检索，独立于对话链路）。
     ``embed_dimension`` 用于向量库 schema 对齐与切换模型时的维度不匹配检测。
     """
     from bycall.governance.secrets import decrypt_secret
@@ -75,7 +87,9 @@ def resolve_embed_model(
 # ============ 便利：激活实体 + 实例一步到位 ============
 
 
-def get_chat_model(session: Session, *, timeout: float = 60.0) -> tuple[Model, ChatModel] | None:
+def get_chat_model(
+    session: Session, *, timeout: float = 60.0
+) -> tuple[Model, BaseChatModel] | None:
     """查激活 chat model 并构造实例。无激活 chat 模型返回 None。"""
     entity = get_active_model(session, "chat")
     if entity is None:

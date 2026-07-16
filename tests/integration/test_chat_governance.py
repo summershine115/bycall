@@ -13,13 +13,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 from sqlmodel import create_engine
 
 from bycall.config import get_settings
 from bycall.db import init_db, session_scope, set_engine
 from bycall.governance.models import Role, RoleConfig, User
 from bycall.governance.security import hash_password
-from bycall.llm.base import LLMClient
 
 
 @pytest.fixture
@@ -50,8 +51,11 @@ def client(env, monkeypatch):
     from bycall.llm import resolver
 
     app = create_app()
-    mock_llm = MagicMock(spec=LLMClient)
-    mock_llm.chat.return_value = "基于知识库的回答。"
+    # M3：对话模型是 LangChain BaseChatModel（ChatOpenAI），调用契约 .invoke() -> AIMessage。
+    # mock spec 用 BaseChatModel（含 invoke/bind_tools），不再是自研 LLMClient。
+    mock_llm = MagicMock(spec=BaseChatModel)
+    mock_llm.invoke.return_value = AIMessage(content="基于知识库的回答。")
+    mock_llm.bind_tools.return_value = mock_llm
 
     fake_model = SimpleNamespace(id=1, name="mock-chat")
     monkeypatch.setattr(resolver, "get_chat_model", lambda session: (fake_model, mock_llm))

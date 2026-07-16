@@ -14,8 +14,13 @@ from bycall.config import get_settings
 def _reset_settings():
     """每个测试用例后清掉 settings 单例缓存，避免跨用例污染。"""
     get_settings.cache_clear()
+    # 同步清空工具注册表（M3 工具治理：进程级全局，需跨用例隔离）。
+    from bycall.tools.registry import clear_registry
+
+    clear_registry()
     yield
     get_settings.cache_clear()
+    clear_registry()
     # 同步重置限流器单例（避免跨用例共享内存计数器）。
     from bycall.governance.ratelimit import reset_limiter
 

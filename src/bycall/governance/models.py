@@ -185,6 +185,10 @@ class AuditLog(SQLModel, table=True):
     # 控制面变更审计：变更前/后的 JSON 快照（敏感字段已脱敏）。
     before: str = ""
     after: str = ""
+    # 数据面工具调用审计：``[{name, args, result}]`` JSON 字符串。
+    # result 是脱敏**后**的工具返回值（与进 LLM 上下文的一致，已截断防爆），
+    # 对应 product-design 支柱 3「调用后审计落库」+ 支柱 4 第二条泄漏面。
+    tool_results: str = ""
     created_at: datetime = Field(
         default_factory=_now_utc,
         sa_column=Column(DateTime, default=_now_utc, index=True),

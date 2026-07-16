@@ -18,7 +18,6 @@ from bycall.db import init_db, session_scope, set_engine
 from bycall.gateway.base import InboundMessage, ReplySender
 from bycall.governance.models import Role, RoleConfig, User
 from bycall.governance.security import hash_password
-from bycall.llm.base import LLMClient
 
 
 @pytest.fixture
@@ -36,9 +35,14 @@ def env(tmp_path, monkeypatch):
 
 
 def _make_mock_llm(reply="基于知识库的回答。"):
-    m = MagicMock(spec=LLMClient)
-    m.chat.return_value = reply
-    m.embed.return_value = []
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+
+    # M3：对话模型是 LangChain BaseChatModel，mock spec 用 BaseChatModel
+    # （含 invoke/bind_tools），不再是自研 LLMClient。
+    m = MagicMock(spec=BaseChatModel)
+    m.invoke.return_value = AIMessage(content=reply)
+    m.bind_tools.return_value = m
     return m
 
 
@@ -139,8 +143,8 @@ def test_authorized_user_gets_answer(env, monkeypatch):
     final = [c for c in capture if c[0] == "stream" and c[3] is True]
     assert len(final) == 1
     assert "基于知识" in final[0][1]
-    # LLM 被调用（说明通过了权限判定）
-    mock_llm.chat.assert_called_once()
+    # LLM 被调用（说明通过了权限判定）。M3：invoke 替代 chat。
+    mock_llm.invoke.assert_called()
 
 
 def test_empty_message_ignored(env, monkeypatch):

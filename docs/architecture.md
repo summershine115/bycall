@@ -14,12 +14,13 @@
                            │ 统一 Message 对象
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Agent 编排层 (LangGraph)           [M3]       │
-│   意图识别 → 规划 → 工具调用(+HITL) → 响应生成(+citation)        │
-│   状态: Checkpointer(短期) + Store(长期，Postgres)               │
+│                    Agent 编排层 (LangGraph)        [M3 编排✅]    │
+│   StateGraph + ToolNode：工具调用回路（按 allowed_tools 过滤）   │
+│   状态: session_store 管历史（渐进式，Checkpointer 留后续）      │
 │   会话: Conversation/Message 表，按 (user,channel) 隔离上下文    │
 │   模型: per-session 可选(Conversation.model_id) → 默认全局激活   │
 │   循环: ReAct 协调层 + Function Calling 叶子节点（混合架构）     │
+│   Checkpointer/PostgresSaver 暂不接（见 ADR-0002 三大障碍）      │
 └───────────────────────────┬─────────────────────────────────────┘
         ┌───────────────────┼───────────────────┐
         ▼                   ▼                   ▼

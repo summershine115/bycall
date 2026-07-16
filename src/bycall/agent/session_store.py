@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import logging
 
+from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
 from bycall.governance.models import Conversation, Message, UserMemory
-from bycall.llm.base import ChatModel
 from bycall.llm.base import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,7 @@ def should_compress(
 
 
 def compress_history(
-    llm: ChatModel,
+    llm: BaseChatModel,
     history: list[Message],
     previous_summary: str,
     keep_recent: int = _KEEP_RECENT,
@@ -244,11 +244,16 @@ def compress_history(
     prompt_parts.append(f"\n## 待压缩的对话\n{conversation_text}")
     prompt_parts.append("\n请输出更新后的摘要（纯文本，不超过 500 字）：")
 
-    compress_messages = [LLMMessage(role="user", content="\n".join(prompt_parts))]
-
     try:
-        new_summary = llm.chat(compress_messages, temperature=0.3)
-        new_summary = new_summary.strip()[:2000]
+        # M3：对话模型已是 LangChain BaseChatModel（ChatOpenAI），调用契约是
+        # .invoke(messages) -> AIMessage，取 .content 作文本。直接传 HumanMessage。
+        from langchain_core.messages import HumanMessage
+
+        from bycall.agent.graph import _content_to_text
+
+        resp = llm.invoke([HumanMessage(content="\n".join(prompt_parts))])
+        # content 可能是内容块 list（推理/兼容模型），归一成 str 再截断（防 .strip 崩）。
+        new_summary = _content_to_text(resp.content).strip()[:2000]
         if new_summary:
             logger.info(
                 "会话压缩完成: %d 条消息 → summary %d 字符",

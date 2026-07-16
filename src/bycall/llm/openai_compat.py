@@ -22,10 +22,18 @@ from openai import OpenAI
 from bycall.llm.base import ChatModel, EmbedModel, Message
 
 # ============ 对话模型 ============
+#
+# ⚠️ Deprecated（M3，见 ADR-0002）：对话模型已统一切到 ``langchain-openai`` 的
+# ``ChatOpenAI``（原生 ``bind_tools``，供 LangGraph ``ToolNode`` 消费）。``OpenAIChatModel``
+# 保留代码不删（降风险），但生产路径（``resolver`` / ``factory``）不再构造它。后续里程碑清理。
 
 
 class OpenAIChatModel(ChatModel):
-    """OpenAI 兼容对话模型。一个实例 = 一组 base_url + key + model。"""
+    """[Deprecated] OpenAI 兼容对话模型。一个实例 = 一组 base_url + key + model。
+
+    M3 起对话路径改用 ``ChatOpenAI``（支持 function calling）。本类仅保留给历史
+    import 与测试一个不崩的入口，不再被 ``resolver`` / ``factory`` 构造。
+    """
 
     def __init__(
         self,

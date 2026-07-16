@@ -8,7 +8,10 @@ provider 统一分发到 ``OpenAIChatModel`` / ``OpenAIEmbedModel``。
 - ``GLM_DEFAULT_BASE_URL``：智谱 BigModel OpenAI 兼容端点常量。
 - ``GLMChatModel``：``OpenAIChatModel`` + 智谱默认 URL，供旧调用点平滑迁移。
 
-新代码请直接用 ``resolver`` 或 ``OpenAIChatModel``，不要依赖本模块。
+⚠️ Deprecated（M3，见 ADR-0002）：对话模型已统一切到 ``ChatOpenAI``。
+``GLMClient`` 保留代码不删，仅给历史 import 一个不崩的入口。
+
+新代码请直接用 ``resolver`` 或 ``ChatOpenAI``，不要依赖本模块。
 """
 
 from __future__ import annotations

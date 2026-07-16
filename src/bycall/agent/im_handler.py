@@ -145,6 +145,7 @@ def _no_model_result(user, channel: str):
         retrieved_chunks=0,
         user_name=user.name,
         role=user.role,
+        tool_calls=[],  # 无模型降级路径无工具调用
     )
 
 

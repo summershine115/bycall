@@ -86,7 +86,7 @@ def _ensure_schema_compatibility() -> None:
     if "auditlog" not in inspector.get_table_names():
         return
     columns = {column["name"] for column in inspector.get_columns("auditlog")}
-    missing = {"before", "after"} - columns
+    missing = {"before", "after", "tool_results"} - columns
     if not missing:
         return
     with engine.begin() as connection:

@@ -254,10 +254,13 @@ class TestShouldCompress:
 class TestCompressHistory:
     def test_compress_returns_summary(self):
         """压缩返回 LLM 生成的摘要。"""
+        from langchain_core.messages import AIMessage
+
         from bycall.governance.models import Message as Msg
 
         mock_llm = MagicMock()
-        mock_llm.chat.return_value = "用户讨论了报价流程和审批步骤。"
+        # M3：对话模型是 LangChain BaseChatModel，invoke 返回 AIMessage。
+        mock_llm.invoke.return_value = AIMessage(content="用户讨论了报价流程和审批步骤。")
 
         history = [
             Msg(
@@ -271,14 +274,16 @@ class TestCompressHistory:
         result = compress_history(mock_llm, history, previous_summary="")
         assert result == "用户讨论了报价流程和审批步骤。"
         # LLM 被调用了一次
-        mock_llm.chat.assert_called_once()
+        mock_llm.invoke.assert_called_once()
 
     def test_compress_with_previous_summary(self):
         """有 previous_summary 时传给 LLM 做增量更新。"""
+        from langchain_core.messages import AIMessage
+
         from bycall.governance.models import Message as Msg
 
         mock_llm = MagicMock()
-        mock_llm.chat.return_value = "更新后的摘要"
+        mock_llm.invoke.return_value = AIMessage(content="更新后的摘要")
 
         history = [
             Msg(
@@ -291,7 +296,7 @@ class TestCompressHistory:
 
         compress_history(mock_llm, history, previous_summary="之前的摘要")
         # 验证 LLM 收到的 prompt 里包含之前的摘要
-        call_args = mock_llm.chat.call_args
+        call_args = mock_llm.invoke.call_args
         messages = call_args[0][0]
         assert "之前的摘要" in messages[0].content
 
@@ -300,7 +305,7 @@ class TestCompressHistory:
         from bycall.governance.models import Message as Msg
 
         mock_llm = MagicMock()
-        mock_llm.chat.side_effect = Exception("LLM 不可用")
+        mock_llm.invoke.side_effect = Exception("LLM 不可用")
 
         history = [
             Msg(
@@ -320,7 +325,7 @@ class TestCompressHistory:
         history = []  # 空历史
         result = compress_history(mock_llm, history, previous_summary="旧摘要")
         assert result == "旧摘要"
-        mock_llm.chat.assert_not_called()
+        mock_llm.invoke.assert_not_called()
 
 
 # ============ UserMemory ============

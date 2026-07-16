@@ -46,6 +46,7 @@ from bycall.admin.schemas import (
     RoleUpdate,
     SettingOut,
     SettingsBatchUpdate,
+    ToolOut,
     UserCreate,
     UserOut,
     UserUpdate,
@@ -1755,3 +1756,25 @@ def delete_user_memory(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"记忆条目不存在: {mem_id}")
     session.delete(mem)
     session.commit()
+
+
+# ============ 工具目录（M3 工具治理）============
+
+
+@router.get("/tools", response_model=list[ToolOut])
+def list_tools(
+    _admin: None = Depends(_require_admin),
+) -> list[ToolOut]:
+    """列出已注册的工具目录（只读）。
+
+    工具不是 DB 实体（实现是代码，见 ``tools/registry.py``），本端点返回进程级注册表里
+    的全部工具，供 admin 在角色编辑时渲染 ``allowed_tools`` 多选框。
+
+    ``allowed_tools`` 的实际增删仍走 ``PATCH /api/admin/roles/{name}``（RoleConfig 字段）。
+    """
+    from bycall.tools.registry import get_all_tools
+
+    return [
+        ToolOut(name=t.name, description=t.description, parameters=t.parameters)
+        for t in get_all_tools()
+    ]
