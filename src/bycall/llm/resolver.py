@@ -1,4 +1,4 @@
-"""Model 实体解析器：DB 激活实体 → ChatModel / EmbedModel。
+"""Model 实体解析器：DB 激活实体 → ChatOpenAI / EmbedModel。
 
 统一"哪个是当前激活模型"的查询，供工厂（``factory.py``）和调用方复用。
 admin 在控制台改激活模型后，下次查询即时生效（DB 即真值，无需重启）。
@@ -6,8 +6,9 @@ admin 在控制台改激活模型后，下次查询即时生效（DB 即真值�
 解析策略（参考 WeKnora）：所有 provider（openai/zhipu/aliyun/deepseek/
 siliconflow/moonshot/ollama/generic）都提供 OpenAI 兼容端点。
 
-- **对话模型**（M3）：用 ``langchain-openai`` 的 ``ChatOpenAI``（原生 ``bind_tools``，
-  供 LangGraph ``ToolNode`` 消费），替代已 deprecated 的 ``OpenAIChatModel``。
+- **对话模型**（M3）：用 ``langchain-openai`` 的 ``ChatOpenAI``（``BaseChatModel``，
+  原生 ``bind_tools`` 供 LangGraph ``ToolNode`` 消费）。自研 chat 抽象已移除（见
+  ADR-0002 + base.py docstring）。
 - **向量化模型**：继续用自研 ``OpenAIEmbedModel``（RAG 入库/检索，独立于对话）。
 
 ``Model.provider`` 字段只用于 UI 展示默认 URL（见 ``llm/providers.py``），不参与分发。

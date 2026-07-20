@@ -1,16 +1,18 @@
 """模型抽象基类：对话与向量化解耦为两个独立实体。
 
-参考 WeKnora：``ChatModel``（对话）与 ``EmbedModel``（向量化）是两个独立接口，
-可各自挂不同 provider（如 chat 用智谱 GLM、embed 用本地 Ollama）。
-M0 把它们绑在同一个 ``LLMClient``（chat+embed 合一）是历史遗留；现拆开。
+参考 WeKnora：对话与向量化是两个独立接口，可各自挂不同 provider（如 chat 用智谱
+GLM、embed 用本地 Ollama）。
 
-为兼容现有调用方（``runner`` / ``ingest`` / ``dataplane`` 等），保留 ``LLMClient``
-作为 ``ChatModel`` + ``EmbedModel`` 的复合接口——它仍然同时具备 ``chat()`` 与
-``embed()``，所以旧代码与 ``MagicMock(spec=LLMClient)`` 不受影响。新代码应直接
-依赖 ``ChatModel`` / ``EmbedModel``，按需注入。
+- **对话模型**（M3）：统一切到 ``langchain-openai`` 的 ``ChatOpenAI``
+  （``BaseChatModel``，原生 ``bind_tools`` 供 LangGraph ``ToolNode`` 消费）。不再在本
+  包定义自研 chat 抽象——见 ADR-0002。
+- **向量化模型**：``EmbedModel``（本模块）仍是自研抽象，``OpenAIEmbedModel`` 是唯一
+  实现（RAG 入库 / 检索，独立于对话链路）。
+- **``Message``**：prompt 拼装的中间数据结构（runner / session_store / retrieve 用），
+  最终由 runner 转成 LangChain 消息类型。它不是对话模型的 I/O 契约（对话契约是
+  LangChain ``BaseMessage``）。
 
-异步接口（``achat`` / ``aembed``）暂以同步实现兜底；M1 RAG 链路如需高并发再换
-原生 async client。接口先留好，避免后续破坏性改动。
+异步接口（``aembed``）暂以同步实现兜底；M1 RAG 链路如需高并发再换原生 async client。
 """
 
 from __future__ import annotations
@@ -21,22 +23,14 @@ from dataclasses import dataclass
 
 @dataclass
 class Message:
-    """对话消息。role 与 OpenAI 惯例一致：system / user / assistant / tool。"""
+    """对话消息。role 与 OpenAI 惯例一致：system / user / assistant / tool。
+
+    用作 prompt 拼装的中间数据结构（runner / session_store / retrieve），最终由 runner
+    转成 LangChain ``BaseMessage`` 子类。不是对话模型的 I/O 契约。
+    """
 
     role: str
     content: str
-
-
-class ChatModel(ABC):
-    """对话模型接口（provider 无关）。"""
-
-    @abstractmethod
-    def chat(self, messages: list[Message], *, temperature: float = 0.7) -> str:
-        """文本对话。返回 assistant 回复内容（纯文本）。"""
-
-    async def achat(self, messages: list[Message], *, temperature: float = 0.7) -> str:
-        """异步对话。M0 默认同步实现兜底，M1 按需换原生 async。"""
-        return self.chat(messages, temperature=temperature)
 
 
 class EmbedModel(ABC):
@@ -63,19 +57,4 @@ class EmbedModel(ABC):
         return self.embed(texts)
 
 
-class LLMClient(ChatModel, EmbedModel):
-    """复合兼容接口：chat + embed 合一（历史遗留形态）。
-
-    新代码不要继承/依赖它——按需用 ``ChatModel`` 或 ``EmbedModel``。保留它只为
-    不破坏现有调用点（``runner``/``ingest``/``dataplane``）与测试里的
-    ``MagicMock(spec=LLMClient)``（后者需要同时 spec 出 chat 与 embed）。
-
-    子类需同时实现 ``chat()``、``embed()`` 与 ``dimension``。
-    """
-
-    @property
-    @abstractmethod
-    def dimension(self) -> int: ...
-
-
-__all__ = ["ChatModel", "EmbedModel", "LLMClient", "Message"]
+__all__ = ["EmbedModel", "Message"]

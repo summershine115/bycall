@@ -49,7 +49,7 @@
 | 层 | 组件 | 状态 | 位置 |
 |----|------|------|------|
 | 配置 | pydantic-settings 分层配置 | ✅ | `src/bycall/config.py` |
-| LLM | 模型无关抽象（OpenAI 兼容 / GLM） | ✅ | `src/bycall/llm/` |
+| LLM | 模型无关抽象（对话=ChatOpenAI / 向量化=OpenAIEmbedModel） | ✅ | `src/bycall/llm/` |
 | RAG 检索 | `VectorStore` 抽象 + zvec 实现 | ✅ | `src/bycall/vector_store/` |
 | Web | FastAPI 骨架 + /health /ready | ✅ | `src/bycall/api/` |
 | 基础设施 | Docker Compose（pg+redis+app） | ✅ | `docker-compose.yml` |

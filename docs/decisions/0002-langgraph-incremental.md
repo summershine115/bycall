@@ -51,9 +51,20 @@ M3 不需要 Checkpointer——graph 无状态执行 + session_store 继续管�
 - ChatOpenAI 原生支持 OpenAI 兼容协议（覆盖现有 7 个 provider），`bind_tools` 开箱即用。
 
 **代价 / 留给后续**：
-- `OpenAIChatModel` / `GLMClient` 标记 deprecated（保留代码降风险，后续清理）。
+- ~~`OpenAIChatModel` / `GLMClient` 标记 deprecated（保留代码降风险，后续清理）。~~
+  → **已清理（M3 收尾）**：`glm.py` 整文件删除，`openai_compat.py` 的 `OpenAIChatModel`、
+  `base.py` 的 `ChatModel`/`LLMClient` 抽象、`factory.create_llm_client` 兼容入口均已移除。
+  embed 线（`OpenAIEmbedModel`）完整保留（RAG 仍在用）。
 - graph 暂无持久化（durable/checkpoint/并行能力留后续）。
 - Checkpointer 迁移的三大障碍仍在，待控制面会话端点的数据源问题有解后再评估。
+
+## 工具回路验证（M3 收尾）
+
+框架先行阶段注册表为空，工具回路从未用真实工具端到端验证。M3 收尾补了内置工具
+（`tools/builtins.py`：`current_time` / `calculator` / `whoami`）+ 注册触发点
+（`tools/__init__.py` 末尾 import 钩子），三个工具各验证一个特性：无参工具进回路、
+带参工具的 schema 反射调用 + AST 安全求值、脱敏 + `CapabilitySet` 闭包注入
+（支柱 4 第二条泄漏面）。端到端测试见 `tests/integration/test_builtin_tools.py`。
 
 ## 相关
 

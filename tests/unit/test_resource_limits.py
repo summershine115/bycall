@@ -1,15 +1,13 @@
-"""资源/费用控制测试（P1-4：输入长度/上传大小/LLM max_tokens 无限制）。
+"""资源/费用控制测试（P1-4：输入长度/上传大小无限制）。
 
 验证：
 - /chat 问题超长 → 400
 - 文件上传超 10MB → 413
-- OpenAIChatModel.chat 带 max_tokens=2048
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -82,23 +80,3 @@ def test_upload_oversize_rejected(app_client: TestClient):
     )
     assert resp.status_code == 413
     assert "过大" in resp.json()["detail"]
-
-
-def test_openai_chat_model_sends_max_tokens():
-    """OpenAIChatModel.chat 带 max_tokens=2048（费用控制）。"""
-    from bycall.llm.openai_compat import OpenAIChatModel
-
-    model = OpenAIChatModel(base_url="http://fake", api_key="fake", model="gpt-4o-mini")
-
-    # mock client 捕获调用参数
-    mock_completions = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
-    mock_completions.create.return_value = mock_resp
-    model._set_client(MagicMock(chat=MagicMock(completions=mock_completions)))
-
-    model.chat([MagicMock(role="user", content="hi")])
-
-    # 验证 create 被调用时带了 max_tokens=2048
-    call_kwargs = mock_completions.create.call_args.kwargs
-    assert call_kwargs.get("max_tokens") == 2048
