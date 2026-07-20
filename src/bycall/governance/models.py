@@ -7,6 +7,7 @@
 - User ──> Role（多对一，用户属于一个角色）
 - Role ──内嵌──> RoleConfig（该角色的工具白名单 / 知识域 / 职级）
 - SystemPrompt（版本化，激活版本下发给数据面）
+- Skill（领域知识文档，对齐 OpenClaw SKILL，admin 管控，按角色绑定 name 列表）
 - AuditLog（append-only，谁/何时/问什么/放行/拒绝）
 - Model（LLM/向量模型实体，每种类型一个激活）
 - KnowledgeBase（知识库实体，per-KB embedding 模型 + 维度 + zvec collection）
@@ -51,13 +52,17 @@ class RoleConfig(BaseModel):
     - ``system_prompt_version``：角色绑定的系统提示词版本（``SystemPrompt.version``）。
       非空时该角色用此版本提示词（而非全局激活版），实现按角色差异化 LLM 行为；
       为 None 时 fallback 全局激活版本（后向兼容，M1 行为不变）。
+    - ``skills``：该角色绑定的 SKILL name 列表（对齐 OpenClaw SKILL 定义——注入
+      system prompt 的领域知识文档）。capability 引擎据此加载启用的 skill 内容，
+      合并成 markdown 注入 system message。未注册/已禁用的 name 静默忽略（与
+      ``allowed_tools`` 一致的容错语义）。admin 内置角色不走此字段（运维角色不注入 skill）。
     """
 
     allowed_tools: list[str] = Field(default_factory=list)
     knowledge_scope_tags: list[str] = Field(default_factory=list)
     level: int = 0
     system_prompt_version: int | None = None
-    # 预留：M3 接入时加 max_iterations / rate_limit 等。
+    skills: list[str] = Field(default_factory=list)
 
 
 # ============ Role ============
@@ -160,6 +165,61 @@ class SystemPrompt(SQLModel, table=True):
         from sqlmodel import select
 
         return select(SystemPrompt).where(SystemPrompt.is_active == True)  # noqa: E712
+
+
+# ============ Skill：领域知识文档（对齐 OpenClaw SKILL）============
+
+
+class Skill(SQLModel, table=True):
+    """领域知识文档——admin 管控的、注入 system prompt 的可迭代 Markdown。
+
+    对齐 OpenClaw 的 SKILL 定义：SKILL ≠ Tool。Tool 是可执行函数（LLM 通过 function
+    calling 调用），SKILL 是给 LLM 读的文档（注入 system prompt，指导 LLM 如何使用
+    已有工具完成某领域任务）。SystemPrompt 定义"数字员工是谁"（人格/行为规则），
+    Skill 定义"会什么具体业务"（领域知识/操作指南）。
+
+    与 OpenClaw 的差异（信任模型相反）：OpenClaw 是个人 Agent，用户自己管 SKILL 文件
+    （文件系统扫描）；Bycall 是组织 Agent，SKILL 由 admin 管控、存 DB、按角色分发
+    （``RoleConfig.skills`` 绑定 name 列表）。
+
+    数据模型：**可迭代文档**（非版本化不可变）——``name`` 唯一标识 + ``is_enabled`` 启停
+    + ``content`` 可编辑 + ``updated_at``。admin 改 content 后下次对话即时生效（DB 即
+    真值）。不走 SystemPrompt 的 version+is_active 模式（每次改发版太重，不贴合文档语义）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)  # 唯一标识，如 "sales-playbook"
+    description: str = ""  # 一句话描述（admin 目录展示，不进 prompt）
+    content: str  # Markdown body（领域知识，进 system prompt）
+    is_enabled: bool = Field(default=True, index=True)  # 启用/禁用（非全局唯一激活）
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_enabled():
+        """查全部启用的 skill（按 name 排序，输出稳定）。"""
+        from sqlmodel import select
+
+        return select(Skill).where(Skill.is_enabled == True).order_by(Skill.name)  # noqa: E712
+
+    @staticmethod
+    def select_by_name(name: str):
+        """按 name 查单条。"""
+        from sqlmodel import select
+
+        return select(Skill).where(Skill.name == name)
+
+    @staticmethod
+    def select_all():
+        """查全部（含禁用，按 name 排序）。admin 目录用。"""
+        from sqlmodel import select
+
+        return select(Skill).order_by(Skill.name)
 
 
 # ============ AuditLog ============

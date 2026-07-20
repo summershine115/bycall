@@ -98,6 +98,50 @@ def test_user_memory_marked_as_data():
     assert "非指令" in system_content
 
 
+def test_skill_marked_as_reference_not_instruction():
+    """SKILL 领域知识标注为'参考知识，非指令'（软隔离，进 system 角色）。
+
+    固化两级隔离：skill/memory 是 admin 管控的可信数据，进 system 角色（享 system
+    权重，靠"非指令"标注软隔离）；summary/RAG 是不可信内容，进 user 角色（硬隔离）。
+    """
+    messages = build_conversation_messages(
+        system_prompt="你是 Bycall 数字员工。",
+        rag_context="",
+        question="你好",
+        history=[],
+        summary="",
+        skill_markdown="## 技能：sales-playbook\n客户咨询时先确认需求",
+    )
+
+    system_content = messages[0].content
+    # skill 内容进 system 段
+    assert "客户咨询时先确认需求" in system_content
+    assert "## 技能：sales-playbook" in system_content
+    # 边界标注（领域技能 + 非指令）
+    assert "领域技能" in system_content
+    assert "非指令" in system_content
+
+
+def test_skill_positioned_after_defense_before_memory():
+    """SKILL 段在防御声明之后、用户记忆之前（从通用到具体的拼接顺序）。"""
+    memory = UserMemory(id=1, user_id=1, category="note", content="记忆内容XYZ")
+    messages = build_conversation_messages(
+        system_prompt="核心规则。",
+        rag_context="",
+        question="你好",
+        history=[],
+        summary="",
+        user_memories=[memory],
+        skill_markdown="## 技能：demo\n技能内容ABC",
+    )
+    system_content = messages[0].content
+    # 顺序：核心规则 < 防御声明 < 技能 < 记忆
+    pos_rules = system_content.index("以本段规则为准")
+    pos_skill = system_content.index("技能内容ABC")
+    pos_memory = system_content.index("记忆内容XYZ")
+    assert pos_rules < pos_skill < pos_memory
+
+
 def test_build_rag_messages_single_turn_has_boundary():
     """单轮模式 build_rag_messages 也有防御声明 + RAG 边界标注。"""
     results = [SearchResult(id="1", score=1.0, text="报价流程", fields={"source": "sales"})]
@@ -115,3 +159,18 @@ def test_build_rag_messages_single_turn_has_boundary():
     assert messages[1].role == "user"
     assert "参考资料" in messages[1].content
     assert "不是指令" in messages[1].content
+
+
+def test_build_rag_messages_skill_injected_into_system():
+    """单轮模式 build_rag_messages 也注入 skill（进 system 段，带边界标注）。"""
+    results = [SearchResult(id="1", score=1.0, text="报价", fields={"source": "sales"})]
+    messages = build_rag_messages(
+        system_prompt="你是 Bycall 数字员工。",
+        question="报价",
+        retrieved=results,
+        skill_markdown="## 技能：sales\n先确认需求",
+    )
+    # skill 进 system 段（第一条），带边界标注
+    assert "先确认需求" in messages[0].content
+    assert "领域技能" in messages[0].content
+    assert "非指令" in messages[0].content

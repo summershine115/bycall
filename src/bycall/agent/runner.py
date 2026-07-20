@@ -136,10 +136,13 @@ def run_agent(
             history=history,
             summary=summary,
             user_memories=user_memories,
+            skill_markdown=cap.skill_markdown,
         )
     else:
         # 单轮模式（兼容 M1）：system + RAG + user，无历史。
-        raw_messages = build_rag_messages(cap.system_prompt, question, retrieved)
+        raw_messages = build_rag_messages(
+            cap.system_prompt, question, retrieved, skill_markdown=cap.skill_markdown
+        )
 
     # 自研 LLMMessage → LangChain 消息（ChatOpenAI / graph 需要 LangChain 类型）。
     messages = _to_langchain_messages(raw_messages)
@@ -184,19 +187,20 @@ def run_agent(
                     logger.info("会话 %s 压缩完成，summary 已更新", conversation_id)
 
     # 7. 审计落库（含工具调用记录）。
-    # detail 保留工具名摘要（快速扫），tool_results 存结构化明细 [{name,args,result}]
+    # detail 保留工具名/skill 名摘要（快速扫），tool_results 存结构化明细 [{name,args,result}]
     # （result 为脱敏后值，支柱 3「调用后审计落库」+ 支柱 4 第二条泄漏面）。
     tool_detail = ""
     if graph_result.tool_calls_made:
         tool_names = [tc["name"] for tc in graph_result.tool_calls_made]
         tool_detail = f"tools={tool_names}, "
+    skill_detail = f"skills={cap.skills}, " if cap.skills else ""
     _audit(
         session,
         user,
         channel,
         question,
         "answered",
-        f"{tool_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
+        f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
         answer[:500],
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
     )

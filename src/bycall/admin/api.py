@@ -46,6 +46,9 @@ from bycall.admin.schemas import (
     RoleUpdate,
     SettingOut,
     SettingsBatchUpdate,
+    SkillCreate,
+    SkillOut,
+    SkillUpdate,
     ToolOut,
     UserCreate,
     UserOut,
@@ -61,6 +64,7 @@ from bycall.governance.models import (
     Message,
     Model,
     Role,
+    Skill,
     SystemPrompt,
     SystemSetting,
     User,
@@ -545,6 +549,138 @@ def _deactivate_all_prompts(session: Session) -> None:
         if prompt.is_active:
             prompt.is_active = False
             session.add(prompt)
+
+
+# ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
+
+
+@router.post("/skills", response_model=SkillOut, status_code=status.HTTP_201_CREATED)
+def create_skill(
+    payload: SkillCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Skill:
+    """创建 Skill。``name`` 全局唯一，冲突 → 409。
+
+    Skill 是 admin 管控的领域知识文档（对齐 OpenClaw SKILL），注入 system prompt 指导
+    LLM 完成某领域任务。创建后默认 ``is_enabled=True``，admin 可在角色配置里绑定。
+    """
+    skill = Skill(
+        name=payload.name,
+        description=payload.description,
+        content=payload.content,
+        is_enabled=True,
+    )
+    session.add(skill)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Skill 名称已存在: {payload.name}",
+        ) from exc
+    session.refresh(skill)
+    _audit_admin(session, request, "create_skill", f"Skill({skill.name})", after=skill)
+    session.commit()
+    return skill
+
+
+@router.get("/skills", response_model=list[SkillOut])
+def list_skills(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[Skill]:
+    """列出全部 Skill（含禁用的，按 name 排序）。admin 目录用。"""
+    return list(session.exec(Skill.select_all()).all())
+
+
+@router.get("/skills/{name}", response_model=SkillOut)
+def get_skill(
+    name: str,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Skill:
+    """Skill 详情。不存在 → 404。"""
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+    return skill
+
+
+@router.put("/skills/{name}", response_model=SkillOut)
+def update_skill(
+    name: str,
+    payload: SkillUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Skill:
+    """更新 Skill（PATCH 语义：只改传入字段）。可迭代文档，无需发新版本。不存在 → 404。
+
+    改 content / is_enabled 后，下次对话即时生效（DB 即真值，capability 引擎实时读）。
+    """
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+
+    import json
+
+    before_snapshot = json.dumps(skill.model_dump(), default=str)
+    if payload.description is not None:
+        skill.description = payload.description
+    if payload.content is not None:
+        skill.content = payload.content
+    if payload.is_enabled is not None:
+        skill.is_enabled = payload.is_enabled
+    session.add(skill)
+    session.commit()
+    session.refresh(skill)
+    _audit_admin(
+        session,
+        request,
+        "update_skill",
+        f"Skill({skill.name})",
+        before=json.loads(before_snapshot),
+        after=skill,
+    )
+    session.commit()
+    return skill
+
+
+@router.delete("/skills/{name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_skill(
+    name: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除 Skill。不存在 → 404。若被角色引用 → 409（避免悬空引用）。
+
+    引用检查：扫所有 Role 的 ``RoleConfig.skills``，若含该 name 则拒绝删除
+    （admin 需先从角色配置里移除引用）。capability 引擎对不存在的 skill name 会
+    静默忽略，但显式拒绝删除能让 admin 意识到影响范围。
+    """
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+
+    # 校验无角色引用（与 delete_role 校验活跃用户的范式一致）。
+    referencing_roles = [
+        r.name for r in session.exec(select(Role)).all() if name in (r.config.skills or [])
+    ]
+    if referencing_roles:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Skill '{name}' 仍被角色 {referencing_roles} 引用，"
+                "请先从这些角色的 skills 配置里移除"
+            ),
+        )
+    session.delete(skill)
+    session.commit()
+    _audit_admin(session, request, "delete_skill", f"Skill({name})", before=skill)
 
 
 # ============ 审计 ============
