@@ -244,3 +244,68 @@ class TestUserMemory:
         # 列表里没了
         mems = c.get("/api/admin/users/2/memory").json()
         assert all(m["id"] != mem_id for m in mems)
+
+    # ---- 边界补强：404 / 401 / strip / 孤儿记录现状 ----
+
+    def test_update_nonexistent_returns_404(self, client):
+        """PUT 不存在的 mem_id → 404。"""
+        c, _, _ = client
+        resp = c.put("/api/admin/memory/99999", json={"content": "x"})
+        assert resp.status_code == 404
+
+    def test_delete_nonexistent_returns_404(self, client):
+        """DELETE 不存在的 mem_id → 404。"""
+        c, _, _ = client
+        resp = c.delete("/api/admin/memory/99999")
+        assert resp.status_code == 404
+
+    def test_invalid_category_on_update_rejected(self, client):
+        """PUT 带非法 category → 400（与 create 一致的 category 白名单）。"""
+        c, _, _ = client
+        create_resp = c.post(
+            "/api/admin/users/2/memory",
+            json={"category": "note", "content": "原始"},
+        )
+        mem_id = create_resp.json()["id"]
+
+        resp = c.put(f"/api/admin/memory/{mem_id}", json={"category": "hobby"})
+        assert resp.status_code == 400
+        assert "category" in resp.json()["detail"]
+
+    def test_memory_endpoints_require_admin_session(self, env):
+        """记忆端点未登录 → 401（app 层 _require_admin_session 守卫）。"""
+        from bycall.api.app import create_app
+
+        client = TestClient(create_app())
+        # 未登录直接访问 → 401
+        assert client.get("/api/admin/users/1/memory").status_code == 401
+        assert (
+            client.post(
+                "/api/admin/users/1/memory", json={"category": "note", "content": "x"}
+            ).status_code
+            == 401
+        )
+
+    def test_content_stripped_on_create(self, client):
+        """create 时 content 前后空白被 strip（数据整洁）。"""
+        c, _, _ = client
+        resp = c.post(
+            "/api/admin/users/2/memory",
+            json={"category": "note", "content": "  带空白的内容  "},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["content"] == "带空白的内容"
+
+    def test_create_allows_nonexistent_user_id(self, client):
+        """create 不校验 user_id 存在性（当前现状，记录非 bug）。
+
+        可给不存在的 user_id 建记忆（孤儿记录），runner 按 user_id 加载时不会命中
+        真实用户，无害。属数据完整性缺口，此处固化现状行为。
+        """
+        c, _, _ = client
+        resp = c.post(
+            "/api/admin/users/99999/memory",
+            json={"category": "note", "content": "孤儿记录"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["user_id"] == 99999
