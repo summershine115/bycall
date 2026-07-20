@@ -119,7 +119,9 @@ def run_agent(
     allowed_tool_specs = filter_tools(cap.allowed_tools)
     langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
 
-    # 4. 拼消息（含提示词注入防御：summary/RAG/memory 非 system 角色 + 边界标注）。
+    # 4. 拼消息（含提示词注入防御——两级隔离，见 session_store.build_conversation_messages）：
+    #    - memory 进 system（admin 管控的可信数据，享 system 权重，靠"非指令"标注软隔离）。
+    #    - summary / RAG 进 user（不可信：summary 来自历史，RAG 来自外部文档，硬隔离降权）。
     if conversation_id is not None:
         # 多轮模式：加载历史 + summary + 用户记忆 → 拼完整 messages。
         conv = session.get(Conversation, conversation_id)

@@ -3,8 +3,12 @@
 三层职责：
 1. **会话生命周期**：``get_or_create_conversation`` 按 session_key 查/建会话（永不过期）。
 2. **消息持久化**：``save_message`` 存 user/assistant 消息，``load_message_history`` 取滑窗。
-3. **上下文构建 + 压缩**：``build_conversation_messages`` 拼 system(prompt+memory+summary)
-   + history + rag + user；超阈值时 ``compress_history`` 把旧消息压缩成增量摘要。
+3. **上下文构建 + 压缩**：``build_conversation_messages`` 拼完整消息序列——两级隔离：
+   - **system 角色**：控制面 system_prompt + memory（admin 管控的可信数据，靠"非指令"
+     标注软隔离）。
+   - **user 角色**：summary（LLM 从历史生成，不可信）+ RAG（外部文档，不可信）+ 历史
+     + 当前问题——不可信内容统一降权到 user，硬隔离防注入。
+   超阈值时 ``compress_history`` 把旧消息压缩成增量摘要。
 
 设计参考：
 - **Hermes Agent** 的 session_key = ``agent:main:{platform}:{chat_type}:{chat_id}`` →
