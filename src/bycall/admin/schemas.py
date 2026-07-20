@@ -143,6 +143,39 @@ class PromptActivate(BaseModel):
     version: int = Field(..., description="要激活的版本号")
 
 
+# ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
+
+
+class SkillCreate(BaseModel):
+    """创建 Skill。``name`` 全局唯一（如 ``sales-playbook``）。"""
+
+    name: str = Field(..., description="唯一标识，小写字母/数字/连字符，如 sales-playbook")
+    description: str = Field(default="", description="一句话描述（admin 目录展示，不进 prompt）")
+    content: str = Field(..., description="Markdown body（领域知识，进 system prompt）")
+
+
+class SkillUpdate(BaseModel):
+    """更新 Skill（PATCH 语义，只改传入字段）。可迭代文档，无需发新版本。"""
+
+    description: str | None = None
+    content: str | None = None
+    is_enabled: bool | None = None
+
+
+class SkillOut(BaseModel):
+    """Skill 响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str
+    content: str
+    is_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 # ============ 审计 ============
 
 

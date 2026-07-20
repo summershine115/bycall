@@ -205,6 +205,27 @@ def _seed_defaults() -> None:
                     is_active=True,
                 )
             )
+        # 默认 Skill（示例领域知识文档，对齐 OpenClaw SKILL，供演示/参考）。
+        # 不绑定到任何角色（admin 在控制台按需把 name 加进 RoleConfig.skills）。
+        from bycall.governance.models import Skill
+
+        if session.exec(Skill.select_by_name("greeting-guide")).first() is None:
+            session.add(
+                Skill(
+                    name="greeting-guide",
+                    description="问候与转人工话术指南（示例 SKILL）",
+                    content=(
+                        "# 问候与转人工指南\n"
+                        "## 问候规范\n"
+                        "- 首次交互先问候，称呼用户姓名（如已知）。\n"
+                        "- 语气专业、简洁，避免过度热情。\n\n"
+                        "## 转人工时机\n"
+                        "- 涉及投诉、情绪激动、超出知识范围 → 主动建议转人工。\n"
+                        "- 转人工话术：「这个问题我转给人工同事跟进，稍后联系您。」"
+                    ),
+                    is_enabled=True,
+                )
+            )
         # 默认模型实体（LLM 升级为 Model 实体，参考 WeKnora）。
         # chat 模型：OpenAI 兼容占位（admin 在控制台激活真实 provider 的模型）
         _seed_default_model(

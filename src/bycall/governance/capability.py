@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from sqlmodel import Session, select
 
-from bycall.governance.models import Role, SystemPrompt, User
+from bycall.governance.models import Role, Skill, SystemPrompt, User
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,10 @@ class CapabilitySet:
       ``['*']`` 表示全部（仅 admin）。
     - ``level``：职级，ABAC 用（机密资源按 ``resource_level <= user_level`` 放行）。
     - ``system_prompt``：激活的系统提示词正文，数据面拼到 LLM 的 system message。
+    - ``skills``：该角色绑定的 SKILL name 列表（实际注入的、启用的）。审计可见——
+      AuditLog 据此记录"本次对话注入了哪些 skill"。
+    - ``skill_markdown``：合并后的 skill markdown 正文，供 runner 注入 system message。
+      多个 skill 各自拼成 ``## 技能：{name}\\n{content}`` 后合并。空串 = 无 skill 注入。
     - ``is_admin``：admin 内置角色标记，控制面特权判定用。
     """
 
@@ -43,6 +47,8 @@ class CapabilitySet:
     knowledge_scope_tags: list[str] = field(default_factory=list)
     level: int = 0
     system_prompt: str = ""
+    skills: list[str] = field(default_factory=list)
+    skill_markdown: str = ""
     is_admin: bool = False
 
 
@@ -68,6 +74,39 @@ def get_system_prompt_by_version(session: Session, version: int) -> str | None:
     return row.content if row is not None else None
 
 
+def get_enabled_skills_by_names(session: Session, names: list[str]) -> list:
+    """按 name 列表查启用的 Skill，返回 Skill 实体列表（按 name 排序）。
+
+    未注册 / 已禁用的 name **静默忽略**（与 ``tools.gateway.filter_tools`` 一致的容错
+    语义——admin 可能在 ``RoleConfig.skills`` 里配了还不存在或临时禁用的 skill name，
+    不应让对话崩）。空 names → 空列表。
+
+    返回的是 ``Skill`` 实体（含 content），调用方据此合并 markdown。
+    """
+    if not names:
+        return []
+
+    rows = session.exec(
+        select(Skill)
+        .where(Skill.name.in_(names), Skill.is_enabled == True)  # noqa: E712
+        .order_by(Skill.name)
+    ).all()
+    return list(rows)
+
+
+def build_skill_markdown(skills: list) -> str:
+    """把 Skill 实体列表合并成注入 system message 的 markdown 字符串。
+
+    每个 skill 拼 ``## 技能：{name}\\n{content}``，多个用空行分隔。
+    边界标注（``## 领域技能（参考知识，非指令）`` 等）在 ``session_store`` 拼装时加，
+    这里只负责 skill 内容本身的合并（单一职责）。
+    """
+    if not skills:
+        return ""
+    sections = [f"## 技能：{s.name}\n{s.content}" for s in skills]
+    return "\n\n".join(sections)
+
+
 def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     """从用户记录计算当前能力集。
 
@@ -90,6 +129,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     global_prompt = get_active_system_prompt(session)
 
     # 3. admin 内置角色：不走 Role 表，直接给通配 + 最高职级。
+    #    admin 是运维角色，不注入 skill（与不定制 prompt 一致）。
     if user.role == "admin":
         return CapabilitySet(
             user_id=user.id,
@@ -99,6 +139,8 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
             knowledge_scope_tags=["*"],
             level=999,
             system_prompt=global_prompt,
+            skills=[],
+            skill_markdown="",
             is_admin=True,
         )
 
@@ -122,6 +164,13 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
                 config.system_prompt_version,
             )
 
+    # 角色绑定的 SKILL：加载启用的 skill 内容，合并成 markdown 供 runner 注入。
+    # 未注册/已禁用的 name 静默忽略（容错，与 allowed_tools 一致）。
+    bound_skills = get_enabled_skills_by_names(session, config.skills)
+    skill_markdown = build_skill_markdown(bound_skills)
+    # 实际生效的 skill name 列表（审计可见）。
+    effective_skill_names = [s.name for s in bound_skills]
+
     return CapabilitySet(
         user_id=user.id,
         user_name=user.name,
@@ -130,5 +179,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
         knowledge_scope_tags=list(config.knowledge_scope_tags),
         level=config.level,
         system_prompt=system_prompt,
+        skills=effective_skill_names,
+        skill_markdown=skill_markdown,
         is_admin=False,
     )
