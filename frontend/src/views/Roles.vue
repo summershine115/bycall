@@ -26,6 +26,12 @@
           <span v-if="!row.config.knowledge_scope_tags?.length" class="muted">无（默认隔离）</span>
         </template>
       </el-table-column>
+      <el-table-column label="绑定 Skills" min-width="160">
+        <template #default="{ row }">
+          <el-tag v-for="s in row.config.skills" :key="s" size="small" type="info" style="margin-right: 4px">{{ s }}</el-tag>
+          <span v-if="!row.config.skills?.length" class="muted">无</span>
+        </template>
+      </el-table-column>
       <el-table-column label="职级" width="80">
         <template #default="{ row }">{{ row.config.level }}</template>
       </el-table-column>
@@ -82,6 +88,14 @@
           </el-select>
           <div class="muted small">绑定后该角色用此版本提示词；留空 = 用全局激活版本</div>
         </el-form-item>
+        <el-form-item label="绑定 Skills">
+          <el-select v-model="form.skills" multiple filterable placeholder="选择注入的领域知识" style="width:100%">
+            <el-option v-for="s in skills" :key="s.name"
+              :label="`${s.name}${s.description ? ' - ' + s.description : ''}${s.is_enabled ? '' : '（已停用）'}`"
+              :value="s.name" :disabled="!s.is_enabled" />
+          </el-select>
+          <div class="muted small">注入 system prompt 的领域知识；停用的不会注入</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -99,17 +113,18 @@ import { admin } from '../api'
 const loading = ref(true)
 const roles = ref([])
 const prompts = ref([])
+const skills = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
-const form = reactive({ name: '', description: '', level: 0, system_prompt_version: null })
+const form = reactive({ name: '', description: '', level: 0, system_prompt_version: null, skills: [] })
 const toolsInput = ref('')
 const scopeInput = ref('')
 
 async function load() {
   loading.value = true
   try {
-    ;[roles.value] = await Promise.all([admin.listRoles(), loadPrompts()])
+    ;[roles.value] = await Promise.all([admin.listRoles(), loadPrompts(), loadSkills()])
   } finally {
     loading.value = false
   }
@@ -124,9 +139,18 @@ async function loadPrompts() {
   }
 }
 
+async function loadSkills() {
+  // 加载技能列表供下拉选择（忽略失败，失败时下拉为空仍可用）
+  try {
+    skills.value = await admin.listSkills()
+  } catch {
+    skills.value = []
+  }
+}
+
 function openCreate() {
   editing.value = false
-  Object.assign(form, { name: '', description: '', level: 0, system_prompt_version: null })
+  Object.assign(form, { name: '', description: '', level: 0, system_prompt_version: null, skills: [] })
   toolsInput.value = ''
   scopeInput.value = ''
   dialogVisible.value = true
@@ -139,6 +163,7 @@ function openEdit(row) {
     description: row.description,
     level: row.config.level,
     system_prompt_version: row.config.system_prompt_version ?? null,
+    skills: [...(row.config.skills || [])],
   })
   form._original_name = row.name
   toolsInput.value = (row.config.allowed_tools || []).join(', ')
@@ -160,6 +185,7 @@ async function onSave() {
     knowledge_scope_tags: parseList(scopeInput.value),
     level: form.level,
     system_prompt_version: form.system_prompt_version || null,
+    skills: form.skills,
   }
   try {
     if (editing.value) {

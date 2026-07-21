@@ -54,6 +54,12 @@ export const admin = {
   createPrompt: (data) => http.post('/api/admin/prompts', data).then((r) => r.data),
   activatePrompt: (version) =>
     http.post('/api/admin/prompts/activate', { version }).then((r) => r.data),
+  // Skill（领域知识文档，name 主键；PUT 是 PATCH 语义）
+  listSkills: () => http.get('/api/admin/skills').then((r) => r.data),
+  getSkill: (name) => http.get(`/api/admin/skills/${name}`).then((r) => r.data),
+  createSkill: (data) => http.post('/api/admin/skills', data).then((r) => r.data),
+  updateSkill: (name, data) => http.put(`/api/admin/skills/${name}`, data).then((r) => r.data),
+  deleteSkill: (name) => http.delete(`/api/admin/skills/${name}`),
   // 审计
   listAudit: (limit = 100) =>
     http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),

@@ -27,6 +27,9 @@
         <el-menu-item index="prompts" :route="{ name: 'prompts' }">
           <el-icon><Document /></el-icon><span>提示词</span>
         </el-menu-item>
+        <el-menu-item index="skills" :route="{ name: 'skills' }">
+          <el-icon><MagicStick /></el-icon><span>Skill 管理</span>
+        </el-menu-item>
         <el-menu-item index="settings" :route="{ name: 'settings' }">
           <el-icon><Setting /></el-icon><span>运行时设置</span>
         </el-menu-item>
@@ -70,6 +73,7 @@ const titles = {
   'knowledge-bases': '知识库管理',
   conversations: '会话管理',
   prompts: '提示词管理',
+  skills: 'Skill 管理',
   settings: 'IM 渠道',
   audit: '审计日志',
   chat: '对话测试',
