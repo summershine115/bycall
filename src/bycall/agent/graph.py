@@ -194,7 +194,6 @@ def _collect_tool_calls(messages: list[BaseMessage]) -> list[dict]:
     ``result`` 截断到 ``_RESULT_TRUNCATE`` 防审计字段爆库。触及迭代上限时，之前轮次
     的 ``AIMessage`` / ``ToolMessage`` 仍在序列里，会被一并采集。
     """
-    # 第一遍：id → (name, args)
     requested: dict[str, tuple[str, dict]] = {}
     for msg in messages:
         if isinstance(msg, AIMessage):
@@ -203,7 +202,6 @@ def _collect_tool_calls(messages: list[BaseMessage]) -> list[dict]:
 
     calls: list[dict] = []
     executed_ids: set[str] = set()
-    # 第二遍：已执行的调用（有 ToolMessage = 工具真跑了）
     for msg in messages:
         if isinstance(msg, ToolMessage):
             executed_ids.add(msg.tool_call_id)
@@ -213,7 +211,6 @@ def _collect_tool_calls(messages: list[BaseMessage]) -> list[dict]:
             name, args = requested.get(msg.tool_call_id, (msg.name or "", {}))
             calls.append({"name": name, "args": args, "result": content[:_RESULT_TRUNCATE]})
 
-    # 第三遍：请求了但未执行（ToolNode 跳过 / 校验失败）——审计不留痕即蒸发。
     for tc_id, (name, args) in requested.items():
         if tc_id not in executed_ids:
             calls.append({"name": name, "args": args, "result": "<not_executed>"})
@@ -221,4 +218,116 @@ def _collect_tool_calls(messages: list[BaseMessage]) -> list[dict]:
     return calls
 
 
-__all__ = ["GraphResult", "run_tool_loop"]
+async def run_tool_loop_stream(
+    *,
+    chat_model: BaseChatModel,
+    tools: list[BaseTool],
+    messages: list[BaseMessage],
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+):
+    """流式执行工具回路——逐 token yield 最终答案。
+
+    与 ``run_tool_loop`` 同构，但用 ``graph.astream_events`` 替代 ``graph.invoke``：
+    - 工具调用回合（tool_call_chunks 非空）的 token 被抑制，不推送给用户。
+    - 最终文本答案逐 token yield，用户实时看到生成过程。
+    - 最后 yield 一个 ``(None, True, GraphResult)`` 标记结束并携带审计数据。
+
+    Yields:
+        ``(chunk_text: str | None, is_final: bool, result: GraphResult | None)``
+        - 正常 token: ``("hello", False, None)``
+        - 流结束: ``(None, True, GraphResult(...))``
+    """
+
+    async def _stream():
+        if not tools:
+            # 无工具：直接 astream，逐 token yield。
+            full_content = ""
+            async for chunk in chat_model.astream(messages):
+                content = _content_to_text(chunk.content) if hasattr(chunk, "content") else ""
+                if content:
+                    full_content += content
+                    yield content, False, None
+            yield None, True, GraphResult(answer=full_content)
+            return
+
+        model_with_tools = chat_model.bind_tools(tools)
+        tool_node = ToolNode(tools)
+        iter_counter = {"n": 0}
+
+        def agent_node(s: MessagesState) -> dict:
+            iter_counter["n"] += 1
+            if iter_counter["n"] > max_iterations:
+                logger.warning("工具回路触及迭代上限 %d，强制终止", max_iterations)
+                return {"messages": [AIMessage(content=_LIMIT_MESSAGE)]}
+            response = model_with_tools.invoke(s["messages"])
+            return {"messages": [response]}
+
+        def route(s: MessagesState) -> str:
+            if iter_counter["n"] > max_iterations:
+                return END
+            return tools_condition(s)
+
+        graph_builder = StateGraph(MessagesState)
+        graph_builder.add_node("agent", agent_node)
+        graph_builder.add_node("tools", tool_node)
+        graph_builder.add_edge(START, "agent")
+        graph_builder.add_conditional_edges("agent", route, {"tools": "tools", END: END})
+        graph_builder.add_edge("tools", "agent")
+        graph = graph_builder.compile()
+
+        recursion_limit = max_iterations * 2 + 3
+
+        # 先用非流式 graph.invoke 处理工具调用回合（不向用户展示）。
+        # 工具调用完成后，单独对最终消息列表做一次 astream 得到逐 token 流式输出。
+        result = graph.invoke(
+            {"messages": messages}, config={"recursion_limit": recursion_limit}
+        )
+        final_messages: list[BaseMessage] = result["messages"]
+        hit_limit = iter_counter["n"] > max_iterations
+
+        # 取最后一条 AIMessage 作为最终答案的起点——对其前面的消息做 astream。
+        # 这样工具调用的 token 不会被用户看到，只看到最终答案的流式生成。
+        answer_prefix = ""
+        stream_input = list(messages)
+        for msg in final_messages[len(messages) :]:
+            if isinstance(msg, AIMessage) and not msg.tool_calls:
+                # 找到最终的纯文本 AIMessage：其前面是完整上下文，用它做 astream。
+                answer_prefix = _content_to_text(msg.content)
+                break
+            stream_input.append(msg)
+
+        if stream_input == list(messages):
+            # 没有额外的 AIMessage（如纯 tool call 无文本回答）：直接用最终消息。
+            graph_result = GraphResult(
+                answer=answer_prefix or _final_answer(final_messages),
+                tool_calls_made=_collect_tool_calls(final_messages),
+                hit_iteration_limit=hit_limit,
+            )
+            if answer_prefix:
+                yield answer_prefix, False, None
+            yield None, True, graph_result
+            return
+
+        # 对 stream_input 做 astream——这会重新生成最终答案的每个 token。
+        full_content = ""
+        async for chunk in model_with_tools.astream(stream_input):
+            content = _content_to_text(chunk.content) if hasattr(chunk, "content") else ""
+            if content:
+                full_content += content
+                yield content, False, None
+
+        # 用流式累积的 content 覆盖 graph.invoke 里那条 AIMessage（保证一致）。
+        graph_result = GraphResult(
+            answer=full_content or answer_prefix or _final_answer(final_messages),
+            tool_calls_made=_collect_tool_calls(final_messages),
+            hit_iteration_limit=hit_limit,
+        )
+        yield None, True, graph_result
+
+    return _stream()
+
+
+__all__ = ["GraphResult", "run_tool_loop", "run_tool_loop_stream"]
+
+
+__all__ = ["GraphResult", "run_tool_loop", "run_tool_loop_stream"]

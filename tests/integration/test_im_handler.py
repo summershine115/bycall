@@ -36,13 +36,18 @@ def env(tmp_path, monkeypatch):
 
 def _make_mock_llm(reply="基于知识库的回答。"):
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, AIMessageChunk
 
-    # M3：对话模型是 LangChain BaseChatModel，mock spec 用 BaseChatModel
-    # （含 invoke/bind_tools），不再是自研 LLMClient。
     m = MagicMock(spec=BaseChatModel)
     m.invoke.return_value = AIMessage(content=reply)
     m.bind_tools.return_value = m
+
+    # astream: 异步生成器，模拟 token-by-token 流式输出。
+    async def _astream(messages, **kwargs):
+        for char in reply:
+            yield AIMessageChunk(content=char)
+
+    m.astream = _astream
     return m
 
 
@@ -83,8 +88,7 @@ def _seed_user(name, role, scope_tags):
 
 def _patch_chat_model(monkeypatch, mock_llm):
     """patch resolver.get_chat_model 返回 (假 Model, mock ChatModel)。
-
-    im_handler._run_sync 内部 import get_chat_model，所以 patch 源模块。
+    im_handler._run_stream 内部 import get_chat_model，所以 patch 源模块。
     """
     from bycall.llm import resolver
 
@@ -140,11 +144,9 @@ def test_authorized_user_gets_answer(env, monkeypatch):
 
     asyncio.run(im_handler.handle_im_message(msg, sender))
 
-    final = [c for c in capture if c[0] == "stream" and c[3] is True]
-    assert len(final) == 1
-    assert "基于知识" in final[0][1]
-    # LLM 被调用（说明通过了权限判定）。M3：invoke 替代 chat。
-    mock_llm.invoke.assert_called()
+    # 流式：token 在 finish=False 帧里，finish=True 帧可能为空。聚合全部帧检查。
+    all_text = "".join(c[1] for c in capture if c[0] == "stream")
+    assert "基于知识" in all_text
 
 
 def test_empty_message_ignored(env, monkeypatch):

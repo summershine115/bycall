@@ -22,14 +22,11 @@ MAX_IM_QUESTION_LEN = 4000
 
 
 async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
-    """IM 消息 → 治理链路 → 回复。
+    """IM 消息 → 治理链路 → 流式回复。
 
     每条消息独立 session（IM 是长连接事件流，不复用请求级 session）。
-    LLM/vector_store 每次新建（M1.5 简化；M5 可换池化）。
-
-    ⚠️ 群聊消息在权限模型完成前一律拒绝：当前 session_key 仅 ``{channel}:{user_id}``，
-    不含 chat_id——群聊会让有权限用户的机密答案发到整个群、私聊与群聊串历史。
-    拒绝发生在身份映射之前（不泄露是否绑定、是否有权）。
+    正常路径：逐 token 流式推送给用户（企微 WebSocket 流式帧）。
+    错误路径（未绑定/限流/异常）：单次 send_text 快速返回。
     """
     text = msg.text.strip()
     if not text:
@@ -39,14 +36,13 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         await sender.send_text(f"问题过长，请控制在 {MAX_IM_QUESTION_LEN} 字符以内。")
         return
 
-    # 0. 群聊守卫：chat_id 非空 = 群聊消息，在群聊权限模型完成前直接拒绝。
+    # 0. 群聊守卫。
     if msg.chat_id:
         await sender.send_text("群聊暂未开放，请在私聊中使用数字员工。")
         logger.info("IM 群聊消息被拒: channel=%s chat_id=%s", msg.channel, msg.chat_id)
         return
 
-    # 1. 身份映射：IM user_id → Bycall User（邀请制，未绑定则拒绝）。
-    #    在 session 内提取标量 user_id（避免 session 关闭后访问 detached 对象）。
+    # 1. 身份映射。
     with session_scope() as session:
         user = resolve_user_by_im(session, msg.channel, msg.im_user_id)
         user_id = user.id if user is not None else None
@@ -62,7 +58,7 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         )
         return
 
-    # REST 与 IM 共用 user_id 额度，避免换渠道绕过费用限流。
+    # 限流。
     from bycall.governance.ratelimit import RATE_LIMIT_CHAT, get_limiter
 
     allowed = await asyncio.to_thread(
@@ -72,54 +68,84 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         await sender.send_text("请求过于频繁，请稍后再试。")
         return
 
-    # 2. 跑治理链路（同步，放在线程池避免阻塞事件循环）。
+    # 2. 流式执行治理链路。
+    import uuid
+
+    stream_id = uuid.uuid4().hex[:12]
+    collected: list[str] = []
+    can_stream = sender.send_stream is not None
+
     try:
-        result = await asyncio.to_thread(_run_sync, user_id, text, msg.channel)
+        async for chunk_text, is_final, result in _run_stream(user_id, text, msg.channel):
+            if is_final:
+                final_answer = _format_answer(result.decision, result.answer)
+                if can_stream:
+                    already_sent = "".join(collected)
+                    # 未流式覆盖的部分（如 denied 路径全文一次到达）一次性在 finish 帧发送。
+                    if not final_answer.startswith(already_sent):
+                        await sender.send_stream(final_answer, stream_id, True)
+                    else:
+                        remainder = final_answer[len(already_sent):]
+                        await sender.send_stream(remainder or "", stream_id, True)
+                else:
+                    await sender.send_text(final_answer or "".join(collected))
+                break
+            elif chunk_text:
+                collected.append(chunk_text)
+                if can_stream:
+                    await sender.send_stream(chunk_text, stream_id, False)
     except Exception:
-        logger.exception("治理链路执行失败")
-        await sender.send_text("抱歉，处理时出错了，请稍后重试。")
-        return
-
-    # 3. 回复结果。send_text 底层走 reply_stream(finish=True)，单条即完成。
-    answer = _format_answer(result.decision, result.answer)
-    await sender.send_text(answer)
+        logger.exception("治理链路流式执行失败")
+        if can_stream and collected:
+            await sender.send_stream("", stream_id, True)
+        elif not collected:
+            await sender.send_text("抱歉，处理时出错了，请稍后重试。")
 
 
-def _run_sync(user_id: int, question: str, channel: str):
-    """在线程池里同步执行治理链路（run_agent 是同步的）。
+async def _run_stream(user_id: int, question: str, channel: str):
+    """流式执行治理链路——异步生成器，逐 token yield。
 
-    LLM 从 DB 激活的 Model 实体解析（与 /chat 一致），在 session 内构造避免多开连接。
-    RAG 检索由 run_agent 内部查 KB 路由（不再从外部传 vector_store）。
+    在生成器内打开 session（保证整个流式期间 session 存活），
+    生成器结束时 session 自动关闭（finally 块确保清理）。
     """
-    with session_scope() as session:
-        from bycall.agent.session_store import get_or_create_conversation
-        from bycall.governance.models import User
-        from bycall.llm.resolver import get_chat_model
+    from bycall.agent.runner import run_agent_stream
+    from bycall.agent.session_store import get_or_create_conversation
+    from bycall.governance.models import User
+    from bycall.llm.resolver import get_chat_model
 
+    # 打开 session——流式期间保持存活。用同一 ctx 实例保证 enter/exit 配对。
+    ctx = session_scope()
+    session: Any = ctx.__enter__()
+    try:
         user = session.get(User, user_id)
         if user is None:
-            raise RuntimeError(f"用户不存在: id={user_id}")
-        # 从激活的 chat Model 实体构造 ChatModel；无激活则给友好错误
+            yield f"用户不存在: id={user_id}", True, _no_model_result_static(channel)
+            return
+
         resolved = get_chat_model(session)
         if resolved is None:
-            return _no_model_result(user, channel)
+            result = _no_model_result_static(channel)
+            yield result.answer, True, result
+            return
         _, chat_model = resolved
 
-        # 多轮会话：按 (user_id, channel) 查/建会话，传入 run_agent 启用历史。
         conv = get_or_create_conversation(session, user_id, channel)
 
-        return run_agent(
+        async for chunk_text, is_final, result in run_agent_stream(
             session=session,
             user=user,
             question=question,
             llm=chat_model,
             channel=channel,
             conversation_id=conv.id,
-        )
+        ):
+            yield chunk_text, is_final, result
+    finally:
+        ctx.__exit__(None, None, None)
 
 
-def _no_model_result(user, channel: str):
-    """未激活对话模型时的降级结果。"""
+def _no_model_result_static(channel: str = ""):
+    """未激活对话模型时的降级结果（静态版本，不依赖 User 对象）。"""
     from bycall.agent.runner import AgentResult
 
     return AgentResult(
@@ -127,10 +153,13 @@ def _no_model_result(user, channel: str):
         decision="error",
         knowledge_scope=[],
         retrieved_chunks=0,
-        user_name=user.name,
-        role=user.role,
-        tool_calls=[],  # 无模型降级路径无工具调用
+        user_name="",
+        role="",
+        tool_calls=[],
     )
+
+
+__all__ = ["handle_im_message"]
 
 
 def _format_answer(decision: str, answer: str) -> str:
@@ -142,4 +171,3 @@ def _format_answer(decision: str, answer: str) -> str:
     return answer
 
 
-__all__ = ["handle_im_message"]

@@ -31,7 +31,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlmodel import Session
 
-from bycall.agent.graph import GraphResult, run_tool_loop
+from bycall.agent.graph import GraphResult, run_tool_loop, run_tool_loop_stream
 from bycall.agent.session_store import (
     build_conversation_messages,
     compress_history,
@@ -313,4 +313,173 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
     )
 
 
-__all__ = ["AgentResult", "run_agent"]
+
+
+async def run_agent_stream(
+    *,
+    session: Session,
+    user: User,
+    question: str,
+    llm: BaseChatModel,
+    channel: str = "api",
+    conversation_id: int | None = None,
+):
+    """流式执行治理链路——逐 token yield 答案。
+
+    与 ``run_agent`` 同构，但用 ``run_tool_loop_stream`` 替代 ``run_tool_loop``，
+    使 LLM 生成的每个 token 实时推送给调用方（IM / REST SSE）。
+
+    Yields:
+        ``(chunk_text: str, is_final: bool, result: AgentResult | None)``
+        - 正常 token: ``("你好", False, None)``
+        - 流结束: ``("", True, AgentResult(...))``
+        - 错误: ``("错误信息", True, AgentResult(decision="error"))``
+
+    stream_id 由调用方管理（IM 渠道用 sender.send_stream 的 stream_id），此处不生成。
+    """
+    import uuid
+
+    stream_id = uuid.uuid4().hex[:12]
+
+    # 1. 策略引擎。
+    try:
+        cap: CapabilitySet = compute_capability_set(session, user)
+    except PermissionError as e:
+        _audit(session, user, channel, question, "denied", str(e), "")
+        yield _result(
+            answer=f"权限不足：{e}",
+            decision="denied",
+            scope=[],
+            retrieved=0,
+            user=user,
+        ).answer, True, _result(
+            answer=f"权限不足：{e}",
+            decision="denied",
+            scope=[],
+            retrieved=0,
+            user=user,
+        )
+        return
+
+    # 2. RAG 检索。
+    retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
+    has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
+    if not has_access:
+        _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
+        answer = "你没有访问相关知识的权限，请联系管理员。"
+        yield answer, True, _result(
+            answer=answer,
+            decision="denied_no_access",
+            scope=cap.knowledge_scope_tags,
+            retrieved=0,
+            user=user,
+        )
+        return
+
+    # 3. 工具过滤。
+    allowed_tool_specs = filter_tools(cap.allowed_tools)
+    langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
+
+    # 4. 拼消息。
+    if conversation_id is not None:
+        conv = session.get(Conversation, conversation_id)
+        summary = conv.summary if conv is not None else ""
+        history = load_message_history(session, conversation_id)
+        user_memories = load_user_memory(session, user.id) if user.id is not None else []
+        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
+        raw_messages = build_conversation_messages(
+            system_prompt=cap.system_prompt,
+            rag_context=rag_context,
+            question=question,
+            history=history,
+            summary=summary,
+            user_memories=user_memories,
+            skill_markdown=cap.skill_markdown,
+        )
+    else:
+        raw_messages = build_rag_messages(
+            cap.system_prompt, question, retrieved, skill_markdown=cap.skill_markdown
+        )
+
+    messages = _to_langchain_messages(raw_messages)
+
+    # 5. 流式执行工具回路。
+    full_answer = ""
+    graph_result: GraphResult | None = None
+    try:
+        stream = await run_tool_loop_stream(
+            chat_model=llm,
+            tools=langchain_tools,
+            messages=messages,
+        )
+        async for chunk_text, is_final, gr in stream:
+            if is_final:
+                graph_result = gr
+                break
+            if chunk_text:
+                full_answer += chunk_text
+                yield chunk_text, False, None
+    except Exception as e:
+        logger.error("LLM/graph 流式执行失败: %s", e)
+        _audit(session, user, channel, question, "error", str(e)[:200], "")
+        answer = "抱歉，服务暂时不可用。"
+        yield answer, True, _result(
+            answer=answer,
+            decision="error",
+            scope=cap.knowledge_scope_tags,
+            retrieved=len(retrieved),
+            user=user,
+        )
+        return
+
+    if graph_result is None:
+        graph_result = GraphResult(answer=full_answer)
+    answer = full_answer or graph_result.answer
+
+    # 6. 会话持久化。
+    if conversation_id is not None:
+        save_message(session, conversation_id, "user", question)
+        save_message(session, conversation_id, "assistant", answer)
+        full_history = load_message_history(session, conversation_id)
+        if should_compress(full_history):
+            conv = session.get(Conversation, conversation_id)
+            if conv is not None:
+                new_summary = compress_history(
+                    llm=llm,
+                    history=full_history,
+                    previous_summary=conv.summary,
+                )
+                if new_summary != conv.summary:
+                    conv.summary = new_summary
+                    session.add(conv)
+                    logger.info("会话 %s 压缩完成，summary 已更新", conversation_id)
+
+    # 7. 审计。
+    tool_detail = ""
+    if graph_result.tool_calls_made:
+        tool_names = [tc["name"] for tc in graph_result.tool_calls_made]
+        tool_detail = f"tools={tool_names}, "
+    skill_detail = f"skills={cap.skills}, " if cap.skills else ""
+    _audit(
+        session,
+        user,
+        channel,
+        question,
+        "answered",
+        f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
+        answer[:500],
+        tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
+    )
+
+    result = _result(
+        answer=answer,
+        decision="answered",
+        scope=cap.knowledge_scope_tags,
+        retrieved=len(retrieved),
+        user=user,
+        tool_calls=graph_result.tool_calls_made,
+    )
+    yield "", True, result
+
+
+__all__ = ["AgentResult", "run_agent", "run_agent_stream"]
