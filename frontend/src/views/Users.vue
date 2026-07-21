@@ -72,6 +72,10 @@
         <el-form-item label="状态" v-if="editing">
           <el-switch v-model="form.is_active" />
         </el-form-item>
+        <el-form-item label="企微 UserID">
+          <el-input v-model="form.im_bindings.wecom" placeholder="企业微信 UserID（如 ZhangSan）" />
+          <div class="hint">员工在企微里 @机器人 时，系统据此识别身份</div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -92,7 +96,7 @@ const roles = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
-const form = reactive({ name: '', display_name: '', role: 'member', password: '', is_active: true })
+const form = reactive({ name: '', display_name: '', role: 'member', password: '', is_active: true, im_bindings: {} })
 
 const roleOptions = computed(() => ['admin', 'member', ...roles.value.map((r) => r.name)])
 
@@ -109,7 +113,7 @@ async function load() {
 
 function openCreate() {
   editing.value = false
-  Object.assign(form, { name: '', display_name: '', role: 'member', password: '', is_active: true })
+  Object.assign(form, { name: '', display_name: '', role: 'member', password: '', is_active: true, im_bindings: {} })
   dialogVisible.value = true
 }
 
@@ -121,6 +125,7 @@ function openEdit(row) {
     role: row.role,
     password: '',
     is_active: row.is_active,
+    im_bindings: row.im_bindings ? { ...row.im_bindings } : {},
   })
   form._id = row.id
   dialogVisible.value = true
@@ -129,8 +134,11 @@ function openEdit(row) {
 async function onSave() {
   saving.value = true
   try {
+    const im = Object.fromEntries(
+      Object.entries(form.im_bindings || {}).filter(([, v]) => v && v.trim())
+    )
     if (editing.value) {
-      const data = { display_name: form.display_name, role: form.role, is_active: form.is_active }
+      const data = { display_name: form.display_name, role: form.role, is_active: form.is_active, im_bindings: im }
       if (form.password) data.password = form.password
       await admin.updateUser(form._id, data)
     } else {
@@ -139,6 +147,7 @@ async function onSave() {
         display_name: form.display_name,
         role: form.role,
         is_active: form.is_active,
+        im_bindings: im,
       })
     }
     ElMessage.success('保存成功')
@@ -171,5 +180,10 @@ onMounted(load)
 }
 .muted {
   color: #c0c4cc;
+}
+.hint {
+  color: #909399;
+  font-size: 12px;
+  margin-top: 4px;
 }
 </style>

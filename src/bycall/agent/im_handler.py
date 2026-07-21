@@ -52,7 +52,11 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         user_id = user.id if user is not None else None
 
     if user_id is None:
-        await sender.send_text("您还未被授权使用数字员工，请联系管理员邀请您加入。")
+        await sender.send_text(
+            f"您还未被授权使用数字员工，请联系管理员绑定您的企微账号。\n\n"
+            f"您的企微 UserID：{msg.im_user_id}\n"
+            f"请将此 ID 提供给管理员，在「用户管理」中编辑您的账号并填入。"
+        )
         logger.info(
             "IM 消息被拒（未绑定用户）: channel=%s im_user_id=%s", msg.channel, msg.im_user_id
         )
