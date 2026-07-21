@@ -72,21 +72,7 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         await sender.send_text("请求过于频繁，请稍后再试。")
         return
 
-    # 2. 先回一句"正在处理"（流式，提升体验），然后异步跑治理链路。
-    #    企微 SDK 要求进会话事件 5s 内回欢迎语，但普通文本消息无此限制；
-    #    这里用 send_stream 发中间态，最终态 finish=True。
-    stream_id = None
-    if sender.send_stream is not None:
-        # 流式渠道：先发"思考中"
-        import uuid
-
-        stream_id = f"stream_{uuid.uuid4().hex[:12]}"
-        try:
-            await sender.send_stream("正在查阅相关资料...", stream_id, finish=False)
-        except Exception:
-            stream_id = None  # 流式失败则退化为单条
-
-    # 3. 跑治理链路（同步，放在线程池避免阻塞事件循环）。
+    # 2. 跑治理链路（同步，放在线程池避免阻塞事件循环）。
     try:
         result = await asyncio.to_thread(_run_sync, user_id, text, msg.channel)
     except Exception:
@@ -94,14 +80,8 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         await sender.send_text("抱歉，处理时出错了，请稍后重试。")
         return
 
-    # 4. 回复结果。流式渠道发最终帧，非流式发单条。
+    # 3. 回复结果。send_text 底层走 reply_stream(finish=True)，单条即完成。
     answer = _format_answer(result.decision, result.answer)
-    if stream_id is not None and sender.send_stream is not None:
-        try:
-            await sender.send_stream(answer, stream_id, finish=True)
-            return
-        except Exception:
-            logger.warning("流式最终帧失败，退化单条回复")
     await sender.send_text(answer)
 
 
