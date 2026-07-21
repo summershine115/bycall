@@ -32,9 +32,18 @@ PROVIDERS: list[ProviderInfo] = [
     ProviderInfo(
         value="generic",
         label="自定义 (OpenAI 兼容)",
-        default_urls={"chat": "", "embedding": ""},
-        model_types=["chat", "embedding"],
+        default_urls={"chat": "", "embedding": "", "rerank": ""},
+        model_types=["chat", "embedding", "rerank"],
         description="任意 OpenAI 兼容端点（代理 / 本地 vLLM / Ollama）",
+    ),
+
+    ProviderInfo(
+        value="jina",
+        label="Jina AI",
+        default_urls={"rerank": "https://api.jina.ai/v1"},
+        model_types=["rerank"],
+        sample_models={"rerank": ["jina-reranker-v2-base-multilingual"]},
+        description="专精 rerank，jina-reranker-v2 多语言支持",
     ),
     ProviderInfo(
         value="openai",
@@ -92,13 +101,15 @@ PROVIDERS: list[ProviderInfo] = [
         default_urls={
             "chat": "https://api.siliconflow.cn/v1",
             "embedding": "https://api.siliconflow.cn/v1",
+            "rerank": "https://api.siliconflow.cn/v1",
         },
-        model_types=["chat", "embedding"],
+        model_types=["chat", "embedding", "rerank"],
         sample_models={
             "chat": ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
             "embedding": ["BAAI/bge-m3", "BAAI/bge-large-zh-v1.5"],
+            "rerank": ["BAAI/bge-reranker-v2-m3"],
         },
-        description="聚合平台，支持多种开源模型",
+        description="聚合平台，支持多种开源模型；rerank 可用 bge-reranker-v2-m3",
     ),
     ProviderInfo(
         value="moonshot",

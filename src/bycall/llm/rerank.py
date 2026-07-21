@@ -79,7 +79,8 @@ class OpenAIRerankModel(RerankModel):
             results: list[RankResult] = []
             for item in data.get("results", []):
                 idx = item.get("index", 0)
-                score = item.get("relevance_score", 0.0)
+                # 兼容不同 provider 的字段名：硅基流动用 relevance_score，Jina/Cohere 用 score
+                score = item.get("relevance_score") or item.get("score", 0.0)
                 text = documents[idx] if 0 <= idx < len(documents) else ""
                 results.append(RankResult(index=idx, score=score, text=text))
 
