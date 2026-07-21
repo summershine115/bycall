@@ -16,6 +16,8 @@ M1 先用一个简单的 admin 守卫依赖（``_require_admin``）；正式会�
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -100,8 +102,6 @@ def _audit_admin(
 
     不单独 commit——由调用方在业务 commit 时一起提交（与数据面审计一致）。
     """
-    import json
-
     request.state.admin_audited = True
 
     from bycall.governance.auth import load_session_cookie
@@ -288,8 +288,6 @@ def update_user(
         )
 
     # 审计：记录变更前快照
-    import json
-
     before_snapshot = json.dumps(user.model_dump(), default=str)
 
     if payload.display_name is not None:
@@ -421,8 +419,6 @@ def update_role(
 ) -> Role:
     """更新角色的 description / config。不存在 → 404。"""
     role = _require_role_exists(session, name)
-    import json
-
     before_snapshot = json.dumps(role.model_dump(), default=str)
     if payload.description is not None:
         role.description = payload.description
@@ -625,8 +621,6 @@ def update_skill(
     if skill is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
 
-    import json
-
     before_snapshot = json.dumps(skill.model_dump(), default=str)
     if payload.description is not None:
         skill.description = payload.description
@@ -678,9 +672,12 @@ def delete_skill(
                 "请先从这些角色的 skills 配置里移除"
             ),
         )
+    # 删除前抓纯 dict 快照（detached-safe：delete+commit 后对象进 detached 态，
+    # 显式抓 dict 比 model_dump 恰好能读更稳，与 update_* 审计范式一致）。
+    before_snapshot = skill.model_dump()
     session.delete(skill)
     session.commit()
-    _audit_admin(session, request, "delete_skill", f"Skill({name})", before=skill)
+    _audit_admin(session, request, "delete_skill", f"Skill({name})", before=before_snapshot)
 
 
 # ============ 审计 ============
@@ -1102,13 +1099,15 @@ def activate_model(
 @router.post("/models/{model_id}/test", response_model=ModelTestResult)
 def test_model(
     model_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> ModelTestResult:
     """连通性测试：按 provider 构造临时 OpenAI 兼容 client 发一次最小请求，计时。
 
     - chat：``chat.completions.create`` 一条 "hi"；
-    - embedding：``embeddings.create`` 一个 "test"，并校验返回维度 == 配置维度；
+    - embedding：``embeddings.create`` 一个 "test"，自动探测真实输出维度并回填到实体
+      ``embed_dimension``（维度是模型物理事实，非偏好）；配置错误时自动修正而非报错；
     - 异常一律捕获返回 ``ok=False`` + error，绝不抛 500（前端要拿结果展示）。
     """
     import time
@@ -1133,14 +1132,34 @@ def test_model(
             resp = client.embeddings.create(model=model.name, input="test")
             dim = len(resp.data[0].embedding) if resp.data else 0
             latency_ms = int((time.perf_counter() - start) * 1000)
-            if model.embed_dimension and dim != model.embed_dimension:
+            if dim == 0:
                 return ModelTestResult(
-                    ok=False,
-                    latency_ms=latency_ms,
-                    error=f"维度不匹配：期望 {model.embed_dimension}，实际 {dim}",
+                    ok=False, latency_ms=latency_ms, error="模型未返回向量（resp.data 为空）"
                 )
-            detail = f"dim={dim}, model={resp.model}"
-            return ModelTestResult(ok=True, latency_ms=latency_ms, detail=detail)
+            # 维度是模型的物理事实：自动回填到实体并落库，保证 embed_dimension 永远=真实输出。
+            # 仅当实际变化时才写库+审计，避免无谓的 UPDATE（updated_at 有 onupdate 会误弹）。
+            old_dim = model.embed_dimension
+            if old_dim != dim:
+                model.embed_dimension = dim
+                session.add(model)
+                session.commit()
+                session.refresh(model)
+                _audit_admin(
+                    session,
+                    request,
+                    "auto_detect_dimension",
+                    f"Model({model.name})",
+                    before={"embed_dimension": old_dim},
+                    after={"embed_dimension": dim},
+                )
+                session.commit()
+            detail = f"维度 {dim}（已自动填入）"
+            if old_dim and old_dim != dim:
+                detail = f"维度已从 {old_dim} 自动修正为 {dim}"
+            detail += f"，model={resp.model}"
+            return ModelTestResult(
+                ok=True, latency_ms=latency_ms, detail=detail, embed_dimension=dim
+            )
         else:
             # chat / rerank（rerank 暂按 chat 路径尝试，OpenAI 兼容性有限）
             resp = client.chat.completions.create(

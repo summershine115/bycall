@@ -85,7 +85,7 @@
         </el-form-item>
         <el-form-item label="向量维度" v-if="form.model_type === 'embedding'">
           <el-input-number v-model="form.embed_dimension" :min="1" :max="8192" />
-          <div class="hint">必须与模型实际输出维度一致（如 1536/1024/768）</div>
+          <div class="hint">可先随意填，保存后点"测试连接"自动探测真实维度</div>
         </el-form-item>
         <el-form-item label="创建后激活" v-if="!editing">
           <el-switch v-model="form.is_active" />
@@ -255,7 +255,16 @@ async function doTest(id) {
   try {
     const result = await admin.testModel(id)
     if (result.ok) {
-      ElMessage.success(`连接成功（${result.latency_ms}ms）`)
+      if (result.embed_dimension != null) {
+        ElMessage.success(`连接成功，检测到维度 ${result.embed_dimension}（${result.latency_ms}ms，已自动填入）`)
+        await load()
+        // 若正在编辑该模型，同步表单里的维度字段
+        if (editing.value && form.id === id) {
+          form.embed_dimension = result.embed_dimension
+        }
+      } else {
+        ElMessage.success(`连接成功（${result.latency_ms}ms）`)
+      }
     } else {
       ElMessage.error(`连接失败：${result.error}`)
     }

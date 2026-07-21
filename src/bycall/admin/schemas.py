@@ -149,7 +149,12 @@ class PromptActivate(BaseModel):
 class SkillCreate(BaseModel):
     """创建 Skill。``name`` 全局唯一（如 ``sales-playbook``）。"""
 
-    name: str = Field(..., description="唯一标识，小写字母/数字/连字符，如 sales-playbook")
+    name: str = Field(
+        ...,
+        # 小写字母/数字/连字符，首字符非连字符；admin 可控故只做格式约束（非安全门）。
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+        description="唯一标识，小写字母/数字/连字符，首字符非连字符，如 sales-playbook",
+    )
     description: str = Field(default="", description="一句话描述（admin 目录展示，不进 prompt）")
     content: str = Field(..., description="Markdown body（领域知识，进 system prompt）")
 
@@ -279,12 +284,19 @@ class ModelOut(BaseModel):
 
 
 class ModelTestResult(BaseModel):
-    """连通性测试结果。失败时 ok=False + error；成功时附带响应片段。"""
+    """连通性测试结果。失败时 ok=False + error；成功时附带响应片段。
+
+    embedding 模型测试成功时附带实测维度（``embed_dimension``），并自动回填到实体落库。
+    """
 
     ok: bool
     latency_ms: int = 0
     error: str = ""
     detail: str = Field(default="", description="成功时返回的样例响应片段")
+    embed_dimension: int | None = Field(
+        default=None,
+        description="embedding 模型实测维度（仅 embedding；测试时自动探测并回填到实体）",
+    )
 
 
 # ============ KnowledgeBase（知识库实体，参考 WeKnora）============
