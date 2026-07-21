@@ -732,8 +732,9 @@ def update_settings(
 ) -> dict:
     """批量更新设置。admin 改完下一条消息即时生效（无需重启）。
 
-    - secret 字段：value 为脱敏占位符（含 ***）时视为"未改"，跳过。
-    - value 空串：清除该 key（回退到 .env/默认）。
+    - secret 字段：value 为空串或脱敏占位符（含 ***）时视为"未改"，跳过
+      （前端未改的 secret 回传空串，见 Settings.vue「不改则留空保存」）。
+    - 非秘密 value 空串：清除该 key（回退到 .env/默认）。
     """
     from bycall.governance.settings_store import set_setting_value
 
@@ -744,8 +745,10 @@ def update_settings(
         if existing is None:
             skipped.append(f"{key}（未知 key）")
             continue
-        # secret 占位符保护：脱敏值里含 *** 且不是空串 → 用户没真改，跳过。
-        if existing.is_secret and "***" in value and value != "":
+        # secret 保护：空串或脱敏占位符（含 ***）→ 用户没真改，跳过。
+        # （前端未改的 secret 回传空串；若当 clear 处理会清掉已配置 secret，
+        #   曾导致企微鉴权 errcode=853000 invalid bot_id or secret。）
+        if existing.is_secret and (value == "" or "***" in value):
             skipped.append(f"{key}（未改）")
             continue
         set_setting_value(

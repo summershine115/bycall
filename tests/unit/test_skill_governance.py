@@ -80,12 +80,13 @@ def _make_user(session, name: str, role: str) -> User:
 
 class TestGetEnabledSkillsByNames:
     def test_returns_enabled_skills_matching_names(self, db_session):
-        """按 name 列表返回启用的 skill（按 name 排序）。"""
+        """按 name 列表返回启用的 skill（**保留 admin 配置顺序**，非 name 字母序）。"""
         _make_skill(db_session, "alpha", "A内容")
         _make_skill(db_session, "beta", "B内容")
 
+        # 传入顺序 [beta, alpha] → 输出也是 [beta, alpha]（与字母序相反，固化顺序语义）。
         result = get_enabled_skills_by_names(db_session, ["beta", "alpha"])
-        assert [s.name for s in result] == ["alpha", "beta"]
+        assert [s.name for s in result] == ["beta", "alpha"]
 
     def test_disabled_skill_silently_ignored(self, db_session):
         """已禁用的 skill 静默忽略（与 filter_tools 容错语义一致）。"""
@@ -192,9 +193,10 @@ class TestSkillCapabilityDispatch:
         assert cap.skill_markdown == ""
 
     def test_multiple_bound_skills_all_injected(self, db_session):
-        """角色绑定多个 skill → 全部注入，按 name 排序。"""
+        """角色绑定多个 skill → 全部注入，**保留 admin 配置顺序**（非 name 字母序）。"""
         _make_skill(db_session, "zeta", "Z内容")
         _make_skill(db_session, "alpha", "A内容")
+        # config 里 zeta 在前 → 注入顺序也 zeta 在前（admin 可控优先级）。
         _make_role_with_skills(db_session, "multi", ["zeta", "alpha"])
         _make_user(db_session, "multi-user", "multi")
 
@@ -202,7 +204,9 @@ class TestSkillCapabilityDispatch:
             db_session, db_session.exec(User.select_by_name("multi-user")).first()
         )
 
-        # 按 name 排序
-        assert cap.skills == ["alpha", "zeta"]
+        # 保留 admin 配置顺序：zeta 在 alpha 之前（与 name 字母序相反，固化顺序语义）。
+        assert cap.skills == ["zeta", "alpha"]
         assert "A内容" in cap.skill_markdown
         assert "Z内容" in cap.skill_markdown
+        # 注入 markdown 同样保持配置顺序：zeta 段在 alpha 段之前。
+        assert cap.skill_markdown.index("Z内容") < cap.skill_markdown.index("A内容")

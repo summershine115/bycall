@@ -82,6 +82,8 @@ IM 消息 → 认证(可信身份) → 身份映射 → 角色 → 当前能力�
 
 **为什么隔离的是上下文而非设定**：设定是组织受托人的行为准则，必须对所有用户一致（否则某个员工能改自己的人格/能力，治理脊柱就失效了）；上下文是员工的私有协作记录，A 看到B 的历史即等于越权。这条边界与 §1"策略绝不能活在提示词层"一脉相承——共享的是管控项，隔离的是私有数据。
 
+**SKILL 的信任定位**：SKILL（领域知识文档）由 admin 管控，经 `RoleConfig.skills` 按角色分发后注入 system prompt 并享 system 权重。这看似与 §1"策略绝不能活在提示词层"冲突，实则一致——该红线约束的是 **LLM/用户侧的越权升级**（用户消息、LLM 摘要、RAG 文档只能进 user 角色作上下文数据），而 SKILL 与 SystemPrompt 同属 **admin 管控的可信配置层**，不在此约束内。二者的隔离方式不同：SKILL 靠"参考知识，非指令"标注做**软隔离**（享 system 权重但显式标注为非指令），summary/RAG 靠角色降级做**硬隔离**（强制进 user 角色）。详见 `architecture.md` 架构红线 #7。
+
 > **当前已启用多轮会话**：`run_agent` 按 `conversation_id` 加载历史、摘要与管理员维护的用户记忆。企微群聊在“群成员共同授权 + 群会话隔离”模型落地前一律拒绝，避免把某个发送者有权看到的内容暴露给群内其他成员，也避免私聊与群聊串历史。
 
 **会话主键与 per-session 模型**：架构红线定义 `session_key = (agent_id, channel, tenant_id, user_id)`（见 `architecture.md` §架构红线 #2）。在 DB 层落地为 `Conversation` 表，一个 `(user_id, channel)` 自然对应一条私聊会话；`Conversation.model_id` 为可空外键，空则 fallback 到全局激活模型——默认行为完全兼容现状，需要 per-session 模型时只是一个外键绑定。

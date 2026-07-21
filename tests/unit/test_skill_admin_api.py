@@ -174,6 +174,26 @@ class TestSkillBoundaries:
         )
         assert client.delete("/api/admin/skills/referenced").status_code == 204
 
+    def test_invalid_name_format_returns_422(self, client: TestClient):
+        """name 不符合格式（含空格/大写/下划线/连字符开头/中文）→ 422。
+
+        pattern = ^[a-z0-9][a-z0-9-]*$（小写字母/数字/连字符，首字符非连字符）。
+        """
+        bad_names = ["Sales Playbook", "UPPER", "foo_bar", "-leading", "中文名", "a b"]
+        for nm in bad_names:
+            resp = client.post(
+                "/api/admin/skills",
+                json={"name": nm, "description": "", "content": "x"},
+            )
+            assert resp.status_code == 422, f"{nm!r} 应被拒绝，实际 {resp.status_code}"
+
+        # 合法 name 仍能创建（首字符字母、含数字与连字符）
+        ok = client.post(
+            "/api/admin/skills",
+            json={"name": "ok-name-1", "description": "", "content": "x"},
+        )
+        assert ok.status_code == 201
+
     def test_endpoints_require_admin_session(self, tmp_path, monkeypatch):
         """未登录访问 skill 端点 → 401。"""
         db_path = tmp_path / "test_skill_auth.db"

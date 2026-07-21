@@ -75,11 +75,15 @@ def get_system_prompt_by_version(session: Session, version: int) -> str | None:
 
 
 def get_enabled_skills_by_names(session: Session, names: list[str]) -> list:
-    """按 name 列表查启用的 Skill，返回 Skill 实体列表（按 name 排序）。
+    """按 name 列表查启用的 Skill，返回 Skill 实体列表（**保留 admin 配置顺序**）。
 
     未注册 / 已禁用的 name **静默忽略**（与 ``tools.gateway.filter_tools`` 一致的容错
     语义——admin 可能在 ``RoleConfig.skills`` 里配了还不存在或临时禁用的 skill name，
     不应让对话崩）。空 names → 空列表。
+
+    顺序：按入参 ``names`` 的先后排——admin 在 ``RoleConfig.skills`` 里列的顺序就是
+    注入顺序，允许多 skill 之间表达优先级/依赖（而非按 name 字母序，那会丢失 admin 意图）。
+    query 不再 ``order_by``，排序在内存里做（skill 数量小，无性能顾虑）。
 
     返回的是 ``Skill`` 实体（含 content），调用方据此合并 markdown。
     """
@@ -87,11 +91,11 @@ def get_enabled_skills_by_names(session: Session, names: list[str]) -> list:
         return []
 
     rows = session.exec(
-        select(Skill)
-        .where(Skill.name.in_(names), Skill.is_enabled == True)  # noqa: E712
-        .order_by(Skill.name)
+        select(Skill).where(Skill.name.in_(names), Skill.is_enabled == True)  # noqa: E712
     ).all()
-    return list(rows)
+    # 保留 admin 配置顺序：按 names 里的下标排，输出顺序即注入顺序。
+    order = {n: i for i, n in enumerate(names)}
+    return sorted(rows, key=lambda s: order.get(s.name, len(order)))
 
 
 def build_skill_markdown(skills: list) -> str:
