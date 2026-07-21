@@ -1228,8 +1228,26 @@ def test_model(
             return ModelTestResult(
                 ok=True, latency_ms=latency_ms, detail=detail, embed_dimension=dim
             )
+        elif model.model_type == "rerank":
+            # Rerank 测试：发 /rerank 请求（非 chat.completions，rerank 模型无对话能力）
+            resp = client._client.post(  # pyright: ignore[reportPrivateUsage]
+                "/rerank",
+                json={
+                    "model": model.name,
+                    "query": "test",
+                    "documents": ["This is a test document."],
+                },
+                timeout=client.timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result_count = len(data.get("results", []))
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            return ModelTestResult(
+                ok=True, latency_ms=latency_ms, detail=f"返回 {result_count} 条结果"
+            )
         else:
-            # chat / rerank（rerank 暂按 chat 路径尝试，OpenAI 兼容性有限）
+            # chat
             resp = client.chat.completions.create(
                 model=model.name,
                 messages=[{"role": "user", "content": "hi"}],
