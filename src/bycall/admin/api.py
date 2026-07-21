@@ -1229,15 +1229,25 @@ def test_model(
                 ok=True, latency_ms=latency_ms, detail=detail, embed_dimension=dim
             )
         elif model.model_type == "rerank":
-            # Rerank 测试：发 /rerank 请求（非 chat.completions，rerank 模型无对话能力）
-            resp = client._client.post(  # pyright: ignore[reportPrivateUsage]
-                "/rerank",
+            # Rerank 测试：用原始 httpx 发 /rerank 请求（对照硅基流动官方示例）。
+            # 不能走 client._client.post()——OpenAI SDK 内部的 httpx.Client.post() 不经过
+            # SDK 的 auth 层，Authorization header 没被加上，导致硅基流动返回 401。
+            import httpx
+
+            api_key = decrypt_secret(model.api_key)
+            base_url = (model.base_url or "").rstrip("/")
+            resp = httpx.post(
+                f"{base_url}/rerank",
                 json={
                     "model": model.name,
                     "query": "test",
                     "documents": ["This is a test document."],
                 },
-                timeout=client.timeout,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=client.timeout if client.timeout else 15.0,
             )
             resp.raise_for_status()
             data = resp.json()

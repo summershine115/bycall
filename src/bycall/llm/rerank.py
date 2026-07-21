@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import logging
 
-from openai import OpenAI
+import httpx
 
 from bycall.llm.base import RankResult, RerankModel
-
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +43,9 @@ class OpenAIRerankModel(RerankModel):
         timeout: float = 30.0,
     ) -> None:
         self._name = model_name
-        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._timeout = timeout
 
     @property
     def name(self) -> str:
@@ -58,6 +59,7 @@ class OpenAIRerankModel(RerankModel):
             return []
 
         try:
+
             body: dict = {
                 "model": self._name,
                 "query": query,
@@ -66,12 +68,16 @@ class OpenAIRerankModel(RerankModel):
             if top_n is not None:
                 body["top_n"] = top_n
 
-            # 用 raw httpx 请求（OpenAI SDK 不原生支持 /rerank 端点）
-
-            resp = self._client._client.post(  # pyright: ignore[reportPrivateUsage]
-                "/rerank",
+            # 直接用 httpx 发请求（带显式 Authorization header）。
+            # 不走 OpenAI SDK 的 _client.post()——SDK 内部 httpx Client 不经过 auth 层。
+            resp = httpx.post(
+                f"{self._base_url}/rerank",
                 json=body,
-                timeout=self._client.timeout,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=self._timeout,
             )
             resp.raise_for_status()
             data = resp.json()
