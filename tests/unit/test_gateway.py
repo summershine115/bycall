@@ -5,6 +5,8 @@
 2. InboundMessage / ReplySender 数据类构造。
 3. wecom._parse_text_frame：frame → (im_user_id, text, chat_id) 的解析正确性
    （锁定 body.from.userid 这条真实路径，以及 headers 兜底）。
+4. wecom 代理绕过：``_should_bypass_proxy`` 判定 + ``_ensure_wecom_bypasses_proxy`` 对企微
+   host 注入 ``proxy=None``（修复 SOCKS 代理导致 IM 无法聊天的问题；不真实建连）。
 """
 
 from __future__ import annotations
@@ -231,3 +233,76 @@ def test_wecom_parse_text_frame_single_chat_no_chatid():
     assert im_user_id == "u1"
     assert text == "私聊"
     assert chat_id == ""
+
+
+# ============ wecom WebSocket 代理绕过 ============
+
+
+def test_should_bypass_proxy_wecom_hosts():
+    """企微相关 host（含子域 / 自定义端口 / path）一律判为绕过代理。"""
+    from bycall.gateway.wecom import _should_bypass_proxy
+
+    assert _should_bypass_proxy("wss://openws.work.weixin.qq.com")
+    assert _should_bypass_proxy("wss://openws.work.weixin.qq.com:443/path")
+    assert _should_bypass_proxy("wss://custom.work.weixin.qq.com")
+
+
+def test_should_bypass_proxy_other_hosts():
+    """非企微 host（外网 LLM / 飞书等）不绕过，仍走配置的代理。"""
+    from bycall.gateway.wecom import _should_bypass_proxy
+
+    assert not _should_bypass_proxy("wss://api.openai.com")
+    assert not _should_bypass_proxy("wss://open.feishu.cn")
+    # 无 host 的畸形输入也不误判为绕过（避免把空绑定/异常 URI 当企微直连）
+    assert not _should_bypass_proxy("")
+    assert not _should_bypass_proxy("not-a-url")
+
+
+def test_wecom_ws_connect_bypasses_proxy_for_wecom_host():
+    """应用补丁后，企微 host 的连接 proxy=None（直连，不再触发 SOCKS/python-socks 报错）。"""
+    import websockets
+
+    from bycall.gateway.wecom import _ensure_wecom_bypasses_proxy
+
+    orig = websockets.connect
+    try:
+        websockets.connect = orig  # 复位到原始类，确保测到「首次应用」
+        _ensure_wecom_bypasses_proxy()
+        # 构造 Connect 对象不建连（网络 IO 在 await 时才发生），仅验证 proxy 注入
+        conn = websockets.connect("wss://openws.work.weixin.qq.com", ssl=True)
+        assert conn.proxy is None
+    finally:
+        websockets.connect = orig
+
+
+def test_wecom_ws_connect_keeps_proxy_for_other_host():
+    """非企微 host 不受补丁影响，proxy 保持默认 True（仍可走代理）。"""
+    import websockets
+
+    from bycall.gateway.wecom import _ensure_wecom_bypasses_proxy
+
+    orig = websockets.connect
+    try:
+        websockets.connect = orig
+        _ensure_wecom_bypasses_proxy()
+        conn = websockets.connect("wss://api.openai.com", ssl=True)
+        assert conn.proxy is True
+    finally:
+        websockets.connect = orig
+
+
+def test_ensure_wecom_bypasses_proxy_is_idempotent():
+    """重复调用不会二次包裹（幂等 guard 生效）。"""
+    import websockets
+
+    from bycall.gateway.wecom import _ensure_wecom_bypasses_proxy
+
+    orig = websockets.connect
+    try:
+        websockets.connect = orig
+        _ensure_wecom_bypasses_proxy()
+        first = websockets.connect
+        _ensure_wecom_bypasses_proxy()  # 再次调用应 no-op
+        assert websockets.connect is first
+    finally:
+        websockets.connect = orig

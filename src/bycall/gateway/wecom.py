@@ -46,6 +46,52 @@ def _parse_text_frame(frame: dict[str, Any]) -> tuple[str, str, str]:
     return im_user_id, text, chat_id
 
 
+def _should_bypass_proxy(uri: str) -> bool:
+    """是否对该 WebSocket URI 绕过系统代理（企微 host 一律直连）。
+
+    企微是「国内服务」，本应直连，不应走开发机为外网 LLM 配的 SOCKS/HTTP 代理。
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(str(uri)).hostname or "").lower()
+    return host.endswith("work.weixin.qq.com")
+
+
+def _ensure_wecom_bypasses_proxy() -> None:
+    """让企微 WebSocket 长连接绕过系统/环境代理（直连）。
+
+    背景：开发/部署机常开了 SOCKS 代理（macOS 系统代理或 ALL_PROXY 等），给外网 LLM 用。
+    websockets>=14 会自动读取该代理，遇 SOCKS 会要求额外装 python-socks，否则抛
+        ImportError: python-socks is required to use a SOCKS proxy
+    导致 aibot SDK 建连失败、整个 IM 渠道事件循环退出（表现为 IM 无法聊天）。
+
+    aibot SDK 调用 ``websockets.connect()`` 时不传 ``proxy`` 参数，无法从外部关闭；
+    装 python-socks 又会把「国内企微」流量绕去外网代理（错误且更慢）。这里用子类
+    替换 ``websockets.connect``，仅对企微 host 注入 ``proxy=None`` 走直连，其余 host
+    行为完全不变。替换作用于 ``websockets`` 模块属性，SDK 后续重连也命中同一替换，
+    天然覆盖重连。参考 WeKnora（Go gorilla/websocket 对 SOCKS 代理静默忽略、企微直连）。
+    """
+    import websockets
+
+    if getattr(websockets.connect, "_bycall_wecom_no_proxy", False):
+        return  # 已替换（幂等）
+
+    _orig_connect = websockets.connect
+
+    class _WecomNoProxyConnect(_orig_connect):
+        """对企微 host 强制 ``proxy=None``，其余沿用默认。"""
+
+        _bycall_wecom_no_proxy = True
+
+        def __init__(self, uri: str, *args: Any, **kwargs: Any) -> None:
+            if _should_bypass_proxy(uri) and "proxy" not in kwargs:
+                kwargs["proxy"] = None
+            super().__init__(uri, *args, **kwargs)
+
+    websockets.connect = _WecomNoProxyConnect
+    logger.info("已为企微 WebSocket 长连接启用代理绕过（直连，proxy=None）")
+
+
 class WecomChannel(Channel):
     """企微智能机器人渠道实现。
 
@@ -110,6 +156,7 @@ class WecomChannel(Channel):
             except Exception:
                 logger.debug("wecom 欢迎语发送失败（可能超时 5s 窗口）", exc_info=True)
 
+        _ensure_wecom_bypasses_proxy()
         logger.info("wecom 渠道正在建立 WebSocket 连接，bot_id=%s", self._bot_id)
         await client.connect()
 

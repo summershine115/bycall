@@ -78,13 +78,30 @@ def test_secret_placeholder_skipped(client):
         assert get_setting_value("im.wecom_bot_secret", session=s) == "real-bot-secret"
 
 
-def test_empty_value_clears_setting(client):
-    """secret 传空串 → 清除该设置。"""
-    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "bot-x"}})
-    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": ""}})
+def test_empty_non_secret_value_clears_setting(client):
+    """非秘密字段（bot_id）传空串 → 清除该设置（回退 .env/默认）。"""
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_id": "bot-x"}})
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_id": ""}})
     resp = client.get("/api/admin/settings")
-    secret = next(s for s in resp.json() if s["key"] == "im.wecom_bot_secret")
-    assert secret["is_set"] is False
+    bot_id = next(s for s in resp.json() if s["key"] == "im.wecom_bot_id")
+    assert bot_id["value"] == ""
+
+
+def test_empty_secret_value_keeps_unchanged(client):
+    """secret 传空串 → 视为未改（不清除）。
+
+    前端对「未改」的 secret 回传空串（Settings.vue「不改则留空保存」），后端必须
+    跳过而非清除，否则每次保存其它设置都会把已配置 secret 冲掉（曾导致企微 853000）。
+    """
+    client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": "real-bot-secret"}})
+    resp = client.put("/api/admin/settings", json={"settings": {"im.wecom_bot_secret": ""}})
+    assert resp.status_code == 200
+    assert any("im.wecom_bot_secret" in s for s in resp.json()["skipped"])
+    from bycall.db import session_scope
+    from bycall.governance.settings_store import get_setting_value
+
+    with session_scope() as s:
+        assert get_setting_value("im.wecom_bot_secret", session=s) == "real-bot-secret"
 
 
 def test_unknown_key_rejected(client):
