@@ -279,6 +279,10 @@ class ZvecStore(VectorStore):
             fields=[
                 FieldDef("source", "string"),
                 FieldDef("doc_id", "string"),
+                FieldDef("chunk_type", "string"),  # M2: "child"|"parent"
+                FieldDef("parent_id", "string"),  # M2: child→parent id
+                FieldDef("chunk_index", "int64"),  # M2: 文档内排序
+                FieldDef("title", "string"),  # M2: 文档标题
                 FieldDef("tenant_id", "string"),
                 FieldDef("dept", "string"),
                 FieldDef("level", "int64"),

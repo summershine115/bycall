@@ -37,6 +37,8 @@ class CapabilitySet:
       AuditLog 据此记录"本次对话注入了哪些 skill"。
     - ``skill_markdown``：合并后的 skill markdown 正文，供 runner 注入 system message。
       多个 skill 各自拼成 ``## 技能：{name}\\n{content}`` 后合并。空串 = 无 skill 注入。
+    - ``visible_kb_ids``：该角色可见的知识库 ID 列表。空 = 无限制（全部可见）。
+      用于 admin 控制面 KB 列表过滤——管理面板按角色限制 KB 可见性。
     - ``is_admin``：admin 内置角色标记，控制面特权判定用。
     """
 
@@ -49,6 +51,7 @@ class CapabilitySet:
     system_prompt: str = ""
     skills: list[str] = field(default_factory=list)
     skill_markdown: str = ""
+    visible_kb_ids: list[int] = field(default_factory=list)
     is_admin: bool = False
 
 
@@ -135,6 +138,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     # 3. admin 内置角色：不走 Role 表，直接给通配 + 最高职级。
     #    admin 是运维角色，不注入 skill（与不定制 prompt 一致）。
     if user.role == "admin":
+        # admin 全部可见，visible_kb_ids 留空 = 无限制
         return CapabilitySet(
             user_id=user.id,
             user_name=user.name,
@@ -145,6 +149,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
             system_prompt=global_prompt,
             skills=[],
             skill_markdown="",
+            visible_kb_ids=[],  # 空 = 全部可见
             is_admin=True,
         )
 
@@ -175,6 +180,16 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     # 实际生效的 skill name 列表（审计可见）。
     effective_skill_names = [s.name for s in bound_skills]
 
+    # 6. 可见知识库：KB 级 ACL — 过滤 visible_to_roles 含本角色或为空（全角色可见）的 KB
+    from bycall.governance.models import KnowledgeBase as KBModel
+
+    visible_kb_ids: list[int] = []
+    all_kbs = session.exec(KBModel.select_all()).all()
+    for kb in all_kbs:
+        kb_roles = kb.visible_to_roles
+        if kb_roles is None or len(kb_roles) == 0 or user.role in kb_roles:
+            visible_kb_ids.append(kb.id)  # pyright: ignore[reportOptionalMemberAccess]
+
     return CapabilitySet(
         user_id=user.id,
         user_name=user.name,
@@ -185,5 +200,6 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
         system_prompt=system_prompt,
         skills=effective_skill_names,
         skill_markdown=skill_markdown,
+        visible_kb_ids=visible_kb_ids,
         is_admin=False,
     )

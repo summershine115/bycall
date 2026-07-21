@@ -60,12 +60,18 @@ class CollectionDef:
 
 @dataclass
 class Chunk:
-    """一个知识块 —— RAG 的最小检索单位。
+    """一个知识块 —— RAG 的最小检索单位（参考 WeKnora Chunk 模型）。
 
     ``id`` 全局唯一（建议 ``{doc_id}_{chunk_idx}``）。
     ``vector`` 由 embedding 模型产出，维度需与 ``CollectionDef.dimension`` 对齐。
     ``fields`` 存放除正文外的标量（source/year/部门等），用于 filter 与回显。
     ``acl`` 为 None 表示未授权 → 默认不可搜索（隔离）。
+
+    父子块召回（M2）：
+    - ``chunk_type="child"``（默认）：参与向量索引 + 检索。
+    - ``chunk_type="parent"``：仅存 fields（不建向量索引），子块命中后带回提供上下文。
+    - ``parent_id``：子块指向父块的 id。null → 无父块（普通 chunk 或父块本身）。
+    - ``chunk_index``：在同一文档内的序号（用于排序 + 邻居上下文扩展）。
     """
 
     id: str
@@ -73,6 +79,9 @@ class Chunk:
     vector: list[float]
     fields: dict[str, object] = field(default_factory=dict)
     acl: ACLMetadata | None = None
+    parent_id: str | None = None  # 父块 id（父子块：child→parent）
+    chunk_type: str = "child"  # "child"（默认，参与索引）| "parent"（仅上下文）
+    chunk_index: int = 0  # 文档内序号
 
 
 @dataclass

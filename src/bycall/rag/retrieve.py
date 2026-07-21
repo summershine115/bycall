@@ -15,10 +15,9 @@ import logging
 from sqlmodel import Session
 
 from bycall.config import VectorStoreConfig
-from bycall.llm.base import Message
+from bycall.llm.base import Message, RankResult, RerankModel
 from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import FilterCondition, SearchRequest, SearchResult
-
 logger = logging.getLogger(__name__)
 
 # RRF 常数：业界标准值（Cormack et al. 2009）。k 越大，头部排名区分度越平缓。
@@ -131,8 +130,173 @@ def retrieve_multi_kb(
         except Exception as e:
             logger.warning("检索 KB collection %s 失败 (dim=%s): %s", collection_name, dimension, e)
 
-    return _rrf_fuse(per_kb_results, k=_RRF_K, topk=topk)
+    results = _rrf_fuse(per_kb_results, k=_RRF_K, topk=topk)
 
+    # 解析父块：子块命中 → 带上父块完整内容（M2 父子块召回）。
+    # 在 rerank 之前做：给 rerank 模型更完整的父块上下文。
+    results = _resolve_parent_chunks(results, session, config, kb_specs)
+
+    return results
+
+
+def rerank_results(
+    rerank_model: RerankModel,
+    query: str,
+    results: list[SearchResult],
+    top_n: int | None = None,
+) -> list[SearchResult]:
+    """用 rerank 模型对搜索结果做精排（参考 WeKnora PluginRerank）。
+
+    Args:
+        rerank_model: rerank 模型实例。
+        query: 查询文本（应该是改写后的 query，如果有改写）。
+        results: 待重排序的搜索结果列表。
+        top_n: 返回前 N 条（None = 全部保留，仅重新排序）。
+
+    Returns:
+        按 rerank 分数降序排列的 SearchResult 列表（score 字段被替换为 rerank 分数）。
+    """
+    if not results:
+        return []
+    if top_n is None:
+        top_n = len(results)
+
+    documents = [r.text for r in results]
+    try:
+        ranked: list[RankResult] = rerank_model.rerank(query, documents, top_n=top_n)
+    except Exception as e:
+        logger.warning("Rerank 调用失败，回退原排序: %s", e)
+        return results[:top_n]
+
+    out: list[SearchResult] = []
+    for rr in ranked:
+        if 0 <= rr.index < len(results):
+            r = results[rr.index]
+            r.score = rr.score
+            out.append(r)
+    return out
+
+
+def rewrite_query(
+    chat_model,  # BaseChatModel
+    question: str,
+    history_messages: list[Message] | None = None,
+) -> str:
+    """LLM 查询改写——多轮对话指代消解 + 意图补全（参考 WeKnora PluginQueryUnderstand）。
+
+    将类似"那个呢？""上一个再加详细点"等省略指代改写为完整查询。
+    改写失败 → 降级为原 query。
+
+    Args:
+        chat_model: 对话模型（BaseChatModel）。
+        question: 用户原始问题。
+        history_messages: 对话历史（最近 N 轮），用于多轮指代消解。
+
+    Returns:
+        改写后的查询文本（失败时返回原 question）。
+    """
+    if not question.strip():
+        return question
+
+    history_text = ""
+    if history_messages:
+        recent = history_messages[-6:]  # 最近 3 轮
+        parts = [f"{m.role}: {m.content[:300]}" for m in recent]
+        history_text = "\n".join(parts)
+
+    prompt = REWRITE_PROMPT.format(
+        history=history_text or "（无历史）",
+        question=question,
+    )
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        resp = chat_model.invoke([
+            SystemMessage(content="你是查询改写助手。输出只包含改写后的查询文本，不要任何解释。"),
+            HumanMessage(content=prompt),
+        ])
+        rewritten = str(resp.content).strip()
+        if rewritten and len(rewritten) >= 2:
+            logger.debug("Query rewritten: %s → %s", question[:50], rewritten[:100])
+            return rewritten
+    except Exception as e:
+        logger.warning("Query rewrite failed: %s", e)
+
+    return question
+
+
+REWRITE_PROMPT = """你是一位查询改写助手。根据对话历史，把用户当前问题改写成独立完整的检索查询。
+
+规则：
+1. 指代消解：把"它""那个""这个""他"替换为具体实体。
+2. 省略补全：把"上一个呢""再加详细点"补全为完整问题。
+3. 如果是独立完整问题，直接返回原问题。
+4. 只输出改写后的查询文本，不要解释、不要引号、不要前缀。
+
+对话历史：
+{history}
+
+用户当前问题：{question}
+
+改写后的查询："""
+
+
+def _resolve_parent_chunks(
+    results: list[SearchResult],
+    session: Session,
+    config: VectorStoreConfig,
+    kb_specs: list[tuple[int, str, int, int]],
+) -> list[SearchResult]:
+    """解析父子块：子块命中 → 用 parent_id 查父块完整内容替换子块 text。
+
+    参考 WeKnora PluginMerge.resolveParentChunks：
+    检索匹配的是子块（小粒度），通过 parent_id 找到父块（大粒度上下文），
+    用父块内容替换子块位置，让 LLM 看到完整上下文。
+    """
+    from bycall.vector_store.factory import create_vector_store
+
+    parent_ids: set[str] = set()
+    for r in results:
+        pid = r.fields.get("parent_id")
+        if pid and isinstance(pid, str) and pid:
+            parent_ids.add(pid)
+
+    if not parent_ids:
+        return results
+
+    # 收集所有父块的 SearchRequest — 用 id 精确查询
+    parent_map: dict[str, str] = {}  # parent_id → full_text
+    # 为每个 KB collection 建查询（父块可能在多个 collection）
+    for _kb_id, collection_name, dimension, _embedding_model_id in kb_specs:
+        store = create_vector_store(config, dimension=dimension)
+        try:
+            store.open(collection_name)
+            for pid in list(parent_ids):
+                try:
+                    # 用 id 精确查父块（用 FTS 搜 id 或直接 get）
+                    hits = store.search(SearchRequest(
+                        full_text=pid,
+                        filters=[FilterCondition(field="chunk_type", op="eq", value="parent")],
+                        topk=1,
+                        output_fields=["text", "chunk_type"],
+                    ))
+                    for hit in hits:
+                        if hit.fields.get("chunk_type") == "parent":
+                            parent_map[pid] = hit.text
+                            parent_ids.discard(pid)
+                except Exception:
+                    continue
+        finally:
+            store.close()
+
+    # 替换子块 text 为父块内容
+    for r in results:
+        pid = r.fields.get("parent_id")
+        if pid and isinstance(pid, str) and pid in parent_map:
+            r.text = parent_map[pid]
+
+    return results
 
 def _embed_query(
     session: Session, embedding_model_id: int, question: str, dimension: int

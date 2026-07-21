@@ -51,7 +51,10 @@ export const admin = {
   deleteRole: (name) => http.delete(`/api/admin/roles/${name}`),
   // 提示词
   listPrompts: () => http.get('/api/admin/prompts').then((r) => r.data),
+  getPrompt: (version) => http.get(`/api/admin/prompts/${version}`).then((r) => r.data),
   createPrompt: (data) => http.post('/api/admin/prompts', data).then((r) => r.data),
+  updatePrompt: (version, data) => http.put(`/api/admin/prompts/${version}`, data).then((r) => r.data),
+  deletePrompt: (version) => http.delete(`/api/admin/prompts/${version}`),
   activatePrompt: (version) =>
     http.post('/api/admin/prompts/activate', { version }).then((r) => r.data),
   // Skill（领域知识文档，name 主键；PUT 是 PATCH 语义）

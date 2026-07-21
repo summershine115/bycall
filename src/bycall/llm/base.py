@@ -57,4 +57,39 @@ class EmbedModel(ABC):
         return self.embed(texts)
 
 
-__all__ = ["EmbedModel", "Message"]
+@dataclass
+class RankResult:
+    """Rerank 单条结果——文档片段的相关性分数。"""
+
+    index: int  # 片段在原列表中的索引
+    score: float  # 相关性分数（0~1，越高越相关）
+    text: str = ""  # 片段文本（可选，回显用）
+
+
+class RerankModel(ABC):
+    """重排序模型接口（provider 无关，参考 WeKnora Reranker 接口）。
+
+    ``rerank`` 输入 query + 文档列表，返回按相关性降序排列的结果。
+    用于混合检索后对 TopK 候选做精排（cross-encoder 或 API reranker）。
+    """
+
+    @abstractmethod
+    def rerank(self, query: str, documents: list[str], top_n: int | None = None) -> list[RankResult]:
+        """对文档列表做重排序。返回按 score 降序排列的结果。
+
+        Args:
+            query: 查询文本。
+            documents: 候选文档文本列表。
+            top_n: 返回前 N 条（None = 全部）。
+
+        Returns:
+            按相关性降序排列的 RankResult 列表。
+        """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """模型名称（用于日志/审计）。"""
+
+
+__all__ = ["EmbedModel", "Message", "RankResult", "RerankModel"]

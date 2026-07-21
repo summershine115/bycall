@@ -143,6 +143,14 @@ class PromptActivate(BaseModel):
     version: int = Field(..., description="要激活的版本号")
 
 
+class PromptUpdate(BaseModel):
+    """更新提示词（PATCH 语义，只改传入字段）。"""
+
+    version: int | None = None
+    label: str | None = None
+    content: str | None = None
+
+
 # ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
 
 
@@ -307,19 +315,23 @@ class KnowledgeBaseCreate(BaseModel):
 
     选一个 embedding 模型 → 自动读维度 → 建 zvec collection。
     KB 和 source(ACL) 分离：KB 管维度/embedding/collection，source 管 ACL。
+    ``visible_to_roles`` 为 None/空 = 全部角色可见。
     """
 
     name: str = Field(..., description="知识库名称，全局唯一")
     description: str = Field(default="", description="描述")
     embedding_model_id: int = Field(..., description="绑定的 embedding 模型 ID（决定维度）")
+    visible_to_roles: list[str] | None = Field(
+        default=None, description="可见角色名列表（空=全部角色可见）"
+    )
 
 
 class KnowledgeBaseUpdate(BaseModel):
-    """更新知识库（PATCH 语义）。只改名称/描述，不改 embedding 模型（维度锁定）。"""
+    """更新知识库（PATCH 语义）。只改名称/描述/可见角色列表，不改 embedding 模型（维度锁定）。"""
 
     name: str | None = None
     description: str | None = None
-
+    visible_to_roles: list[str] | None = None
 
 class KnowledgeBaseOut(BaseModel):
     """知识库响应。"""
@@ -332,6 +344,7 @@ class KnowledgeBaseOut(BaseModel):
     embedding_model_id: int
     dimension: int
     collection_name: str
+    visible_to_roles: list[str] | None = None
     document_count: int
     chunk_count: int
     created_at: datetime

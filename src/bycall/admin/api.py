@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -546,6 +546,71 @@ def _deactivate_all_prompts(session: Session) -> None:
             prompt.is_active = False
             session.add(prompt)
 
+
+
+@router.get("/prompts/{version}", response_model=PromptOut)
+def get_prompt(
+    version: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> SystemPrompt:
+    """按版本号查单条提示词。"""
+    prompt = session.exec(
+        select(SystemPrompt).where(SystemPrompt.version == version)
+    ).first()
+    if prompt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
+    return prompt
+
+
+@router.put("/prompts/{version}", response_model=PromptOut)
+def update_prompt(
+    version: int,
+    payload: PromptUpdate,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> SystemPrompt:
+    """更新提示词版本（PATCH 语义：只改传入字段）。"""
+    prompt = session.exec(
+        select(SystemPrompt).where(SystemPrompt.version == version)
+    ).first()
+    if prompt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
+
+    if payload.version is not None:
+        # 改版本号 → 检查唯一性
+        existing = session.exec(
+            select(SystemPrompt).where(SystemPrompt.version == payload.version)
+        ).first()
+        if existing is not None and existing.id != prompt.id:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"提示词版本已存在: {payload.version}")
+        prompt.version = payload.version
+    if payload.label is not None:
+        prompt.label = payload.label
+    if payload.content is not None:
+        prompt.content = payload.content
+
+    session.add(prompt)
+    session.commit()
+    session.refresh(prompt)
+    return prompt
+
+
+@router.delete("/prompts/{version}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_prompt(
+    version: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Response:
+    """删除提示词版本。不会自动激活其他版本——admin 自行决定后续激活。"""
+    prompt = session.exec(
+        select(SystemPrompt).where(SystemPrompt.version == version)
+    ).first()
+    if prompt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
+    session.delete(prompt)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
 
@@ -1226,6 +1291,35 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
         store.close()
 
 
+def _ingest_document_async(kb_id: int, doc_id: int) -> None:
+    """异步入库入口——后台任务调用，创建独立 DB session。
+
+    FastAPI BackgroundTasks 在响应返回后执行，原请求的 session 已关闭，
+    所以必须在任务内部创建新的 session。
+    """
+    from bycall.db import session_scope
+
+    with session_scope() as session:
+        if kb is None:
+            logger.error("异步入库: KB %s 不存在", kb_id)
+            return
+        doc = session.get(Document, doc_id)
+        if doc is None:
+            logger.error("异步入库: 文档 %s 不存在", doc_id)
+            return
+        try:
+            _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+        except Exception as e:
+            logger.exception("异步入库失败: kb=%s doc=%s", kb_id, doc_id)
+            # 标记失败
+            doc = session.get(Document, doc_id)
+            if doc:
+                doc.status = "failed"
+                doc.error_message = str(e)[:500]
+                session.add(doc)
+                session.commit()
+
+
 def _ingest_document(
     session: Session,
     kb: KnowledgeBase,
@@ -1366,6 +1460,7 @@ def create_knowledge_base(
         embedding_model_id=payload.embedding_model_id,
         dimension=embed_model.embed_dimension,
         collection_name="placeholder",  # 先占位，拿到 id 后更新
+        visible_to_roles=payload.visible_to_roles,
     )
     session.add(kb)
     try:
@@ -1406,11 +1501,19 @@ def create_knowledge_base(
 
 @router.get("/knowledge-bases", response_model=list[KnowledgeBaseOut])
 def list_knowledge_bases(
+    role: str | None = Query(default=None, description="按角色过滤可见 KB"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> list[KnowledgeBase]:
-    """列出全部知识库。"""
-    return list(session.exec(KnowledgeBase.select_all()).all())
+    """列出知识库。可选按角色过滤：只返回该角色可见的 KB（visible_to_roles 含该角色或为空）。"""
+    kbs = list(session.exec(KnowledgeBase.select_all()).all())
+    if role:
+        kbs = [
+            kb
+            for kb in kbs
+            if kb.visible_to_roles is None or len(kb.visible_to_roles) == 0 or role in kb.visible_to_roles
+        ]
+    return kbs
 
 
 @router.get("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseOut)
@@ -1430,7 +1533,7 @@ def update_knowledge_base(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> KnowledgeBase:
-    """更新知识库名称/描述。不改 embedding 模型（维度锁定）。"""
+    """更新知识库名称/描述/可见角色列表。不改 embedding 模型（维度锁定）。"""
     kb = _get_kb_or_404(session, kb_id)
     if payload.name is not None and payload.name != kb.name:
         existing = session.exec(KnowledgeBase.select_by_name(payload.name)).first()
@@ -1442,6 +1545,8 @@ def update_knowledge_base(
         kb.name = payload.name
     if payload.description is not None:
         kb.description = payload.description
+    if payload.visible_to_roles is not None:
+        kb.visible_to_roles = payload.visible_to_roles
     session.add(kb)
     session.commit()
     session.refresh(kb)
@@ -1679,32 +1784,32 @@ def list_knowledge_sources(
 
 @router.post(
     "/knowledge-bases/{kb_id}/upload",
-    response_model=DocumentIngestResult,
+    response_model=DocumentOut,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
     kb_id: int,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     source: str = Query(..., description="知识域标签"),
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> DocumentIngestResult:
-    """文件上传入库（到指定 KB）。"""
+) -> DocumentOut:
+    """文件上传入库（到指定 KB）——异步入库。
+
+    文件立即保存到 DB（status=pending），入库在后台异步执行。
+    前端可通过 GET /documents/{doc_id} 轮询 status 直到 completed/failed。
+
+    支持格式：PDF / Word (.docx/.doc) / Markdown / HTML / TXT / CSV / JSON 等。
+    """
     kb = _get_kb_or_404(session, kb_id)
 
     if not file.filename:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件名不能为空")
 
-    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
-    if ext not in ("txt", "md", "markdown"):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=f"不支持的文件类型: .{ext}（仅支持 txt/md/markdown）",
-        )
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "txt"
 
-    # 文件大小限制：最多读 MAX_UPLOAD_BYTES + 1 字节，超限 → 413。
-    # 避免全量 file.read() 把超大文件读进内存导致 OOM。
     raw = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(
@@ -1712,19 +1817,38 @@ async def upload_document(
             detail=f"文件过大（上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
         )
 
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
+    # 用文档解析器提取文本。
+    from bycall.rag.parsers import get_parser, list_parsers
+
+    supported_exts = set()
+    for p in list_parsers():
+        supported_exts.update(p["file_types"])
+    if ext not in supported_exts:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            detail="文件不是有效的 UTF-8 文本",
+            detail=f"不支持的文件类型: .{ext}",
+        )
+
+    parser = get_parser(ext)
+    if parser is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"未找到 .{ext} 的解析器",
+        )
+
+    try:
+        result = parser.parse(raw, file_name=file.filename)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
         ) from exc
 
-    content = content.strip()
+    content = result.text.strip()
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件内容为空")
 
-    doc_title = title or file.filename.rsplit(".", 1)[0]
+    doc_title = title or result.title or file.filename.rsplit(".", 1)[0]
 
     doc = Document(
         knowledge_base_id=kb_id,
@@ -1741,7 +1865,9 @@ async def upload_document(
     session.commit()
     session.refresh(doc)
 
-    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+    background_tasks.add_task(_ingest_document_async, kb_id, doc.id)
+
+    return DocumentOut.model_validate(doc)
 
 
 # ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============

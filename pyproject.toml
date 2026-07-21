@@ -37,7 +37,12 @@ dependencies = [
     # 渐进式引入：只用编排+工具能力，Checkpointer/PostgresSaver 留后续（见 ADR-0002）
     "langgraph>=0.2",
     "langchain-openai>=0.2",
-    "langchain-core>=0.3",
+    # M2 知识库：文档解析 + 父子块 + rerank
+    "pymupdf>=1.28",  # PDF 解析（WeKnora 也用 MuPDF 内核）
+    "python-docx>=1.2",  # Word (.docx) 解析
+    "beautifulsoup4>=4.12",  # HTML 解析
+    "lxml>=5.0",  # HTML/XML 快速解析
+    "markdown>=3.7",  # Markdown → 结构化文本
 ]
 
 [project.optional-dependencies]

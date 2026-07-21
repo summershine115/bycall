@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
-from bycall.governance.json_types import DictJSONType, PydanticJSONType
+from bycall.governance.json_types import DictJSONType, ListJSONType, PydanticJSONType
 
 
 def _now_utc() -> datetime:
@@ -327,6 +327,9 @@ class KnowledgeBase(SQLModel, table=True):
     - KB 管物理存储层：embedding 模型 / 维度 / collection。
     - source 管逻辑访问层：ACL 标签（对应角色 knowledge_scope_tags）。
     - 一个 KB 可包含多种 source 标签的文档；一种 source 标签也可跨多个 KB。
+    - ``visible_to_roles``：KB 级角色可见性（空 = 全部角色可见）。与 source ACL
+      正交：source ACL 决定"文档内哪些 source 标签可被检索"，visible_to_roles 决定
+      "哪个角色能在 admin 控制面看到/管理这个 KB"。
 
     这让管理员可以按"知识域 + 维度需求"灵活组合：例如用 1024 维的 bge-m3
     建"产品知识库"，同时用 768 维的 bce-embedding 建"HR 知识库"，各自独立。
@@ -338,6 +341,7 @@ class KnowledgeBase(SQLModel, table=True):
     embedding_model_id: int = Field(index=True)  # 绑定的 embedding 模型（Model.id）
     dimension: int = 0  # 向量维度（冗余存，建 collection 时用，从 Model.embed_dimension 读）
     collection_name: str = Field(index=True)  # zvec collection 名（确定性: f"kb_{id}"）
+    visible_to_roles: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))  # KB 级角色可见性（空=全部角色可见）
     document_count: int = 0  # 文档数（冗余计数）
     chunk_count: int = 0  # 切块总数（冗余计数）
     created_at: datetime = Field(

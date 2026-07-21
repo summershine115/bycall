@@ -35,6 +35,20 @@
           @delete="onDelete"
         />
       </el-tab-pane>
+
+      <el-tab-pane label="重排模型 (Rerank)" name="rerank">
+        <ModelList
+          model-type="rerank"
+          :models="modelsByType('rerank')"
+          :providers="providers"
+          @refresh="load"
+          @add="openCreate('rerank')"
+          @edit="openEdit"
+          @activate="onActivate"
+          @test="onTest"
+          @delete="onDelete"
+        />
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 新建/编辑模型对话框 -->

@@ -21,7 +21,7 @@ from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
 from bycall.governance.models import Model
-from bycall.llm.base import EmbedModel
+from bycall.llm.base import EmbedModel, RerankModel
 from bycall.llm.openai_compat import OpenAIEmbedModel
 
 # ============ 实体查询 ============
@@ -98,6 +98,54 @@ def get_chat_model(
     return entity, resolve_chat_model(session, entity, timeout=timeout)
 
 
+
+def resolve_rerank_model(
+    session: Session,
+    entity: Model,
+    *,
+    timeout: float = 30.0,
+) -> RerankModel:
+    """Model 实体 → RerankModel 实例（OpenAI 兼容 rerank API）。"""
+    from bycall.governance.secrets import decrypt_secret
+    from bycall.llm.rerank import OpenAIRerankModel
+
+    api_key = decrypt_secret(entity.api_key) if entity.api_key else ""
+    # 从 SystemSetting 或 entity.base_url 取 base_url
+    base_url = _resolve_base_url(session, entity)
+
+    return OpenAIRerankModel(
+        model_name=entity.name,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+
+def get_rerank_model(
+    session: Session, *, timeout: float = 30.0
+) -> tuple[Model, RerankModel] | None:
+    """查激活 rerank model 并构造实例。无激活 rerank 模型返回 None。"""
+    entity = get_active_model(session, "rerank")
+    if entity is None:
+        return None
+    return entity, resolve_rerank_model(session, entity, timeout=timeout)
+
+
+def _resolve_base_url(session: Session, entity: Model) -> str:
+    """解析 base_url：DB 实体优先 > provider 默认 > SystemSetting override。"""
+    if entity.base_url:
+        return entity.base_url
+    # 尝试从 provider 注册表取默认 URL
+    try:
+        from bycall.llm.providers import get_provider
+        provider = get_provider(entity.provider)
+        if provider and provider.default_base_url:
+            return provider.default_base_url
+    except Exception:
+        pass
+    return ""
+
+
 def get_embed_model(session: Session, *, timeout: float = 60.0) -> tuple[Model, EmbedModel] | None:
     """查激活 embedding model 并构造实例。无激活 embedding 模型返回 None。"""
     entity = get_active_model(session, "embedding")
@@ -110,6 +158,8 @@ __all__ = [
     "get_active_model",
     "get_chat_model",
     "get_embed_model",
+    "get_rerank_model",
     "resolve_chat_model",
     "resolve_embed_model",
+    "resolve_rerank_model",
 ]

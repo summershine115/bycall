@@ -64,3 +64,29 @@ class DictJSONType(TypeDecorator):
         import json
 
         return json.loads(value)
+
+
+class ListJSONType(TypeDecorator):
+    """把 list 存为 JSON 字符串列（用于 visible_to_roles 这类列表字段）。
+
+    - 写入：``json.dumps(value)`` → 字符串
+    - 读取：字符串 → ``json.loads()`` → list
+    - ``None`` 保持 ``None``（区别于空 list ``[]``）。
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        import json
+
+        return json.dumps(value, ensure_ascii=False)
+
+    def process_result_value(self, value, dialect):
+        if value is None or value == "":
+            return None
+        import json
+
+        return json.loads(value)
