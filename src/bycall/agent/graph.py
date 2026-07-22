@@ -279,9 +279,7 @@ async def run_tool_loop_stream(
 
         # 先用非流式 graph.invoke 处理工具调用回合（不向用户展示）。
         # 工具调用完成后，单独对最终消息列表做一次 astream 得到逐 token 流式输出。
-        result = graph.invoke(
-            {"messages": messages}, config={"recursion_limit": recursion_limit}
-        )
+        result = graph.invoke({"messages": messages}, config={"recursion_limit": recursion_limit})
         final_messages: list[BaseMessage] = result["messages"]
         hit_limit = iter_counter["n"] > max_iterations
 

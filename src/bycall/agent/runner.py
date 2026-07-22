@@ -320,8 +320,6 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
     )
 
 
-
-
 async def run_agent_stream(
     *,
     session: Session,
@@ -353,18 +351,22 @@ async def run_agent_stream(
         cap: CapabilitySet = compute_capability_set(session, user)
     except PermissionError as e:
         _audit(session, user, channel, question, "denied", str(e), "")
-        yield _result(
-            answer=f"权限不足：{e}",
-            decision="denied",
-            scope=[],
-            retrieved=0,
-            user=user,
-        ).answer, True, _result(
-            answer=f"权限不足：{e}",
-            decision="denied",
-            scope=[],
-            retrieved=0,
-            user=user,
+        yield (
+            _result(
+                answer=f"权限不足：{e}",
+                decision="denied",
+                scope=[],
+                retrieved=0,
+                user=user,
+            ).answer,
+            True,
+            _result(
+                answer=f"权限不足：{e}",
+                decision="denied",
+                scope=[],
+                retrieved=0,
+                user=user,
+            ),
         )
         return
 
@@ -374,12 +376,16 @@ async def run_agent_stream(
     if not has_access:
         _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
         answer = "你没有访问相关知识的权限，请联系管理员。"
-        yield answer, True, _result(
-            answer=answer,
-            decision="denied_no_access",
-            scope=cap.knowledge_scope_tags,
-            retrieved=0,
-            user=user,
+        yield (
+            answer,
+            True,
+            _result(
+                answer=answer,
+                decision="denied_no_access",
+                scope=cap.knowledge_scope_tags,
+                retrieved=0,
+                user=user,
+            ),
         )
         return
 
@@ -435,12 +441,16 @@ async def run_agent_stream(
             logger.error("LLM/graph 流式执行失败: %s", e)
             _audit(session, user, channel, question, "error", str(e)[:200], "")
             answer = "抱歉，服务暂时不可用。"
-            yield answer, True, _result(
-                answer=answer,
-                decision="error",
-                scope=cap.knowledge_scope_tags,
-                retrieved=len(retrieved),
-                user=user,
+            yield (
+                answer,
+                True,
+                _result(
+                    answer=answer,
+                    decision="error",
+                    scope=cap.knowledge_scope_tags,
+                    retrieved=len(retrieved),
+                    user=user,
+                ),
             )
             return
     finally:

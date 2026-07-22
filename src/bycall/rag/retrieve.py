@@ -18,6 +18,7 @@ from bycall.config import VectorStoreConfig
 from bycall.llm.base import Message, RankResult, RerankModel
 from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import FilterCondition, SearchRequest, SearchResult
+
 logger = logging.getLogger(__name__)
 
 # RRF 常数：业界标准值（Cormack et al. 2009）。k 越大，头部排名区分度越平缓。
@@ -212,10 +213,14 @@ def rewrite_query(
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        resp = chat_model.invoke([
-            SystemMessage(content="你是查询改写助手。输出只包含改写后的查询文本，不要任何解释。"),
-            HumanMessage(content=prompt),
-        ])
+        resp = chat_model.invoke(
+            [
+                SystemMessage(
+                    content="你是查询改写助手。输出只包含改写后的查询文本，不要任何解释。"
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
         rewritten = str(resp.content).strip()
         if rewritten and len(rewritten) >= 2:
             logger.debug("Query rewritten: %s → %s", question[:50], rewritten[:100])
@@ -275,12 +280,14 @@ def _resolve_parent_chunks(
             for pid in list(parent_ids):
                 try:
                     # 用 id 精确查父块（用 FTS 搜 id 或直接 get）
-                    hits = store.search(SearchRequest(
-                        full_text=pid,
-                        filters=[FilterCondition(field="chunk_type", op="eq", value="parent")],
-                        topk=1,
-                        output_fields=["text", "chunk_type"],
-                    ))
+                    hits = store.search(
+                        SearchRequest(
+                            full_text=pid,
+                            filters=[FilterCondition(field="chunk_type", op="eq", value="parent")],
+                            topk=1,
+                            output_fields=["text", "chunk_type"],
+                        )
+                    )
                     for hit in hits:
                         if hit.fields.get("chunk_type") == "parent":
                             parent_map[pid] = hit.text
@@ -297,6 +304,7 @@ def _resolve_parent_chunks(
             r.text = parent_map[pid]
 
     return results
+
 
 def _embed_query(
     session: Session, embedding_model_id: int, question: str, dimension: int

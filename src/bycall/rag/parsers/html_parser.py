@@ -62,11 +62,13 @@ class HtmlParser(DocumentParser):
         def _flush_section() -> None:
             nonlocal current_heading, current_level, current_content
             if current_heading or current_content:
-                sections.append(Section(
-                    heading=current_heading or "",
-                    level=max(current_level, 1),
-                    content="\n".join(current_content),
-                ))
+                sections.append(
+                    Section(
+                        heading=current_heading or "",
+                        level=max(current_level, 1),
+                        content="\n".join(current_content),
+                    )
+                )
             current_heading = ""
             current_level = 0
             current_content = []
@@ -81,7 +83,17 @@ class HtmlParser(DocumentParser):
                 _flush_section()
                 current_heading = tag_text
                 current_level = level
-            elif tag.name in ("p", "li", "td", "th", "div", "pre", "blockquote", "article", "section"):
+            elif tag.name in (
+                "p",
+                "li",
+                "td",
+                "th",
+                "div",
+                "pre",
+                "blockquote",
+                "article",
+                "section",
+            ):
                 tag_text = tag.get_text(" ", strip=True)
                 if tag_text:
                     full_text_parts.append(tag_text)

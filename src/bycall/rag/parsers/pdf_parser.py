@@ -116,11 +116,13 @@ class PdfParser(DocumentParser):
             if level > 0 and len(block_text) < 200:  # 标题通常短
                 # 之前累积的正文作为一个 Section
                 if current_heading or current_content:
-                    sections.append(Section(
-                        heading=current_heading or "",
-                        level=max(current_level, 1),
-                        content="\n".join(current_content),
-                    ))
+                    sections.append(
+                        Section(
+                            heading=current_heading or "",
+                            level=max(current_level, 1),
+                            content="\n".join(current_content),
+                        )
+                    )
                 current_heading = block_text
                 current_level = level
                 current_content = []
@@ -129,11 +131,13 @@ class PdfParser(DocumentParser):
 
         # 最后一段
         if current_heading or current_content:
-            sections.append(Section(
-                heading=current_heading or "",
-                level=max(current_level, 1),
-                content="\n".join(current_content),
-            ))
+            sections.append(
+                Section(
+                    heading=current_heading or "",
+                    level=max(current_level, 1),
+                    content="\n".join(current_content),
+                )
+            )
 
         return "\n".join(text_parts), sections
 

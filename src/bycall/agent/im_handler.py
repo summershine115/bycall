@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from bycall.agent.runner import run_agent
 from bycall.db import session_scope
 from bycall.gateway.base import InboundMessage, ReplySender
 from bycall.gateway.identity import resolve_user_by_im
@@ -85,7 +84,7 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
                     if not final_answer.startswith(already_sent):
                         await sender.send_stream(final_answer, stream_id, True)
                     else:
-                        remainder = final_answer[len(already_sent):]
+                        remainder = final_answer[len(already_sent) :]
                         # 企微流式协议的 finish 帧内容会覆盖客户端已显示的全部文本；
                         # 空 finish 帧会把之前的流式内容清空（表现为"空白气泡"）。
                         # 因此 remainder 为空时必须发送完整 final_answer 保底。
@@ -176,5 +175,3 @@ def _format_answer(decision: str, answer: str) -> str:
     if decision == "denied":
         return answer
     return answer
-
-

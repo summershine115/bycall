@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from bycall.llm.base import RankResult, RerankModel
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +60,6 @@ class OpenAIRerankModel(RerankModel):
             return []
 
         try:
-
             body: dict = {
                 "model": self._name,
                 "query": query,
@@ -101,7 +101,4 @@ class OpenAIRerankModel(RerankModel):
         except Exception as e:
             logger.warning("Rerank API 调用失败: %s", e)
             # 降级：返回原始顺序
-            return [
-                RankResult(index=i, score=0.0, text=doc)
-                for i, doc in enumerate(documents)
-            ]
+            return [RankResult(index=i, score=0.0, text=doc) for i, doc in enumerate(documents)]

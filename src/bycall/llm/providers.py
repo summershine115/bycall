@@ -36,7 +36,6 @@ PROVIDERS: list[ProviderInfo] = [
         model_types=["chat", "embedding", "rerank"],
         description="任意 OpenAI 兼容端点（代理 / 本地 vLLM / Ollama）",
     ),
-
     ProviderInfo(
         value="jina",
         label="Jina AI",

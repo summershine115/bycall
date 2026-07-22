@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 
 # python-docx 内置的 heading 样式名映射
 _HEADING_STYLE_MAP: dict[str, int] = {
-    "Heading 1": 1, "heading 1": 1,
-    "Heading 2": 2, "heading 2": 2,
-    "Heading 3": 3, "heading 3": 3,
-    "Heading 4": 4, "heading 4": 4,
-    "Heading 5": 5, "heading 5": 5,
-    "Heading 6": 6, "heading 6": 6,
+    "Heading 1": 1,
+    "heading 1": 1,
+    "Heading 2": 2,
+    "heading 2": 2,
+    "Heading 3": 3,
+    "heading 3": 3,
+    "Heading 4": 4,
+    "heading 4": 4,
+    "Heading 5": 5,
+    "heading 5": 5,
+    "Heading 6": 6,
+    "heading 6": 6,
     "Title": 1,
 }
 
@@ -81,11 +87,13 @@ class DocxParser(DocumentParser):
 
                 if level > 0:
                     if current_heading or current_content:
-                        sections.append(Section(
-                            heading=current_heading or "",
-                            level=max(current_level, 1),
-                            content="\n".join(current_content),
-                        ))
+                        sections.append(
+                            Section(
+                                heading=current_heading or "",
+                                level=max(current_level, 1),
+                                content="\n".join(current_content),
+                            )
+                        )
                     current_heading = para_text
                     current_level = level
                     current_content = []
@@ -94,11 +102,13 @@ class DocxParser(DocumentParser):
 
             # 最后一段
             if current_heading or current_content:
-                sections.append(Section(
-                    heading=current_heading or "",
-                    level=max(current_level, 1),
-                    content="\n".join(current_content),
-                ))
+                sections.append(
+                    Section(
+                        heading=current_heading or "",
+                        level=max(current_level, 1),
+                        content="\n".join(current_content),
+                    )
+                )
 
             # 表格 → Markdown
             for table in doc.tables:

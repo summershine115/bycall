@@ -52,11 +52,13 @@ def list_parsers() -> list[dict[str, object]]:
             continue
         seen.add(name)
         probe = cls()
-        result.append({
-            "name": probe.name,
-            "description": probe.description,
-            "file_types": probe.file_types,
-        })
+        result.append(
+            {
+                "name": probe.name,
+                "description": probe.description,
+                "file_types": probe.file_types,
+            }
+        )
     return result
 
 

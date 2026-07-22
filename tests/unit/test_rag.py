@@ -118,6 +118,7 @@ class TestDocumentsToPreChunks:
         assert all(p.doc_id in ("docA", "docB") for p in pre)
         # id 以 doc_id 开头
         assert all(p.id.startswith(p.doc_id) for p in pre)
+
     def test_empty_docs_returns_empty(self):
         assert documents_to_pre_chunks([]) == []
 

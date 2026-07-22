@@ -98,7 +98,6 @@ def get_chat_model(
     return entity, resolve_chat_model(session, entity, timeout=timeout)
 
 
-
 def resolve_rerank_model(
     session: Session,
     entity: Model,
@@ -138,6 +137,7 @@ def _resolve_base_url(session: Session, entity: Model) -> str:
     # 尝试从 provider 注册表取默认 URL
     try:
         from bycall.llm.providers import get_provider
+
         provider = get_provider(entity.provider)
         if provider and provider.default_base_url:
             return provider.default_base_url

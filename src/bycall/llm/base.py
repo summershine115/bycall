@@ -74,7 +74,9 @@ class RerankModel(ABC):
     """
 
     @abstractmethod
-    def rerank(self, query: str, documents: list[str], top_n: int | None = None) -> list[RankResult]:
+    def rerank(
+        self, query: str, documents: list[str], top_n: int | None = None
+    ) -> list[RankResult]:
         """对文档列表做重排序。返回按 score 降序排列的结果。
 
         Args:

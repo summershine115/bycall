@@ -11,6 +11,7 @@ admin（``['*']``）全可见，空标签默认隔离（返回空）。入库由
 
 依赖最小：不引入 langchain 的 splitter，切块用纯 Python（段落优先 + 超长二次切）。
 """
+
 from bycall.rag.chunking import (
     ChunkingConfig,
     Document,

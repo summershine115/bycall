@@ -74,7 +74,23 @@ class ChunkingConfig:
     child_size: int = 384  # 子块字符数（父子模式）
     enable_parent_child: bool = False  # 是否开启父子块切分
     strategy: str = "auto"  # "auto" | "heading" | "recursive"
-    separators: list[str] = field(default_factory=lambda: ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", "，", ",", " "])
+    separators: list[str] = field(
+        default_factory=lambda: [
+            "\n\n",
+            "\n",
+            "。",
+            "！",
+            "？",
+            "；",
+            ".",
+            "!",
+            "?",
+            ";",
+            "，",
+            ",",
+            " ",
+        ]
+    )
 
 
 # ============ 主入口 ============
@@ -85,8 +101,7 @@ def split_document(
     config: ChunkingConfig | None = None,
     sections: list[Section] | None = None,
 ) -> list[str]:
-    """把文档正文切成 chunk 文本列表（向后兼容接口）。
-    """
+    """把文档正文切成 chunk 文本列表（向后兼容接口）。"""
     cfg = config or ChunkingConfig()
     if not doc.text.strip():
         return []
@@ -164,11 +179,14 @@ def documents_to_pre_chunks(
             # 创建子块 PreChunk，每个指向其父块
             # 子块与父块的对应关系：sub_chunks 按父块顺序排列
             for pi, pt in enumerate(parent_texts):
-                sub_chunks = _split_adaptive(pt, ChunkingConfig(
-                    chunk_size=cfg.child_size,
-                    overlap=max(1, cfg.child_size // 5),
-                    separators=cfg.separators,
-                ))
+                sub_chunks = _split_adaptive(
+                    pt,
+                    ChunkingConfig(
+                        chunk_size=cfg.child_size,
+                        overlap=max(1, cfg.child_size // 5),
+                        separators=cfg.separators,
+                    ),
+                )
                 for ci, ct in enumerate(sub_chunks):
                     cid = f"{doc.doc_id}_child_{pi}_{ci}"
                     cc = PreChunk(
@@ -190,15 +208,17 @@ def documents_to_pre_chunks(
         else:
             chunk_texts = _split_adaptive(doc.text, cfg)
             for i, ct in enumerate(chunk_texts):
-                pre.append(PreChunk(
-                    id=f"{doc.doc_id}_{i}",
-                    doc_id=doc.doc_id,
-                    text=ct,
-                    source=doc.source,
-                    title=doc.title,
-                    chunk_index=i,
-                    chunk_type="child",
-                ))
+                pre.append(
+                    PreChunk(
+                        id=f"{doc.doc_id}_{i}",
+                        doc_id=doc.doc_id,
+                        text=ct,
+                        source=doc.source,
+                        title=doc.title,
+                        chunk_index=i,
+                        chunk_type="child",
+                    )
+                )
 
     return pre
 
@@ -297,9 +317,7 @@ def _split_recursive(text: str, config: ChunkingConfig) -> list[str]:
     return _split_by_separator(text, config, config.separators)
 
 
-def _split_by_separator(
-    text: str, config: ChunkingConfig, separators: list[str]
-) -> list[str]:
+def _split_by_separator(text: str, config: ChunkingConfig, separators: list[str]) -> list[str]:
     """按给定分隔符列表，递归切分直到每个片段 ≤ chunk_size。"""
     if not separators or len(text) <= config.chunk_size:
         return _hard_split_final(text, config)
@@ -371,6 +389,7 @@ def _split_long_block(block: str, max_size: int, overlap: int) -> list[str]:
 def _split_sentences(text: str) -> list[str]:
     """简单句子切分（向后兼容）。"""
     import re
+
     parts = re.split(r"([。！？.!?\n])", text)
     out: list[str] = []
     buf = ""
