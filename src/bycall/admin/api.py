@@ -34,6 +34,8 @@ from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
     AuditOut,
+    BatchReindexRequest,
+    BatchReindexResult,
     ChunkPreviewItem,
     ChunkPreviewRequest,
     ChunkPreviewResult,
@@ -43,6 +45,11 @@ from bycall.admin.schemas import (
     DocumentIngestResult,
     DocumentOut,
     DocumentUpdate,
+    KBChunkListResult,
+    KBChunkOut,
+    KBSearchRequest,
+    KBSearchResult,
+    KBSearchResultItem,
     KnowledgeBaseCreate,
     KnowledgeBaseOut,
     KnowledgeBaseUpdate,
@@ -1330,6 +1337,23 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
         store.close()
 
 
+def _kb_chunking_config(kb: KnowledgeBase):
+    """从 KB 的切块配置字段构造 ChunkingConfig（入库/预览共用）。"""
+    from bycall.rag.chunking import ChunkingConfig
+
+    return ChunkingConfig(
+        chunk_size=kb.chunk_size,
+        overlap=kb.chunk_overlap,
+        separators=list(kb.separators)
+        if kb.separators
+        else ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", "，", ",", " "],
+        strategy=kb.strategy,
+        enable_parent_child=kb.enable_parent_child,
+        parent_size=kb.parent_chunk_size,
+        child_size=kb.child_chunk_size,
+    )
+
+
 def _ingest_document(
     session: Session,
     kb: KnowledgeBase,
@@ -1408,7 +1432,10 @@ def _ingest_document(
         store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
         try:
             pipeline = IngestPipeline(store, embed_model, collection_name=kb.collection_name)
-            result = pipeline.ingest_text(content, source=source, doc_id=f"doc_{doc_id}")
+            config = _kb_chunking_config(kb)
+            result = pipeline.ingest_text(
+                content, source=source, doc_id=f"doc_{doc_id}", config=config
+            )
             errors = result.errors
             chunk_count = result.chunk_count
         finally:
@@ -1428,6 +1455,7 @@ def _ingest_document(
 
     # 更新 KB 的 chunk_count（差值）+ document_count（不变，文档已存在）
     kb.chunk_count += chunk_count - old_chunk_count
+    kb.total_chars += len(content)
     session.add(kb)
     session.commit()
     session.refresh(doc)
@@ -1505,6 +1533,15 @@ def create_knowledge_base(
         dimension=embed_model.embed_dimension,
         collection_name="placeholder",  # 先占位，拿到 id 后更新
         visible_to_roles=payload.visible_to_roles,
+        chunk_size=payload.chunk_size,
+        chunk_overlap=payload.chunk_overlap,
+        separators=payload.separators
+        if payload.separators
+        else ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", "，", ",", " "],
+        strategy=payload.strategy,
+        enable_parent_child=payload.enable_parent_child,
+        parent_chunk_size=payload.parent_chunk_size,
+        child_chunk_size=payload.child_chunk_size,
     )
     session.add(kb)
     try:
@@ -1593,6 +1630,20 @@ def update_knowledge_base(
         kb.description = payload.description
     if payload.visible_to_roles is not None:
         kb.visible_to_roles = payload.visible_to_roles
+    if payload.chunk_size is not None:
+        kb.chunk_size = payload.chunk_size
+    if payload.chunk_overlap is not None:
+        kb.chunk_overlap = payload.chunk_overlap
+    if payload.separators is not None:
+        kb.separators = payload.separators
+    if payload.strategy is not None:
+        kb.strategy = payload.strategy
+    if payload.enable_parent_child is not None:
+        kb.enable_parent_child = payload.enable_parent_child
+    if payload.parent_chunk_size is not None:
+        kb.parent_chunk_size = payload.parent_chunk_size
+    if payload.child_chunk_size is not None:
+        kb.child_chunk_size = payload.child_chunk_size
     session.add(kb)
     session.commit()
     session.refresh(kb)
@@ -1929,15 +1980,20 @@ def preview_chunks(
     用入库时同样的默认 ``ChunkingConfig``（可选覆盖 chunk_size/overlap/父子块），
     让管理员在入库前后验证/调参切块效果，避免"入了库才发现切得不对"。
     """
-    _get_kb_or_404(session, kb_id)
+    kb = _get_kb_or_404(session, kb_id)
 
-    from bycall.rag.chunking import ChunkingConfig, Document, documents_to_pre_chunks
+    from bycall.rag.chunking import Document, documents_to_pre_chunks
 
-    config = ChunkingConfig(
-        chunk_size=payload.chunk_size if payload.chunk_size is not None else 500,
-        overlap=payload.overlap if payload.overlap is not None else 50,
-        enable_parent_child=payload.enable_parent_child,
-    )
+    config = _kb_chunking_config(kb)
+    # 允许请求参数覆盖 KB 配置（调参预览）
+    if payload.chunk_size is not None:
+        config.chunk_size = payload.chunk_size
+    if payload.overlap is not None:
+        config.overlap = payload.overlap
+    if payload.strategy is not None:
+        config.strategy = payload.strategy
+    if payload.enable_parent_child is not None:
+        config.enable_parent_child = payload.enable_parent_child
     doc = Document(doc_id="preview", text=payload.text, source="preview", title=payload.title)
     pre_chunks = documents_to_pre_chunks([doc], config=config)
 
@@ -1976,6 +2032,156 @@ def get_document_content(
     if doc.knowledge_base_id != kb_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
     return DocumentContentOut.model_validate(doc)
+
+
+# ============ Chunk 列表（调试/排查检索效果用）============
+
+
+@router.get("/knowledge-bases/{kb_id}/chunks", response_model=KBChunkListResult)
+def list_kb_chunks(
+    kb_id: int,
+    doc_id: str | None = Query(default=None, description="按 doc_id 过滤（如 doc_42）"),
+    limit: int = Query(default=50, ge=1, le=500, description="返回条数"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KBChunkListResult:
+    """列出 KB 内的 chunk 元数据（按 doc_id 过滤，用于调试检索效果）。"""
+    kb = _get_kb_or_404(session, kb_id)
+
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+    from bycall.vector_store.models import FilterCondition, SearchRequest
+
+    store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+    try:
+        store.open(kb.collection_name)
+        filters = []
+        if doc_id:
+            filters.append(FilterCondition(field="doc_id", op="=", value=doc_id))
+        dummy_vec = [0.0] * kb.dimension
+        req = SearchRequest(
+            vector=dummy_vec,
+            filters=filters if filters else None,
+            topk=limit,
+            output_fields=["chunk_type", "chunk_index", "doc_id", "source", "title", "parent_id"],
+        )
+        results = store.search(req)
+    finally:
+        store.close()
+
+    items = [
+        KBChunkOut(
+            chunk_id=r.id,
+            chunk_type=str(r.fields.get("chunk_type", "child")),
+            chunk_index=int(r.fields.get("chunk_index", 0)),
+            doc_id=str(r.fields.get("doc_id", "")),
+            source=str(r.fields.get("source", "")),
+            title=str(r.fields.get("title", "")),
+            text=r.text[:500] if r.text else "",
+            char_count=len(r.text) if r.text else 0,
+            parent_id=str(r.fields.get("parent_id", "")) or None,
+        )
+        for r in results
+    ]
+    return KBChunkListResult(kb_id=kb_id, doc_id=doc_id, total=len(items), items=items)
+
+
+# ============ KB 检索（admin 调试用）============
+
+
+@router.post("/knowledge-bases/{kb_id}/search", response_model=KBSearchResult)
+def search_kb(
+    kb_id: int,
+    payload: KBSearchRequest,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KBSearchResult:
+    """在指定 KB 内执行混合检索，用于 admin 验证检索效果。"""
+    kb = _get_kb_or_404(session, kb_id)
+
+    from bycall.config import get_settings
+    from bycall.rag.retrieve import retrieve_multi_kb
+
+    tags = payload.knowledge_scope_tags
+    results = retrieve_multi_kb(
+        get_settings().vector_store,
+        kb_specs=[(kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id)],
+        question=payload.question,
+        knowledge_scope_tags=tags,
+        topk=payload.topk,
+        session=session,
+    )
+
+    items = [
+        KBSearchResultItem(
+            chunk_id=r.id,
+            score=round(r.score, 4),
+            text=r.text[:300] if r.text else "",
+            chunk_type=str(r.fields.get("chunk_type", "child")),
+            doc_id=str(r.fields.get("doc_id", "")),
+            source=str(r.fields.get("source", "")),
+            title=str(r.fields.get("title", "")),
+        )
+        for r in results
+    ]
+    return KBSearchResult(kb_id=kb_id, question=payload.question, results=items, total=len(items))
+
+
+# ============ Batch 批量操作 ============
+
+
+@router.post("/knowledge-bases/{kb_id}/documents/batch-reindex", response_model=BatchReindexResult)
+def batch_reindex_documents(
+    kb_id: int,
+    payload: BatchReindexRequest,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> BatchReindexResult:
+    """批量重新入库——对指定文档列表依次执行 reindex。上限 100 个文档/次。"""
+    kb = _get_kb_or_404(session, kb_id)
+
+    details: list[DocumentIngestResult] = []
+    succeeded = 0
+    failed = 0
+
+    for doc_id in payload.document_ids:
+        doc = session.get(Document, doc_id)
+        if doc is None or doc.knowledge_base_id != kb_id:
+            details.append(
+                DocumentIngestResult(
+                    ok=False,
+                    document_id=doc_id,
+                    chunk_count=0,
+                    errors=[f"文档不存在或不属于本 KB: {doc_id}"],
+                )
+            )
+            failed += 1
+            continue
+
+        try:
+            result = _ingest_document(session, kb, doc_id, doc.title, doc.source, doc.content)
+            details.append(result)
+            if result.ok:
+                succeeded += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            details.append(
+                DocumentIngestResult(
+                    ok=False,
+                    document_id=doc_id,
+                    chunk_count=0,
+                    errors=[f"入库异常: {exc}"],
+                )
+            )
+            failed += 1
+
+    return BatchReindexResult(
+        total=len(payload.document_ids),
+        succeeded=succeeded,
+        failed=failed,
+        details=details,
+    )
 
 
 # ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============

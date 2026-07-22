@@ -403,6 +403,34 @@ class KnowledgeBase(SQLModel, table=True):
     visible_to_roles: list[str] | None = Field(
         default=None, sa_column=Column(ListJSONType)
     )  # KB 级角色可见性（空=全部角色可见）
+
+    # ---- 切块配置（per-KB，参考 WeKnora ChunkingConfig）----
+    chunk_size: int = 500  # 默认单块字符数（非父子模式）
+    chunk_overlap: int = 50  # 重叠字符数
+    separators: list[str] = Field(
+        default_factory=lambda: [
+            "\n\n",
+            "\n",
+            "。",
+            "！",
+            "？",
+            "；",
+            ".",
+            "!",
+            "?",
+            ";",
+            "，",
+            ",",
+            " ",
+        ],
+        sa_column=Column(ListJSONType),
+    )  # 递归切分分隔符（优先级从高到低）
+    strategy: str = "auto"  # 切块策略: "auto" | "heading" | "recursive"
+    enable_parent_child: bool = False  # 是否开启父子块切分
+    parent_chunk_size: int = 4096  # 父块字符数（父子模式）
+    child_chunk_size: int = 384  # 子块字符数（父子模式）
+    # ---- 统计 ----
+    total_chars: int = 0  # 文档总字符数
     document_count: int = 0  # 文档数（冗余计数）
     chunk_count: int = 0  # 切块总数（冗余计数）
     created_at: datetime = Field(

@@ -324,6 +324,16 @@ class KnowledgeBaseCreate(BaseModel):
     visible_to_roles: list[str] | None = Field(
         default=None, description="可见角色名列表（空=全部角色可见）"
     )
+    # ---- 切块配置（沿用 WeKnora 默认值，可不传）----
+    chunk_size: int = Field(default=500, ge=100, le=4000, description="单块字符数")
+    chunk_overlap: int = Field(default=50, ge=0, le=500, description="重叠字符数")
+    separators: list[str] | None = Field(
+        default=None, description="递归切分分隔符（默认：换行-句号-逗号优先级链）"
+    )
+    strategy: str = Field(default="auto", description='切块策略: "auto" | "heading" | "recursive"')
+    enable_parent_child: bool = Field(default=False, description="是否开启父子块切分")
+    parent_chunk_size: int = Field(default=4096, ge=512, le=8192, description="父块字符数")
+    child_chunk_size: int = Field(default=384, ge=64, le=2048, description="子块字符数")
 
 
 class KnowledgeBaseUpdate(BaseModel):
@@ -332,12 +342,29 @@ class KnowledgeBaseUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     visible_to_roles: list[str] | None = None
+    # ---- 切块配置（调参不会触发已有文档重索引）----
+    chunk_size: int | None = Field(default=None, ge=100, le=4000)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=500)
+    separators: list[str] | None = None
+    strategy: str | None = None
+    enable_parent_child: bool | None = None
+    parent_chunk_size: int | None = Field(default=None, ge=512, le=8192)
+    child_chunk_size: int | None = Field(default=None, ge=64, le=2048)
 
 
 class KnowledgeBaseOut(BaseModel):
     """知识库响应。"""
 
     model_config = ConfigDict(from_attributes=True)
+    # ---- 切块配置 ----
+    chunk_size: int
+    chunk_overlap: int
+    separators: list[str]
+    strategy: str
+    enable_parent_child: bool
+    parent_chunk_size: int
+    child_chunk_size: int
+    total_chars: int
 
     id: int
     name: str
@@ -459,6 +486,86 @@ class DocumentContentOut(BaseModel):
     title: str
     char_count: int
     content: str
+
+
+# ============ Chunk 列表（调试/排查检索效果用）============
+
+
+class KBChunkOut(BaseModel):
+    """单个 chunk 的元数据（不含向量，仅标量字段 + 文本预览）。"""
+
+    chunk_id: str
+    chunk_type: str = Field(default="child", description="child | parent")
+    chunk_index: int
+    doc_id: str
+    source: str
+    title: str
+    text: str = Field(default="", description="截断到前 500 字符的文本预览")
+    char_count: int
+    parent_id: str | None = None
+
+
+class KBChunkListResult(BaseModel):
+    """KB 内 chunk 列表（按 doc_id 过滤）。"""
+
+    kb_id: int
+    doc_id: str | None = None
+    total: int
+    items: list[KBChunkOut]
+
+
+# ============ KB 检索（admin 调试用，不计入数据面链路）============
+
+
+class KBSearchRequest(BaseModel):
+    """在指定 KB 内执行混合检索（向量+FTS+权限过滤），用于 admin 验证检索效果。"""
+
+    question: str = Field(..., description="检索查询文本")
+    topk: int = Field(default=5, ge=1, le=50, description="返回条数")
+    knowledge_scope_tags: list[str] | None = Field(
+        default=None, description="模拟角色的知识域标签（ACL 预过滤）；None/空 = 不限"
+    )
+
+
+class KBSearchResultItem(BaseModel):
+    """单条检索结果。"""
+
+    chunk_id: str
+    score: float
+    text: str = Field(default="", description="截断到前 300 字符")
+    chunk_type: str
+    doc_id: str
+    source: str
+    title: str
+
+
+class KBSearchResult(BaseModel):
+    """KB 检索响应。"""
+
+    kb_id: int
+    question: str
+    results: list[KBSearchResultItem]
+    total: int
+
+
+# ============ Batch 批量操作 ============
+
+
+class BatchReindexRequest(BaseModel):
+    """批量重新入库请求。"""
+
+    document_ids: list[int] = Field(
+        ..., min_length=1, max_length=100, description="要重新入库的文档 ID 列表"
+    )
+
+
+class BatchReindexResult(BaseModel):
+    """批量重新入库结果。"""
+
+    total: int
+    succeeded: int
+    failed: int
+    details: list[DocumentIngestResult] = Field(default_factory=list)
 
 
 # ============ Conversation + Message（会话管理）============
