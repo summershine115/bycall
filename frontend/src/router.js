@@ -17,6 +17,7 @@ const routes = [
       { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
       { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
+      { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },

@@ -94,6 +94,67 @@ class TestFilterTools:
         # admin 通配路径也走排序
         assert [t.name for t in filtered] == ["calc", "get_time", "send_email"]
 
+    def test_prefix_wildcard_matches_mcp_server_tools(self):
+        """``mcp__sales__*`` 匹配该 server 全部工具（server 加新工具自动可见）。"""
+        # 注册几个 mcp 前缀工具（与 fixture 的内置工具共存）。
+        register(
+            ToolSpec(
+                name="mcp__sales__query",
+                description="",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "q",
+                source="mcp",
+            )
+        )
+        register(
+            ToolSpec(
+                name="mcp__sales__report",
+                description="",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "r",
+                source="mcp",
+            )
+        )
+        register(
+            ToolSpec(
+                name="mcp__hr__lookup",
+                description="",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "l",
+                source="mcp",
+            )
+        )
+        filtered = filter_tools(["mcp__sales__*"])
+        assert {t.name for t in filtered} == {"mcp__sales__query", "mcp__sales__report"}
+
+    def test_prefix_wildcard_and_exact_combined(self):
+        """前缀通配 + 精确名混合放行。"""
+        register(
+            ToolSpec(
+                name="mcp__sales__query",
+                description="",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "q",
+                source="mcp",
+            )
+        )
+        filtered = filter_tools(["calc", "mcp__sales__*"])
+        assert {t.name for t in filtered} == {"calc", "mcp__sales__query"}
+
+    def test_bare_star_still_means_all(self):
+        """单独 ``*`` 仍是全部（不是前缀匹配的退化）。"""
+        register(
+            ToolSpec(
+                name="mcp__x__y",
+                description="",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "z",
+                source="mcp",
+            )
+        )
+        filtered = filter_tools(["*"])
+        assert "mcp__x__y" in {t.name for t in filtered}
+
 
 class TestToLangchainTools:
     """to_langchain_tools 把 ToolSpec 包成 LangChain StructuredTool。"""

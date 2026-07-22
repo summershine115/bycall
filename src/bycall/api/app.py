@@ -84,6 +84,24 @@ def create_app() -> FastAPI:
     def _stop_im() -> None:
         mgr.stop()
 
+    # ---- MCP 工具网关（启动时连 enabled server + 发现工具注册进 _REGISTRY）----
+    from bycall.mcp.manager import get_mcp_manager
+
+    mcp_mgr = get_mcp_manager()
+
+    @app.on_event("startup")
+    def _load_mcp() -> None:
+        from bycall.db import session_scope
+
+        with session_scope() as sess:
+            results = mcp_mgr.load_all(sess)
+        for r in results:
+            logger.info("MCP server '%s': %s", r["name"], r["message"])
+
+    @app.on_event("shutdown")
+    def _close_mcp() -> None:
+        mcp_mgr.close_all()
+
     logger.info("Bycall app created (env=%s, version=%s)", settings.env, __version__)
     return app
 

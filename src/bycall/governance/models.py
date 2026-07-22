@@ -314,6 +314,65 @@ class Model(SQLModel, table=True):
         return select(Model).where(Model.model_type == model_type).order_by(Model.id)
 
 
+# ============ MCPServer：MCP 工具服务器（M4 工具网关）============
+
+
+class MCPServer(SQLModel, table=True):
+    """MCP 工具服务器——admin 注册的外部工具源。
+
+    一个 MCPServer = 一个 MCP server 连接（stdio 本地子进程 或 streamable HTTP 远程）。
+    启动/热重载时，``mcp/manager.MCPManager`` 对每个 ``is_enabled=True`` 的 server 建持久
+    连接，发现其工具并注册进 ``tools/registry._REGISTRY``（name = ``mcp__{name}__{tool}``），
+    对治理管道透明——RBAC 靠既有 ``RoleConfig.allowed_tools`` 白名单原样过滤。
+
+    凭证（红线 #8）：``env_encrypted`` / ``headers_encrypted`` 用 Fernet 加密整段 JSON，
+    API 只回脱敏值（与 ``Model.api_key`` 同处理）。明文绝不进日志。
+    """
+
+    __table_args__ = (UniqueConstraint("name", name="uq_mcpserver_name"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)  # 唯一；工具名前缀 mcp__{name}__
+    description: str = ""
+    transport: str = "stdio"  # "stdio" / "http"
+    # stdio 传输：本地子进程。
+    command: str = ""  # 可执行命令（如 uvx / npx / python）
+    args_json: str = "[]"  # JSON 编码的 list[str]，命令参数
+    env_encrypted: str = ""  # Fernet 密文（JSON dict）；空 = 无环境变量
+    # http 传输：streamable HTTP 远程 server。
+    url: str = ""  # MCP endpoint（如 https://host/mcp）
+    headers_encrypted: str = ""  # Fernet 密文（JSON dict）；空 = 无自定义 header
+    is_enabled: bool = Field(default=True)  # 禁用 → 其工具不注册、不可见
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_all():
+        """列全部 MCP server（按 id 升序）。"""
+        from sqlmodel import select
+
+        return select(MCPServer).order_by(MCPServer.id)
+
+    @staticmethod
+    def select_enabled():
+        """列已启用的 MCP server（启动时注册用）。"""
+        from sqlmodel import select
+
+        return select(MCPServer).where(MCPServer.is_enabled == True)  # noqa: E712
+
+    @staticmethod
+    def select_by_name(name: str):
+        """按 name 查。"""
+        from sqlmodel import select
+
+        return select(MCPServer).where(MCPServer.name == name)
+
+
 # ============ KnowledgeBase：知识库实体（参考 WeKnora，per-KB embedding + collection）============
 
 
@@ -341,7 +400,9 @@ class KnowledgeBase(SQLModel, table=True):
     embedding_model_id: int = Field(index=True)  # 绑定的 embedding 模型（Model.id）
     dimension: int = 0  # 向量维度（冗余存，建 collection 时用，从 Model.embed_dimension 读）
     collection_name: str = Field(index=True)  # zvec collection 名（确定性: f"kb_{id}"）
-    visible_to_roles: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))  # KB 级角色可见性（空=全部角色可见）
+    visible_to_roles: list[str] | None = Field(
+        default=None, sa_column=Column(ListJSONType)
+    )  # KB 级角色可见性（空=全部角色可见）
     document_count: int = 0  # 文档数（冗余计数）
     chunk_count: int = 0  # 切块总数（冗余计数）
     created_at: datetime = Field(

@@ -43,6 +43,9 @@ class ToolSpec:
     parameters: dict[str, Any]
     func: Callable[..., Any]
     redactor: Callable[..., Any] | None = None
+    # 工具来源："builtin"（内置）/ "mcp"（MCP 网关注入）。供 /tools 端点分组展示，
+    # 不参与权限判定（谁能用仍由治理脊柱的 allowed_tools 白名单决定）。
+    source: str = "builtin"
 
 
 __all__ = ["ToolSpec"]

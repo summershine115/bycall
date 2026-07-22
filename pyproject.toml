@@ -43,6 +43,8 @@ dependencies = [
     "beautifulsoup4>=4.12",  # HTML 解析
     "lxml>=5.0",  # HTML/XML 快速解析
     "markdown>=3.7",  # Markdown → 结构化文本
+    # M4 MCP 工具网关：官方 MCP Python SDK（ClientSession，stdio + streamable_http 传输）
+    "mcp>=1.2",
 ]
 
 [project.optional-dependencies]

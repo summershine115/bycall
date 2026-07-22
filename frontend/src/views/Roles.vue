@@ -60,11 +60,29 @@
           <el-input v-model="form.description" />
         </el-form-item>
         <el-form-item label="可用工具">
-          <el-input
-            v-model="toolsInput"
-            placeholder="逗号分隔，如 kb_search,send_email"
-          />
-          <div class="muted small">LLM 的工具列表 = 这个集合；不在此列的工具 LLM 看不到</div>
+          <el-select
+            v-model="allowedTools"
+            multiple
+            filterable
+            allow-create
+            :reserve-keyword="false"
+            placeholder="选择工具；可手动输入 mcp__服务名__* 通配整组"
+            style="width: 100%"
+          >
+            <el-option-group
+              v-for="grp in toolGroups"
+              :key="grp.label"
+              :label="grp.label"
+            >
+              <el-option
+                v-for="t in grp.options"
+                :key="t.name"
+                :label="t.name"
+                :value="t.name"
+              />
+            </el-option-group>
+          </el-select>
+          <div class="muted small">LLM 的工具列表 = 这个集合；不在此列的工具 LLM 看不到。mcp__srv__* 放行整组 MCP 工具</div>
         </el-form-item>
         <el-form-item label="知识域标签">
           <el-input
@@ -88,14 +106,6 @@
           </el-select>
           <div class="muted small">绑定后该角色用此版本提示词；留空 = 用全局激活版本</div>
         </el-form-item>
-        <el-form-item label="绑定 Skills">
-          <el-select v-model="form.skills" multiple filterable placeholder="选择注入的领域知识" style="width:100%">
-            <el-option v-for="s in skills" :key="s.name"
-              :label="`${s.name}${s.description ? ' - ' + s.description : ''}${s.is_enabled ? '' : '（已停用）'}`"
-              :value="s.name" :disabled="!s.is_enabled" />
-          </el-select>
-          <div class="muted small">注入 system prompt 的领域知识；停用的不会注入</div>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -106,7 +116,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { admin } from '../api'
 
@@ -114,17 +124,28 @@ const loading = ref(true)
 const roles = ref([])
 const prompts = ref([])
 const skills = ref([])
+const tools = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
 const form = reactive({ name: '', description: '', level: 0, system_prompt_version: null, skills: [] })
-const toolsInput = ref('')
+const allowedTools = ref([]) // 可用工具白名单（多选 + 可手输通配）
 const scopeInput = ref('')
+
+// 工具按来源分组（内置 / MCP），供 el-select option-group 渲染。
+const toolGroups = computed(() => {
+  const builtin = tools.value.filter((t) => t.source !== 'mcp')
+  const mcp = tools.value.filter((t) => t.source === 'mcp')
+  const groups = []
+  if (builtin.length) groups.push({ label: '内置工具', options: builtin })
+  if (mcp.length) groups.push({ label: 'MCP 工具', options: mcp })
+  return groups
+})
 
 async function load() {
   loading.value = true
   try {
-    ;[roles.value] = await Promise.all([admin.listRoles(), loadPrompts(), loadSkills()])
+    ;[roles.value] = await Promise.all([admin.listRoles(), loadPrompts(), loadSkills(), loadTools()])
   } finally {
     loading.value = false
   }
@@ -148,10 +169,19 @@ async function loadSkills() {
   }
 }
 
+async function loadTools() {
+  // 加载工具目录供多选（内置 + MCP）；忽略失败，失败时空列表。
+  try {
+    tools.value = await admin.listTools()
+  } catch {
+    tools.value = []
+  }
+}
+
 function openCreate() {
   editing.value = false
   Object.assign(form, { name: '', description: '', level: 0, system_prompt_version: null, skills: [] })
-  toolsInput.value = ''
+  allowedTools.value = []
   scopeInput.value = ''
   dialogVisible.value = true
 }
@@ -166,7 +196,7 @@ function openEdit(row) {
     skills: [...(row.config.skills || [])],
   })
   form._original_name = row.name
-  toolsInput.value = (row.config.allowed_tools || []).join(', ')
+  allowedTools.value = [...(row.config.allowed_tools || [])]
   scopeInput.value = (row.config.knowledge_scope_tags || []).join(', ')
   dialogVisible.value = true
 }
@@ -181,7 +211,7 @@ function parseList(str) {
 async function onSave() {
   saving.value = true
   const config = {
-    allowed_tools: parseList(toolsInput.value),
+    allowed_tools: allowedTools.value,
     knowledge_scope_tags: parseList(scopeInput.value),
     level: form.level,
     system_prompt_version: form.system_prompt_version || null,

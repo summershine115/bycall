@@ -32,8 +32,12 @@ if TYPE_CHECKING:
 def filter_tools(allowed_tools: list[str]) -> list[ToolSpec]:
     """按 ``allowed_tools`` 白名单过滤已注册工具。
 
+    匹配规则（对齐 ``capability.py`` 的通配约定）：
     - ``["*"]`` → 全部（admin）。
-    - 其他 → ``name in allowed_tools`` 的子集；未注册的名字静默忽略。
+    - 精确名（如 ``calculator``）→ name 精确匹配。
+    - 前缀通配（如 ``mcp__sales__*``）→ 匹配所有以 ``mcp__sales__`` 开头的工具，
+      方便 admin 一次性放行某 MCP server 的全部工具（server 加新工具也自动可见）。
+    - 未注册的名字静默忽略（admin 可能配了还没实现的工具名，不应让对话崩）。
     - 空 → 空（纯对话）。
 
     返回按 name 排序的稳定列表。
@@ -41,8 +45,16 @@ def filter_tools(allowed_tools: list[str]) -> list[ToolSpec]:
     all_tools = get_all_tools()
     if "*" in allowed_tools:
         return all_tools
-    allowed = set(allowed_tools)
-    return [t for t in all_tools if t.name in allowed]
+    # 拆出精确名与前缀通配两类。
+    exact = set(allowed_tools)
+    prefixes = tuple(p[:-1] for p in allowed_tools if p.endswith("*") and len(p) > 1)
+
+    def matches(name: str) -> bool:
+        if name in exact:
+            return True
+        return any(name.startswith(prefix) for prefix in prefixes)
+
+    return [t for t in all_tools if matches(t.name)]
 
 
 def to_langchain_tools(specs: list[ToolSpec], cap: CapabilitySet) -> list[BaseTool]:

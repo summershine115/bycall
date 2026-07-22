@@ -30,6 +30,9 @@
         <el-menu-item index="skills" :route="{ name: 'skills' }">
           <el-icon><MagicStick /></el-icon><span>Skill 管理</span>
         </el-menu-item>
+        <el-menu-item index="mcp" :route="{ name: 'mcp' }">
+          <el-icon><Connection /></el-icon><span>MCP 工具</span>
+        </el-menu-item>
         <el-menu-item index="settings" :route="{ name: 'settings' }">
           <el-icon><Setting /></el-icon><span>运行时设置</span>
         </el-menu-item>
@@ -70,7 +73,8 @@ const titles = {
   roles: '角色与权限',
   models: '模型管理',
   knowledge: '知识库文档',
-  'knowledge-bases': '知识库管理',
+  skills: 'Skill 管理',
+  mcp: 'MCP 工具服务器',
   conversations: '会话管理',
   prompts: '提示词管理',
   skills: 'Skill 管理',

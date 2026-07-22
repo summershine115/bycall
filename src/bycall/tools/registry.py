@@ -10,7 +10,8 @@
 - 权限（谁能用）仍在治理脊柱（``RoleConfig.allowed_tools`` 字符串白名单），
   注册表只回答"有哪些工具可选"，不回答"谁能用"。
 
-M4 MCP 网关落地后，MCP 工具可在启动时动态注册进同一张表，对本注册表透明。
+M4 MCP 网关已落地（``mcp/`` 包）：MCP 工具在启动时由 ``MCPManager`` 动态注册进同一张表
+（name = ``mcp__{server}__{tool}``，``source="mcp"``），对本注册表与治理管道透明。
 """
 
 from __future__ import annotations
@@ -67,4 +68,14 @@ def clear_registry() -> None:
     _REGISTRY.clear()
 
 
-__all__ = ["clear_registry", "get_all_tools", "get_tool", "register", "register_tool"]
+def unregister(name: str) -> bool:
+    """移除单个工具。MCP server 禁用/重载时，其工具从注册表摘除。
+
+    返回是否实际移除了（不存在返回 False）。注意：仅摘除注册表条目，
+    已被本进程其他结构（如 LangGraph ToolNode）持有的工具引用不受影响——
+    但每次对话都重新按 allowed_tools 过滤，故摘除后下一次对话即不可见。
+    """
+    return _REGISTRY.pop(name, None) is not None
+
+
+__all__ = ["clear_registry", "get_all_tools", "get_tool", "register", "register_tool", "unregister"]
