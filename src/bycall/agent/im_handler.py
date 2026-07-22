@@ -86,7 +86,11 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
                         await sender.send_stream(final_answer, stream_id, True)
                     else:
                         remainder = final_answer[len(already_sent):]
-                        await sender.send_stream(remainder or "", stream_id, True)
+                        # 企微流式协议的 finish 帧内容会覆盖客户端已显示的全部文本；
+                        # 空 finish 帧会把之前的流式内容清空（表现为"空白气泡"）。
+                        # 因此 remainder 为空时必须发送完整 final_answer 保底。
+                        finish_content = remainder if remainder else final_answer
+                        await sender.send_stream(finish_content, stream_id, True)
                 else:
                     await sender.send_text(final_answer or "".join(collected))
                 break
@@ -97,7 +101,10 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
     except Exception:
         logger.exception("治理链路流式执行失败")
         if can_stream and collected:
-            await sender.send_stream("", stream_id, True)
+            # 错误时用已收集的内容 + 错误提示作为 finish 帧，
+            # 绝不能发空 finish（企微客户端会清空已显示内容）。
+            error_finish = "".join(collected) + "\n\n[处理时出错，请稍后重试]"
+            await sender.send_stream(error_finish, stream_id, True)
         elif not collected:
             await sender.send_text("抱歉，处理时出错了，请稍后重试。")
 
