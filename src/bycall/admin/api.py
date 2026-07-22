@@ -1107,16 +1107,12 @@ def delete_model(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> None:
-    """删除模型。``is_active=True`` 的不能删（避免误删当前生效模型）→ 400。"""
+    """删除模型。若存在知识库/会话引用该模型，删除后会降级到默认行为。"""
     model = _get_model_or_404(session, model_id)
-    if model.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="不能删除当前激活的模型，请先激活其他同类模型再删",
-        )
     _audit_admin(session, request, "delete_model", f"Model({model.name})", before=model)
     session.delete(model)
     session.commit()
+
 
 
 @router.post("/models/{model_id}/activate", response_model=dict)

@@ -138,12 +138,12 @@ def test_activate_chat_swaps_active_within_type(client: TestClient):
 # ============ 删除激活模型 → 400 ============
 
 
-def test_delete_active_model_returns_400(client: TestClient):
-    """删 is_active=True 的模型 → 400（需先激活其他再删）。"""
+def test_delete_active_model_succeeds(client: TestClient):
+    """删 is_active=True 的模型 → 204（确认对话框已在前端拦截）。"""
     m = _create_chat(client, name="active-one", is_active=True)
     resp = client.delete(f"/api/admin/models/{m['id']}")
-    assert resp.status_code == 400
-    # 未激活的可以删
+    assert resp.status_code == 204
+    # 未激活的也可以删
     other = _create_chat(client, name="inactive-one", is_active=False)
     assert client.delete(f"/api/admin/models/{other['id']}").status_code == 204
 

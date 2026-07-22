@@ -313,12 +313,12 @@ async function onActivate(model) {
 }
 
 async function onDelete(model) {
+  let msg = `确定删除模型「${model.display_name || model.name}」？`
   if (model.is_active) {
-    ElMessage.warning('不能删除当前激活的模型，请先激活其他模型')
-    return
+    msg = `模型「${model.display_name || model.name}」当前正在使用中，删除后该类型将无激活模型，确定删除？`
   }
-  await ElMessageBox.confirm(`确定删除模型「${model.display_name || model.name}」？`, '确认', {
-    type: 'warning',
+  await ElMessageBox.confirm(msg, model.is_active ? '删除激活模型' : '确认', {
+    type: model.is_active ? 'error' : 'warning',
   })
   await admin.deleteModel(model.id)
   ElMessage.success('已删除')
