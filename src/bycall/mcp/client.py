@@ -181,12 +181,22 @@ class MCPClient:
 
         调度到后台 loop 的 ``session.call_tool`` 阻塞等待。超时或连接已关返回错误字符串
         （不抛异常——对齐 ``ToolSpec`` 约定：错误以字符串回喂 LLM 让其重试/降级）。
+
+        能力令牌（Slice B）：读取当前请求的 ``CapabilitySet``（contextvars），编码为 meta
+        传给 MCP server。MCP server 可从 ``ctx.request_context.meta`` 读取自行鉴权。
         """
         if self._session is None or self._closed:
             return f"[MCP 工具 {tool_name} 不可用：连接已关闭]"
+        # 读取能力集注入 meta（未设置时为空——管理/测试路径降级）。
+        from bycall.mcp.context import build_meta, get_current_capability
+
+        meta = {}
+        cap = get_current_capability()
+        if cap is not None:
+            meta = build_meta(cap)
         try:
             fut = asyncio.run_coroutine_threadsafe(
-                self._session.call_tool(tool_name, arguments), self._loop
+                self._session.call_tool(tool_name, arguments, meta=meta), self._loop
             )
             result = fut.result(timeout=self._call_timeout)
         except TimeoutError:

@@ -8,7 +8,7 @@ StructuredTool 后 LLM 可调用。无需真实 LLM：直接 invoke StructuredTo
 from __future__ import annotations
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from bycall.governance.capability import CapabilitySet
 from bycall.mcp.client import MCPClient, MCPServerConfig
@@ -123,3 +123,49 @@ def test_mcp_tool_coexists_with_builtin(manager_with_calc):
     names = {t.name for t in filtered}
     assert "mcp__calc__add" in names
     assert "builtin_calc" in names
+
+
+def test_capability_token_flows_to_mcp_server_via_meta():
+    """能力令牌（Slice B）：contextvar → call_tool meta → MCP server 读 ctx.meta。"""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from bycall.governance.capability import CapabilitySet
+    from bycall.mcp.client import MCPClient, MCPServerConfig
+    from bycall.mcp.context import reset_current_capability, set_current_capability
+
+    srv = FastMCP("token_test")
+
+    @srv.tool()
+    async def whoiam(ctx: Context) -> str:
+        m = ctx.request_context.meta
+        return (
+            f"user={m.bycall_user_id}:{m.bycall_user_name}"
+            f" role={m.bycall_role} level={m.bycall_level}"
+        )
+
+    factory = lambda: create_connected_server_and_client_session(srv)
+    client = MCPClient(
+        MCPServerConfig(name="token_test", transport="stdio"),
+        session_cm_factory=factory,
+        connect_timeout=15,
+        call_timeout=10,
+    )
+    client.connect()
+    try:
+        cap = CapabilitySet(
+            user_id=42,
+            user_name="alice",
+            role="sales",
+            allowed_tools=["mcp__token_test__*"],
+            level=5,
+        )
+        token = set_current_capability(cap)
+        try:
+            result = client.call_tool("whoiam", {})
+        finally:
+            reset_current_capability(token)
+        assert "user=42:alice" in result, f"meta not in result: {result}"
+        assert "role=sales" in result, f"role not in result: {result}"
+        assert "level=5" in result, f"level not in result: {result}"
+    finally:
+        client.close()

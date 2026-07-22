@@ -148,6 +148,11 @@ def run_agent(
     messages = _to_langchain_messages(raw_messages)
 
     # 5. 执行工具回路（LangGraph）：model ↔ tool 循环，直到无 tool_calls。
+    #    能力令牌（M4 Slice B）：通过 contextvars 注入当前 CapabilitySet，MCPClient.call_tool
+    #    读取并编码为 meta 传给 MCP server 自行鉴权。
+    from bycall.mcp.context import reset_current_capability, set_current_capability
+
+    cap_token = set_current_capability(cap)
     try:
         graph_result: GraphResult = run_tool_loop(
             chat_model=llm,
@@ -165,6 +170,8 @@ def run_agent(
             retrieved=len(retrieved),
             user=user,
         )
+    finally:
+        reset_current_capability(cap_token)
 
     # 6. 会话持久化：存 user + assistant 消息 + 压缩检查。
     if conversation_id is not None:
@@ -404,33 +411,40 @@ async def run_agent_stream(
     messages = _to_langchain_messages(raw_messages)
 
     # 5. 流式执行工具回路。
+    #    能力令牌：注入 CapabilitySet 供 MCPClient.call_tool 使用。
+    from bycall.mcp.context import reset_current_capability, set_current_capability
+
+    cap_token = set_current_capability(cap)
     full_answer = ""
     graph_result: GraphResult | None = None
     try:
-        stream = await run_tool_loop_stream(
-            chat_model=llm,
-            tools=langchain_tools,
-            messages=messages,
-        )
-        async for chunk_text, is_final, gr in stream:
-            if is_final:
-                graph_result = gr
-                break
-            if chunk_text:
-                full_answer += chunk_text
-                yield chunk_text, False, None
-    except Exception as e:
-        logger.error("LLM/graph 流式执行失败: %s", e)
-        _audit(session, user, channel, question, "error", str(e)[:200], "")
-        answer = "抱歉，服务暂时不可用。"
-        yield answer, True, _result(
-            answer=answer,
-            decision="error",
-            scope=cap.knowledge_scope_tags,
-            retrieved=len(retrieved),
-            user=user,
-        )
-        return
+        try:
+            stream = await run_tool_loop_stream(
+                chat_model=llm,
+                tools=langchain_tools,
+                messages=messages,
+            )
+            async for chunk_text, is_final, gr in stream:
+                if is_final:
+                    graph_result = gr
+                    break
+                if chunk_text:
+                    full_answer += chunk_text
+                    yield chunk_text, False, None
+        except Exception as e:
+            logger.error("LLM/graph 流式执行失败: %s", e)
+            _audit(session, user, channel, question, "error", str(e)[:200], "")
+            answer = "抱歉，服务暂时不可用。"
+            yield answer, True, _result(
+                answer=answer,
+                decision="error",
+                scope=cap.knowledge_scope_tags,
+                retrieved=len(retrieved),
+                user=user,
+            )
+            return
+    finally:
+        reset_current_capability(cap_token)
 
     if graph_result is None:
         graph_result = GraphResult(answer=full_answer)

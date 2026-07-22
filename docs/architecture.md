@@ -26,10 +26,10 @@
         ▼                   ▼                   ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
 │ RAG 检索层       │ │ MCP 工具层 [M4]  │ │ 记忆层 [M3]      │
-│ VectorStore 抽象 │ │ 网关✅ RBAC✅    │ │ 短期:对话窗口    │
-│  ├ zvec (M0✅)   │ │  HITL/Token:待  │ │ 长期:Postgres   │
+│ VectorStore 抽象 │ │ 网关✅ Token✅   │ │ 短期:对话窗口    │
+│  ├ zvec (M0✅)   │ │  HITL:待         │ │ 长期:Postgres   │
 │  ├ Qdrant (迁移) │ │ mcp/ 包：       │ │  +pgvector      │
-│  └ pgvector      │ │  Client+Manager │ │                 │
+│  └ pgvector      │ │  Client+Manager  │ │                 │
 │ 权限预过滤        │ │                 │ │                 │
 │ 混合检索(向+FTS+  │ │                 │ │                 │
 │  filter+RRF)     │ │                 │ │                 │
