@@ -453,3 +453,137 @@ def test_get_nonexistent_returns_404(client: TestClient):
     kb_id = _create_kb(client, mid)
     resp = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/9999")
     assert resp.status_code == 404
+
+
+# ============ 切块预览（参考 WeKnora chunker/preview）===========
+
+
+def test_preview_chunks_default(client: TestClient):
+    """切块预览：不 embedding、不落库，返回切块明细。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    # 多段长文本（> chunk_size）→ 多块
+    text = "产品介绍。\n\n" + ("这是一段较长的产品功能描述，用于测试切块边界是否生效。\n\n" * 30)
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/preview-chunks",
+        json={"text": text, "title": "预览文档"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] > 1
+    assert body["total"] == len(body["items"])
+    assert body["child_count"] == body["total"]  # 默认非父子块，全是 child
+    assert body["parent_count"] == 0
+    assert all("text" in i and "char_count" in i for i in body["items"])
+    # 预览不落库：KB 切块计数不变
+    kb = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
+    assert kb["chunk_count"] == 0
+    assert kb["document_count"] == 0
+
+
+def test_preview_chunks_parent_child(client: TestClient):
+    """开启父子块 → 产出 child + parent 两类。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    text = "标题。\n\n" + ("段落内容用于测试父子块切分。\n\n" * 40)
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/preview-chunks",
+        json={"text": text, "enable_parent_child": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["parent_count"] > 0
+    assert body["child_count"] > 0
+    assert body["total"] == body["parent_count"] + body["child_count"]
+
+
+def test_preview_chunks_kb_not_found(client: TestClient):
+    """预览不存在的 KB → 404。"""
+    resp = client.post(
+        "/api/admin/knowledge-bases/9999/documents/preview-chunks",
+        json={"text": "任意文本"},
+    )
+    assert resp.status_code == 404
+
+
+# ============ 文档正文读取 ============
+
+
+def test_get_document_content(client: TestClient):
+    """读取文档原始正文（DocumentOut 不带 content）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    body = _create_doc(client, kb_id, content="这是用于核对入库的正文内容。").json()
+    doc_id = body["document_id"]
+    resp = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/content")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["content"] == "这是用于核对入库的正文内容。"
+    assert data["id"] == doc_id
+
+
+def test_get_document_content_cross_kb_404(client: TestClient):
+    """文档不属于该 KB → 404。"""
+    mid = _create_embedding_model(client)
+    kb_a = _create_kb(client, mid, name="知识库A")
+    kb_b = _create_kb(client, mid, name="知识库B")
+    doc_id = _create_doc(client, kb_a).json()["document_id"]
+    resp = client.get(f"/api/admin/knowledge-bases/{kb_b}/documents/{doc_id}/content")
+    assert resp.status_code == 404
+
+
+# ============ 入库失败终态：status=failed + error_message（修复"失败无日志"）===========
+
+
+def test_ingest_failure_records_error_message(client: TestClient, monkeypatch):
+    """embedding 失败 → 文档 status=failed 且 error_message 非空，不卡在 pending/processing。
+
+    对齐 WeKnora dead-letter：入库失败必须进入终态并记录原因。
+    """
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+
+    # 让 embedding 抛异常（模拟 embedding 服务不可用）
+    failing = MagicMock(spec=EmbedModel)
+    failing.dimension = DIM
+    failing.embed.side_effect = RuntimeError("embedding 服务连接超时")
+    monkeypatch.setattr(resolver, "resolve_embed_model", lambda session, model: failing)
+
+    resp = _create_doc(client, kb_id, content="一段需要入库但 embedding 会失败的正文。")
+    assert resp.status_code == 201  # 文档已创建
+    assert resp.json()["ok"] is False  # 入库失败
+
+    detail = client.get(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/{resp.json()['document_id']}"
+    ).json()
+    assert detail["status"] == "failed"
+    assert "embedding" in detail["error_message"]
+
+
+def test_upload_failure_records_error_message(client: TestClient, monkeypatch):
+    """文件上传入库失败 → status=failed + error_message（同步化前的 NameError 会卡死）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+
+    failing = MagicMock(spec=EmbedModel)
+    failing.dimension = DIM
+    failing.embed.side_effect = RuntimeError("embedding 服务 500")
+    monkeypatch.setattr(resolver, "resolve_embed_model", lambda session, model: failing)
+
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/upload",
+        params={"source": "public", "title": "上传会失败的文档"},
+        files={
+            "file": (
+                "fail.txt",
+                "这是一段会因为 embedding 失败而入库失败的文本。".encode(),
+                "text/plain",
+            )
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["ok"] is False
+    doc_id = resp.json()["document_id"]
+    detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
+    assert detail["status"] == "failed"
+    assert detail["error_message"]

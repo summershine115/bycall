@@ -17,14 +17,28 @@ M1 先用一个简单的 admin 守卫依赖（``_require_admin``）；正式会�
 from __future__ import annotations
 
 import json
+import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
     AuditOut,
+    ChunkPreviewItem,
+    ChunkPreviewRequest,
+    ChunkPreviewResult,
     ConversationOut,
+    DocumentContentOut,
     DocumentCreate,
     DocumentIngestResult,
     DocumentOut,
@@ -32,6 +46,10 @@ from bycall.admin.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseOut,
     KnowledgeBaseUpdate,
+    MCPServerCreate,
+    MCPServerOut,
+    MCPServerUpdate,
+    MCPTestResult,
     MemoryCreate,
     MemoryOut,
     MemoryUpdate,
@@ -43,6 +61,7 @@ from bycall.admin.schemas import (
     PromptActivate,
     PromptCreate,
     PromptOut,
+    PromptUpdate,
     RoleCreate,
     RoleOut,
     RoleUpdate,
@@ -75,6 +94,9 @@ from bycall.governance.models import (
 from bycall.governance.security import hash_password
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# 知识库文档入库等控制面操作的日志（修复"入库失败无日志"——入库全链路在此留痕）。
+logger = logging.getLogger(__name__)
 
 # 内置保留角色名：不允许在 Role 表里建记录（policy 引擎对 "admin" 直接放全权）。
 _RESERVED_ROLE_NAMES = frozenset({"admin"})
@@ -547,7 +569,6 @@ def _deactivate_all_prompts(session: Session) -> None:
             session.add(prompt)
 
 
-
 @router.get("/prompts/{version}", response_model=PromptOut)
 def get_prompt(
     version: int,
@@ -555,9 +576,7 @@ def get_prompt(
     _admin: None = Depends(_require_admin),
 ) -> SystemPrompt:
     """按版本号查单条提示词。"""
-    prompt = session.exec(
-        select(SystemPrompt).where(SystemPrompt.version == version)
-    ).first()
+    prompt = session.exec(select(SystemPrompt).where(SystemPrompt.version == version)).first()
     if prompt is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
     return prompt
@@ -571,9 +590,7 @@ def update_prompt(
     _admin: None = Depends(_require_admin),
 ) -> SystemPrompt:
     """更新提示词版本（PATCH 语义：只改传入字段）。"""
-    prompt = session.exec(
-        select(SystemPrompt).where(SystemPrompt.version == version)
-    ).first()
+    prompt = session.exec(select(SystemPrompt).where(SystemPrompt.version == version)).first()
     if prompt is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
 
@@ -603,14 +620,13 @@ def delete_prompt(
     _admin: None = Depends(_require_admin),
 ) -> Response:
     """删除提示词版本。不会自动激活其他版本——admin 自行决定后续激活。"""
-    prompt = session.exec(
-        select(SystemPrompt).where(SystemPrompt.version == version)
-    ).first()
+    prompt = session.exec(select(SystemPrompt).where(SystemPrompt.version == version)).first()
     if prompt is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
     session.delete(prompt)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 # ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
 
@@ -1114,7 +1130,6 @@ def delete_model(
     session.commit()
 
 
-
 @router.post("/models/{model_id}/activate", response_model=dict)
 def activate_model(
     model_id: int,
@@ -1315,35 +1330,6 @@ def _delete_chunks_for_doc(kb: KnowledgeBase, doc_id: int) -> None:
         store.close()
 
 
-def _ingest_document_async(kb_id: int, doc_id: int) -> None:
-    """异步入库入口——后台任务调用，创建独立 DB session。
-
-    FastAPI BackgroundTasks 在响应返回后执行，原请求的 session 已关闭，
-    所以必须在任务内部创建新的 session。
-    """
-    from bycall.db import session_scope
-
-    with session_scope() as session:
-        if kb is None:
-            logger.error("异步入库: KB %s 不存在", kb_id)
-            return
-        doc = session.get(Document, doc_id)
-        if doc is None:
-            logger.error("异步入库: 文档 %s 不存在", doc_id)
-            return
-        try:
-            _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
-        except Exception as e:
-            logger.exception("异步入库失败: kb=%s doc=%s", kb_id, doc_id)
-            # 标记失败
-            doc = session.get(Document, doc_id)
-            if doc:
-                doc.status = "failed"
-                doc.error_message = str(e)[:500]
-                session.add(doc)
-                session.commit()
-
-
 def _ingest_document(
     session: Session,
     kb: KnowledgeBase,
@@ -1353,6 +1339,9 @@ def _ingest_document(
     content: str,
 ) -> DocumentIngestResult:
     """同步入库：标记 processing → 用 KB 的 embedding 模型 → 删旧 chunk → 入库 → 更新。
+
+    全链路结构化日志（修复"入库失败无日志"）：开始/模型解析/删旧/写库/完成或失败
+    各阶段都留痕，错误带 kb/doc/title 上下文，便于定位。
 
     embedding 模型来自 KB 绑定（不是全局激活），维度来自 KB.dimension。
     入库失败 → status=failed + error_message。
@@ -1372,15 +1361,26 @@ def _ingest_document(
     doc.error_message = ""
     session.add(doc)
     session.commit()
+    logger.info(
+        "入库开始: kb=%s(%s) doc=%s title=%r source=%r 字符数=%d",
+        kb.id,
+        kb.name,
+        doc_id,
+        title,
+        source,
+        len(content),
+    )
 
     # 2. 用 KB 绑定的 embedding 模型。
     embed_entity = session.get(Model, kb.embedding_model_id)
     if embed_entity is None:
+        error = f"KB 绑定的 embedding 模型不存在 (id={kb.embedding_model_id})"
+        logger.error("入库失败·模型缺失: kb=%s(%s) doc=%s %s", kb.id, kb.name, doc_id, error)
         doc.status = "failed"
-        doc.error_message = f"KB 绑定的 embedding 模型不存在 (id={kb.embedding_model_id})"
+        doc.error_message = error
         session.add(doc)
         session.commit()
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=doc.error_message)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=error)
 
     embed_model = resolve_embed_model(session, embed_entity)
 
@@ -1389,6 +1389,7 @@ def _ingest_document(
         _delete_chunks_for_doc(kb, doc_id)
     except Exception as exc:
         error = f"删除旧索引失败: {exc}"
+        logger.error("入库失败·删旧 chunk 异常: kb=%s(%s) doc=%s %s", kb.id, kb.name, doc_id, error)
         doc.status = "failed"
         doc.error_message = error
         session.add(doc)
@@ -1413,6 +1414,7 @@ def _ingest_document(
         finally:
             store.close()
     except Exception as exc:
+        logger.exception("入库异常: kb=%s(%s) doc=%s", kb.id, kb.name, doc_id)
         errors.append(f"入库异常: {exc}")
 
     # 5. 更新 Document + KB 统计。
@@ -1429,6 +1431,24 @@ def _ingest_document(
     session.add(kb)
     session.commit()
     session.refresh(doc)
+
+    if errors:
+        logger.error(
+            "入库失败: kb=%s(%s) doc=%s 切块=%d 错误=%s",
+            kb.id,
+            kb.name,
+            doc_id,
+            chunk_count,
+            "; ".join(errors),
+        )
+    else:
+        logger.info(
+            "入库完成: kb=%s(%s) doc=%s 切块=%d",
+            kb.id,
+            kb.name,
+            doc_id,
+            chunk_count,
+        )
 
     return DocumentIngestResult(
         ok=doc.status == "completed",
@@ -1535,7 +1555,9 @@ def list_knowledge_bases(
         kbs = [
             kb
             for kb in kbs
-            if kb.visible_to_roles is None or len(kb.visible_to_roles) == 0 or role in kb.visible_to_roles
+            if kb.visible_to_roles is None
+            or len(kb.visible_to_roles) == 0
+            or role in kb.visible_to_roles
         ]
     return kbs
 
@@ -1808,24 +1830,23 @@ def list_knowledge_sources(
 
 @router.post(
     "/knowledge-bases/{kb_id}/upload",
-    response_model=DocumentOut,
+    response_model=DocumentIngestResult,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
     kb_id: int,
     file: UploadFile,
-    background_tasks: BackgroundTasks,
     source: str = Query(..., description="知识域标签"),
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> DocumentOut:
-    """文件上传入库（到指定 KB）——异步入库。
+) -> DocumentIngestResult:
+    """文件上传入库（到指定 KB）——同步解析 + 入库，与创建文档一致。
 
-    文件立即保存到 DB（status=pending），入库在后台异步执行。
-    前端可通过 GET /documents/{doc_id} 轮询 status 直到 completed/failed。
-
-    支持格式：PDF / Word (.docx/.doc) / Markdown / HTML / TXT / CSV / JSON 等。
+    支持格式：PDF / Word (.docx/.doc) / Markdown / HTML / TXT / CSV / JSON / 代码等。
+    入库同步执行（解析→切块→embedding→写库），结果直接返回 DocumentIngestResult。
+    之前用 BackgroundTasks 异步入库存在 NameError（kb 未定义）且无终态保证，现已改为同步，
+    失败时 error_message 一定落库、日志一定留痕。
     """
     kb = _get_kb_or_404(session, kb_id)
 
@@ -1889,9 +1910,72 @@ async def upload_document(
     session.commit()
     session.refresh(doc)
 
-    background_tasks.add_task(_ingest_document_async, kb_id, doc.id)
+    # 同步入库（与创建文档一致）：解析→切块→embedding→写库，结果直接返回。
+    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
 
-    return DocumentOut.model_validate(doc)
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents/preview-chunks",
+    response_model=ChunkPreviewResult,
+)
+def preview_chunks(
+    kb_id: int,
+    payload: ChunkPreviewRequest,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ChunkPreviewResult:
+    """切块预览——仅运行切块逻辑，不 embedding、不写库（参考 WeKnora chunker/preview）。
+
+    用入库时同样的默认 ``ChunkingConfig``（可选覆盖 chunk_size/overlap/父子块），
+    让管理员在入库前后验证/调参切块效果，避免"入了库才发现切得不对"。
+    """
+    _get_kb_or_404(session, kb_id)
+
+    from bycall.rag.chunking import ChunkingConfig, Document, documents_to_pre_chunks
+
+    config = ChunkingConfig(
+        chunk_size=payload.chunk_size if payload.chunk_size is not None else 500,
+        overlap=payload.overlap if payload.overlap is not None else 50,
+        enable_parent_child=payload.enable_parent_child,
+    )
+    doc = Document(doc_id="preview", text=payload.text, source="preview", title=payload.title)
+    pre_chunks = documents_to_pre_chunks([doc], config=config)
+
+    items = [
+        ChunkPreviewItem(
+            chunk_index=p.chunk_index,
+            chunk_type=p.chunk_type,
+            char_count=len(p.text),
+            text=p.text,
+        )
+        for p in pre_chunks
+    ]
+    return ChunkPreviewResult(
+        total=len(items),
+        child_count=sum(1 for i in items if i.chunk_type == "child"),
+        parent_count=sum(1 for i in items if i.chunk_type == "parent"),
+        items=items,
+    )
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/documents/{doc_id}/content",
+    response_model=DocumentContentOut,
+)
+def get_document_content(
+    kb_id: int,
+    doc_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> DocumentContentOut:
+    """读取文档原始正文。
+
+    ``DocumentOut`` 刻意不带 content（可能很长），调试/核对入库内容时用此端点单独取。
+    """
+    doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
+    return DocumentContentOut.model_validate(doc)
 
 
 # ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============
@@ -2083,6 +2167,228 @@ def list_tools(
     from bycall.tools.registry import get_all_tools
 
     return [
-        ToolOut(name=t.name, description=t.description, parameters=t.parameters)
+        ToolOut(name=t.name, description=t.description, parameters=t.parameters, source=t.source)
         for t in get_all_tools()
     ]
+
+
+# ============ MCP 工具服务器（M4 工具网关）============
+
+
+def _get_mcp_or_404(session: Session, server_id: int):
+    """按 id 取 MCP server，不存在 → 404。"""
+    from bycall.governance.models import MCPServer
+
+    srv = session.get(MCPServer, server_id)
+    if srv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server 不存在: {server_id}",
+        )
+    return srv
+
+
+def _mcp_to_out(srv) -> MCPServerOut:
+    """MCPServer ORM → MCPServerOut。env/headers 绝不回显，只标 has_*。
+
+    tool_count/connected 从 MCPManager 单例状态取（反映运行时连接，非 DB 持久态）。
+    """
+    from bycall.mcp.manager import get_mcp_manager
+
+    tool_count, connected = 0, False
+    for st in get_mcp_manager().status():
+        if st["name"] == srv.name:
+            tool_count, connected = st["tool_count"], st["connected"]
+    args = json.loads(srv.args_json) if srv.args_json else []
+    return MCPServerOut(
+        id=srv.id,
+        name=srv.name,
+        description=srv.description,
+        transport=srv.transport,
+        command=srv.command,
+        args=args,
+        url=srv.url,
+        is_enabled=srv.is_enabled,
+        has_env=bool(srv.env_encrypted),
+        has_headers=bool(srv.headers_encrypted),
+        tool_count=tool_count,
+        connected=connected,
+        created_at=srv.created_at,
+        updated_at=srv.updated_at,
+    )
+
+
+@router.get("/mcp-servers", response_model=list[MCPServerOut])
+def list_mcp_servers(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[MCPServerOut]:
+    """列出全部 MCP server（按 id 升序）。env/headers 不回显。"""
+    from bycall.governance.models import MCPServer
+
+    rows = session.exec(MCPServer.select_all()).all()
+    return [_mcp_to_out(srv) for srv in rows]
+
+
+@router.post("/mcp-servers", response_model=MCPServerOut, status_code=status.HTTP_201_CREATED)
+def create_mcp_server(
+    payload: MCPServerCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> MCPServerOut:
+    """注册 MCP server。name 唯一冲突 → 409。env/headers 加密存库。
+
+    启用的 server 自动建连 + 注册工具（调 MCPManager.reload）。"""
+    from bycall.governance.models import MCPServer
+    from bycall.governance.secrets import encrypt_secret
+
+    if session.exec(MCPServer.select_by_name(payload.name)).first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"MCP server 名已存在: {payload.name}",
+        )
+    srv = MCPServer(
+        name=payload.name,
+        description=payload.description,
+        transport=payload.transport,
+        command=payload.command,
+        args_json=json.dumps(payload.args) if payload.args else "[]",
+        env_encrypted=encrypt_secret(json.dumps(payload.env)) if payload.env else "",
+        url=payload.url,
+        headers_encrypted=encrypt_secret(json.dumps(payload.headers)) if payload.headers else "",
+        is_enabled=payload.is_enabled,
+    )
+    session.add(srv)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"MCP server 名已存在: {payload.name}"
+        ) from None
+    session.refresh(srv)
+    _audit_admin(session, request, "create_mcp_server", f"MCPServer({srv.name})")
+    # 自动建连（若启用）。
+    if srv.is_enabled:
+        from bycall.mcp.manager import get_mcp_manager
+
+        get_mcp_manager().reload(session, srv.id)
+    return _mcp_to_out(srv)
+
+
+@router.get("/mcp-servers/{server_id}", response_model=MCPServerOut)
+def get_mcp_server(
+    server_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> MCPServerOut:
+    """MCP server 详情，不存在 → 404。"""
+    return _mcp_to_out(_get_mcp_or_404(session, server_id))
+
+
+@router.put("/mcp-servers/{server_id}", response_model=MCPServerOut)
+def update_mcp_server(
+    server_id: int,
+    payload: MCPServerUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> MCPServerOut:
+    """更新 MCP server（PATCH 语义：仅传入字段生效）。
+
+    env/headers 是 write-only：不传（None）= 不改；传 ``{}`` = 清空。
+    改完自动热重载（断旧 client + 用新配置建连 + 重新注册工具）。
+    """
+    from bycall.governance.secrets import encrypt_secret
+
+    srv = _get_mcp_or_404(session, server_id)
+    if payload.description is not None:
+        srv.description = payload.description
+    if payload.transport is not None:
+        srv.transport = payload.transport
+    if payload.command is not None:
+        srv.command = payload.command
+    if payload.args is not None:
+        srv.args_json = json.dumps(payload.args)
+    if payload.env is not None:
+        srv.env_encrypted = encrypt_secret(json.dumps(payload.env)) if payload.env else ""
+    if payload.url is not None:
+        srv.url = payload.url
+    if payload.headers is not None:
+        srv.headers_encrypted = (
+            encrypt_secret(json.dumps(payload.headers)) if payload.headers else ""
+        )
+    if payload.is_enabled is not None:
+        srv.is_enabled = payload.is_enabled
+    session.add(srv)
+    session.commit()
+    session.refresh(srv)
+    _audit_admin(session, request, "update_mcp_server", f"MCPServer({srv.name})")
+    # 热重载：断旧 client + 用新配置建连（或禁用时摘除工具）。
+    from bycall.mcp.manager import get_mcp_manager
+
+    get_mcp_manager().reload(session, srv.id)
+    return _mcp_to_out(srv)
+
+
+@router.delete("/mcp-servers/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_mcp_server(
+    server_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除 MCP server。断开连接 + 摘除其工具。"""
+    srv = _get_mcp_or_404(session, server_id)
+    _audit_admin(session, request, "delete_mcp_server", f"MCPServer({srv.name})", before=srv)
+    from bycall.mcp.manager import get_mcp_manager
+
+    get_mcp_manager().disconnect(server_id)
+    session.delete(srv)
+    session.commit()
+
+
+@router.post("/mcp-servers/{server_id}/reload", response_model=dict)
+def reload_mcp_server(
+    server_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """手动热重载：重新发现工具并注册（MCP server 自身加了新工具时用）。"""
+    srv = _get_mcp_or_404(session, server_id)
+    from bycall.mcp.manager import get_mcp_manager
+
+    ok, msg = get_mcp_manager().reload(session, server_id)
+    return {"ok": ok, "name": srv.name, "message": msg}
+
+
+@router.post("/mcp-servers/{server_id}/test", response_model=MCPTestResult)
+def test_mcp_server(
+    server_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> MCPTestResult:
+    """连通性测试：用当前配置建临时连接 → initialize + list_tools → 关闭。
+
+    不影响 manager 的持久 client，纯验证配置是否可用。"""
+    from bycall.mcp.client import MCPClient
+    from bycall.mcp.manager import _server_to_config
+
+    srv = _get_mcp_or_404(session, server_id)
+    config = _server_to_config(srv)
+    client = MCPClient(config, connect_timeout=20)
+    try:
+        client.connect()
+    except Exception as e:  # 测试结果以结构化返回，不抛
+        return MCPTestResult(ok=False, message=f"连接失败: {e}")
+    try:
+        tools = client.tools
+        return MCPTestResult(
+            ok=True,
+            message=f"连接成功，发现 {len(tools)} 个工具",
+            tool_count=len(tools),
+            tools=[t.name for t in tools],
+        )
+    finally:
+        client.close()

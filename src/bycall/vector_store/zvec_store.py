@@ -73,6 +73,9 @@ class ZvecStore(VectorStore):
         self._read_only = read_only
         self._collection: zvec.Collection | None = None
         self._name: str | None = None
+        self._schema_field_names: set[str] = (
+            set()
+        )  # collection schema 已有字段名（用于写入时过滤未知字段）
 
     # ---------- 生命周期 ----------
 
@@ -85,6 +88,7 @@ class ZvecStore(VectorStore):
         zvec_schema = self._build_schema(schema)
         self._collection = zvec.create_and_open(path=str(path), schema=zvec_schema)
         self._name = schema.name
+        self._schema_field_names = {f.name for f in self._collection.schema.fields}
         logger.info("created zvec collection %s @ %s", schema.name, path)
 
     def open(self, name: str) -> None:
@@ -103,6 +107,19 @@ class ZvecStore(VectorStore):
             logger.info("collection %s 不存在，按默认 RAG schema 创建", name)
             self.create_collection(self._default_rag_schema(name, self._dimension))
         self._name = name
+        self._schema_field_names = {f.name for f in self._collection.schema.fields}
+
+        # 维度不匹配检测：旧 collection 维度 ≠ 当前 KB 配置 → 明确报错并给修复路径
+        actual_dim = (
+            self._collection.schema.vectors[0].dimension if self._collection.schema.vectors else 0
+        )
+        if actual_dim and actual_dim != self._dimension:
+            raise ValueError(
+                f"知识库向量维度不匹配：当前 embedding 模型需要 {self._dimension} 维，"
+                f"但已有向量库 collection '{name}' 是 {actual_dim} 维。"
+                f"\n修复方式：在管理后台删除该知识库后重建（或清空 zvec 数据目录后重新入库）。"
+                f"\n数据目录: {path}"
+            )
 
     def close(self) -> None:
         """zvec Collection 无 close()，靠 GC 释放写锁（PoC step6）。
@@ -311,13 +328,23 @@ class ZvecStore(VectorStore):
             yield docs[i : i + size]
 
     def _chunk_to_doc(self, chunk: Chunk) -> Doc:
-        """把后端无关的 Chunk → zvec Doc。ACL 元数据平铺成标量字段。"""
-        fields: dict[str, object] = {"text": chunk.text, **chunk.fields}
+        """把后端无关的 Chunk → zvec Doc。ACL 元数据平铺成标量字段。
+
+        只写 collection schema 中实际存在的字段——旧 collection（创建于字段扩展前）
+        可能缺少 chunk_type/chunk_index/title/parent_id，跳过未知字段而非报错。
+        ``_schema_field_names`` 为空时回退旧行为（全量写入，向后兼容）。
+        """
+        known = self._schema_field_names
+        fields: dict[str, object] = {"text": chunk.text}
+        for key, val in chunk.fields.items():
+            if not known or key in known:
+                fields[key] = val
         if chunk.acl is not None:
-            fields["tenant_id"] = chunk.acl.tenant_id
-            if chunk.acl.dept is not None:
+            if not known or "tenant_id" in known:
+                fields["tenant_id"] = chunk.acl.tenant_id
+            if chunk.acl.dept is not None and (not known or "dept" in known):
                 fields["dept"] = chunk.acl.dept
-            if chunk.acl.level is not None:
+            if chunk.acl.level is not None and (not known or "level" in known):
                 fields["level"] = chunk.acl.level
         return Doc(id=chunk.id, fields=fields, vectors={"embedding": chunk.vector})
 

@@ -44,12 +44,15 @@
         <el-upload
           :show-file-list="false"
           :before-upload="onFileSelect"
-          accept=".txt,.md,.markdown"
+          accept=".txt,.md,.markdown,.pdf,.docx,.doc,.html,.htm,.csv,.json,.xml,.yaml,.yml,.py,.js,.ts,.go,.java,.sql"
         >
           <el-button type="success">
             <el-icon><Upload /></el-icon> 上传文件
           </el-button>
         </el-upload>
+        <el-button @click="openPreview">
+          <el-icon><Grid /></el-icon> 切块预览
+        </el-button>
         <el-select
           v-model="filterSource"
           placeholder="按知识域过滤"
@@ -69,9 +72,17 @@
             <el-tag type="success">{{ row.source }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="110">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <el-tooltip
+              v-if="row.status === 'failed' && row.error_message"
+              :content="row.error_message"
+              placement="top"
+              effect="dark"
+            >
+              <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }} ⚠</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="chunk_count" label="切块数" width="90" />
@@ -86,8 +97,9 @@
             {{ formatTime(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="viewContent(row)">查看正文</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button
               size="small"
@@ -143,6 +155,115 @@
         <el-button type="primary" :loading="saving" @click="onSave">保存并入库</el-button>
       </template>
     </el-dialog>
+
+    <!-- 上传文件对话框（后端解析，支持 PDF/Word/HTML 等）-->
+    <el-dialog v-model="uploadDialogVisible" title="上传文件入库" width="560px">
+      <el-form :model="uploadForm" label-width="100px">
+        <el-form-item label="文件">
+          <div>
+            <el-tag v-if="uploadFile" type="success" closable @close="uploadFile = null">
+              {{ uploadFile.name }}（{{ (uploadFile.size / 1024).toFixed(1) }}KB）
+            </el-tag>
+            <el-upload
+              v-else
+              :show-file-list="false"
+              :before-upload="(f) => { uploadFile = f; return false }"
+              accept=".txt,.md,.markdown,.pdf,.docx,.doc,.html,.htm,.csv,.json,.xml,.yaml,.yml,.py,.js,.ts,.go,.java,.sql"
+            >
+              <el-button type="primary" :icon="Upload">选择文件</el-button>
+            </el-upload>
+            <div class="muted small">
+              支持后端解析：PDF / Word / Markdown / HTML / TXT / 代码等（≤10MB），同步解析入库
+            </div>
+          </div>
+        </el-form-item>
+        <el-form-item label="标题">
+          <el-input v-model="uploadForm.title" placeholder="默认用文件名" />
+        </el-form-item>
+        <el-form-item label="知识域标签">
+          <el-select
+            v-model="uploadForm.source"
+            placeholder="选择或输入新的知识域标签"
+            filterable
+            allow-create
+            default-first-option
+            style="width: 100%"
+          >
+            <el-option v-for="s in sources" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="uploadDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="uploading" :disabled="!uploadFile" @click="doUpload">
+          上传并入库
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 切块预览对话框（参考 WeKnora chunker/preview，不落库）-->
+    <el-dialog v-model="previewVisible" title="切块预览" width="780px">
+      <el-form :model="previewForm" label-width="100px">
+        <el-form-item label="样例正文">
+          <el-input
+            v-model="previewForm.text"
+            type="textarea"
+            :rows="6"
+            placeholder="粘贴一段文本，预览入库时的切块效果（不写入知识库）"
+          />
+        </el-form-item>
+        <el-form-item label="单块字符数">
+          <el-input-number v-model="previewForm.chunkSize" :min="100" :max="4000" :step="50" />
+        </el-form-item>
+        <el-form-item label="父子块">
+          <el-switch v-model="previewForm.enableParentChild" />
+          <span class="muted small" style="margin-left: 8px">child=384 精确匹配 / parent=4096 上下文</span>
+        </el-form-item>
+      </el-form>
+      <div v-if="previewResult" style="margin-top: 8px">
+        <div class="muted small" style="margin-bottom: 6px">
+          共 {{ previewResult.total }} 块（child {{ previewResult.child_count }} / parent
+          {{ previewResult.parent_count }}）
+        </div>
+        <el-scrollbar max-height="320px">
+          <div
+            v-for="(c, i) in previewResult.items"
+            :key="i"
+            class="chunk-item"
+          >
+            <div class="chunk-meta">
+              #{{ c.chunk_index }}
+              <el-tag size="small" :type="c.chunk_type === 'parent' ? 'warning' : ''">
+                {{ c.chunk_type }}
+              </el-tag>
+              {{ c.char_count }} 字
+            </div>
+            <div class="chunk-text">{{ c.text }}</div>
+          </div>
+        </el-scrollbar>
+      </div>
+      <template #footer>
+        <el-button @click="previewVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="previewLoading" @click="runPreview">预览切块</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 查看正文对话框 -->
+    <el-dialog v-model="contentVisible" :title="`正文：${contentData.title}`" width="760px">
+      <div v-loading="contentLoading">
+        <div class="muted small" style="margin-bottom: 8px">共 {{ contentData.char_count }} 字</div>
+        <el-input
+          :model-value="contentData.content"
+          type="textarea"
+          :rows="18"
+          readonly
+          resize="none"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="contentVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -151,6 +272,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { admin } from '../api'
+import { Upload } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -164,8 +286,24 @@ const documents = ref([])
 const sources = ref([])
 const filterSource = ref('')
 const dialogVisible = ref(false)
-const editing = ref(false)
 const form = reactive({ title: '', source: '', content: '' })
+
+// 上传文件（后端解析）
+const uploadDialogVisible = ref(false)
+const uploadFile = ref(null)
+const uploadForm = reactive({ title: '', source: '' })
+const uploading = ref(false)
+
+// 切块预览
+const previewVisible = ref(false)
+const previewForm = reactive({ text: '', chunkSize: 500, enableParentChild: false })
+const previewResult = ref(null)
+const previewLoading = ref(false)
+
+// 查看正文
+const contentVisible = ref(false)
+const contentLoading = ref(false)
+const contentData = reactive({ title: '', content: '', char_count: 0 })
 
 const currentKb = computed(() => kbs.value.find((k) => k.id === kbId.value))
 
@@ -294,23 +432,84 @@ async function onReindex(row) {
   }
 }
 
-async function onFileSelect(file) {
-  const ext = file.name.split('.').pop()?.toLowerCase()
-  if (!['txt', 'md', 'markdown'].includes(ext)) {
-    ElMessage.error('仅支持 txt/md/markdown 格式')
-    return false
-  }
-  const text = await file.text()
-  editing.value = false
-  Object.assign(form, {
+function onFileSelect(file) {
+  // 选择文件 → 打开上传对话框收集 source/title，实际上传走后端 /upload（支持 PDF/Word 等）
+  uploadFile.value = file
+  Object.assign(uploadForm, {
     title: file.name.replace(/\.[^.]+$/, ''),
     source: '',
-    content: text,
-    _fileName: file.name,
-    _fileType: ext,
   })
-  dialogVisible.value = true
-  return false // 阻止自动上传
+  uploadDialogVisible.value = true
+  return false // 阻止 el-upload 自动上传
+}
+
+async function doUpload() {
+  if (!uploadForm.source.trim()) {
+    ElMessage.warning('知识域标签不能为空')
+    return
+  }
+  uploading.value = true
+  try {
+    const res = await admin.uploadDocument(
+      kbId.value,
+      uploadFile.value,
+      uploadForm.source.trim(),
+      uploadForm.title.trim() || null,
+    )
+    if (res.ok) {
+      ElMessage.success(`入库成功，切块 ${res.chunk_count} 块`)
+    } else {
+      ElMessage.error('入库失败：' + (res.errors?.join('; ') || '未知错误'))
+    }
+    uploadDialogVisible.value = false
+    uploadFile.value = null
+    await loadDocuments()
+  } catch (e) {
+    // 解析阶段 4xx（非 UTF-8 / 格式不支持 / 文件过大）
+    ElMessage.error(e.response?.data?.detail || e.message || '上传失败')
+  } finally {
+    uploading.value = false
+  }
+}
+
+function openPreview() {
+  Object.assign(previewForm, { text: '', chunkSize: 500, enableParentChild: false })
+  previewResult.value = null
+  previewVisible.value = true
+}
+
+async function runPreview() {
+  if (!previewForm.text.trim()) {
+    ElMessage.warning('请输入样例正文')
+    return
+  }
+  previewLoading.value = true
+  try {
+    previewResult.value = await admin.previewChunks(kbId.value, {
+      text: previewForm.text,
+      title: '预览',
+      chunk_size: previewForm.chunkSize,
+      enable_parent_child: previewForm.enableParentChild,
+    })
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || e.message || '预览失败')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+async function viewContent(row) {
+  contentVisible.value = true
+  contentLoading.value = true
+  Object.assign(contentData, { title: row.title, content: '', char_count: 0 })
+  try {
+    const data = await admin.getDocumentContent(kbId.value, row.id)
+    Object.assign(contentData, data)
+  } catch (e) {
+    ElMessage.error('读取正文失败')
+  } finally {
+    contentLoading.value = false
+  }
 }
 
 function statusType(s) {
@@ -351,5 +550,25 @@ onMounted(loadAll)
 }
 .small {
   font-size: 12px;
+}
+.chunk-item {
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.chunk-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+.chunk-text {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

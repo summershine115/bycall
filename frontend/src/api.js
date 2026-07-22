@@ -123,6 +123,10 @@ export const admin = {
       })
       .then((r) => r.data)
   },
+  previewChunks: (kbId, data) =>
+    http.post(`/api/admin/knowledge-bases/${kbId}/documents/preview-chunks`, data).then((r) => r.data),
+  getDocumentContent: (kbId, id) =>
+    http.get(`/api/admin/knowledge-bases/${kbId}/documents/${id}/content`).then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),
@@ -145,6 +149,15 @@ export const admin = {
     http.post(`/api/admin/users/${userId}/memory`, data).then((r) => r.data),
   updateUserMemory: (memId, data) => http.put(`/api/admin/memory/${memId}`, data).then((r) => r.data),
   deleteUserMemory: (memId) => http.delete(`/api/admin/memory/${memId}`),
+  // MCP 工具服务器（M4）
+  listMcpServers: () => http.get('/api/admin/mcp-servers').then((r) => r.data),
+  createMcpServer: (data) => http.post('/api/admin/mcp-servers', data).then((r) => r.data),
+  getMcpServer: (id) => http.get(`/api/admin/mcp-servers/${id}`).then((r) => r.data),
+  updateMcpServer: (id, data) => http.put(`/api/admin/mcp-servers/${id}`, data).then((r) => r.data),
+  deleteMcpServer: (id) => http.delete(`/api/admin/mcp-servers/${id}`),
+  reloadMcpServer: (id) => http.post(`/api/admin/mcp-servers/${id}/reload`).then((r) => r.data),
+  testMcpServer: (id) => http.post(`/api/admin/mcp-servers/${id}/test`).then((r) => r.data),
+  listTools: () => http.get('/api/admin/tools').then((r) => r.data),
 }
 
 // ============ 数据面 /chat ============

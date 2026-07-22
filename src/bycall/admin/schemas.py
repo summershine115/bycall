@@ -333,6 +333,7 @@ class KnowledgeBaseUpdate(BaseModel):
     description: str | None = None
     visible_to_roles: list[str] | None = None
 
+
 class KnowledgeBaseOut(BaseModel):
     """知识库响应。"""
 
@@ -407,6 +408,57 @@ class DocumentIngestResult(BaseModel):
     document_id: int
     chunk_count: int
     errors: list[str] = Field(default_factory=list)
+
+
+# ============ Chunk 预览（参考 WeKnora chunker/preview，不落库不入库）============
+
+
+class ChunkPreviewRequest(BaseModel):
+    """切块预览请求——仅运行切块逻辑，不做 embedding、不写库。
+
+    用于管理员在入库前/后调参验证切块效果（对齐 WeKnora 的 ``POST /chunker/preview``）。
+    配置项留空则用入库时同样的默认 ``ChunkingConfig``，保证预览 == 实际入库效果。
+    """
+
+    text: str = Field(..., description="待切块的样例正文")
+    title: str = Field(default="", description="文档标题（影响 heading 上下文，可选）")
+    chunk_size: int | None = Field(default=None, description="单块字符数（默认 500）")
+    overlap: int | None = Field(default=None, description="重叠字符数（默认 50）")
+    enable_parent_child: bool = Field(
+        default=False, description="是否启用父子块切分（child=384 / parent=4096）"
+    )
+
+
+class ChunkPreviewItem(BaseModel):
+    """单条切块预览。"""
+
+    chunk_index: int
+    chunk_type: str = Field(default="child", description="child | parent")
+    char_count: int
+    text: str
+
+
+class ChunkPreviewResult(BaseModel):
+    """切块预览结果。"""
+
+    total: int
+    child_count: int
+    parent_count: int
+    items: list[ChunkPreviewItem]
+
+
+# ============ 文档正文（调试/核对入库内容用）============
+
+
+class DocumentContentOut(BaseModel):
+    """文档原始正文响应——DocumentOut 刻意不带 content（可能很长），需单独查。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    char_count: int
+    content: str
 
 
 # ============ Conversation + Message（会话管理）============
@@ -485,3 +537,72 @@ class ToolOut(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]
+    source: str = "builtin"  # "builtin" / "mcp"——供前端按来源分组展示
+
+
+# ============ MCPServer（M4 工具网关）============
+
+
+class MCPServerCreate(BaseModel):
+    """注册 MCP server。
+
+    - ``transport="stdio"``：本地子进程，填 ``command``/``args``/``env``。
+    - ``transport="http"``：streamable HTTP 远程，填 ``url``/``headers``。
+    - ``env``/``headers`` 整段加密存库，绝不回显（红线 #8）。
+    """
+
+    name: str = Field(..., description="唯一名；工具前缀 mcp__{name}__")
+    description: str = ""
+    transport: str = Field(default="stdio", description='"stdio" / "http"')
+    # stdio
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict, description="环境变量，加密存库")
+    # http
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict, description="自定义 header，加密存库")
+    is_enabled: bool = True
+
+
+class MCPServerUpdate(BaseModel):
+    """更新 MCP server（PATCH 语义：仅传入字段生效）。
+
+    ``env``/``headers`` 为 write-only：不传（None）= 不改；传 ``{}`` = 清空。
+    """
+
+    description: str | None = None
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    is_enabled: bool | None = None
+
+
+class MCPServerOut(BaseModel):
+    """MCP server 响应。env/headers 绝不回显明文，只标是否已配置。"""
+
+    id: int
+    name: str
+    description: str
+    transport: str
+    command: str
+    args: list[str]
+    url: str
+    is_enabled: bool
+    has_env: bool  # 是否已配置 env（不回显值）
+    has_headers: bool  # 是否已配置 headers（不回显值）
+    tool_count: int = 0  # 已发现并注册的工具数（manager 提供）
+    connected: bool = False  # 当前是否已连接
+    created_at: datetime
+    updated_at: datetime
+
+
+class MCPTestResult(BaseModel):
+    """MCP server 连通性测试结果。"""
+
+    ok: bool
+    message: str = ""
+    tool_count: int = 0
+    tools: list[str] = Field(default_factory=list, description="发现的工具名（空间化后）")
