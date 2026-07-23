@@ -19,7 +19,7 @@ from bycall.governance.capability import (
     compute_capability_set,
     get_active_system_prompt,
 )
-from bycall.governance.models import Role, RoleConfig, SystemPrompt, User
+from bycall.governance.models import KnowledgeBase, Role, RoleConfig, SystemPrompt, User
 
 
 @pytest.fixture
@@ -336,45 +336,66 @@ def test_admin_ignores_role_bound_prompt(db_session):
 # ============ 可见知识域注入文本（build_knowledge_scope_text） ============
 
 
-def test_knowledge_scope_text_admin_is_full_access():
-    """admin / 全通配 → 全部知识域，检索不受来源标签限制。"""
-    text = build_knowledge_scope_text(["*"], is_admin=True)
+_KBS = [("产品知识库", "产品规格与使用说明"), ("HR知识库", "人事制度与考勤")]
+
+
+def test_knowledge_scope_text_admin_enumerates_all_kbs():
+    """admin / 全通配 → 全部知识域，并逐一枚举组织内知识库（名称+描述）。"""
+    text = build_knowledge_scope_text(["*"], is_admin=True, kbs=_KBS)
     assert "全部知识域" in text
     assert "管理员" in text
+    assert "产品知识库：产品规格与使用说明" in text
+    assert "HR知识库：人事制度与考勤" in text
 
 
 def test_knowledge_scope_text_wildcard_tag_treated_as_full_access():
     """非 admin 但 tags 含通配 '*' → 同样视为全部知识域（与 admin 同义）。"""
-    text = build_knowledge_scope_text(["*"], is_admin=False)
+    text = build_knowledge_scope_text(["*"], is_admin=False, kbs=_KBS)
     assert "全部知识域" in text
 
 
-def test_knowledge_scope_text_normal_user_lists_tags():
-    """普通用户 → 列出其 knowledge_scope_tags，并要求据实回答、不要编造。"""
-    text = build_knowledge_scope_text(["sales", "public"], is_admin=False)
-    assert "- sales" in text
-    assert "- public" in text
+def test_knowledge_scope_text_normal_user_lists_tags_and_kbs():
+    """普通用户 → 列出来源标签 + 组织内知识库，并要求据实回答、不要编造。"""
+    text = build_knowledge_scope_text(["sales", "public"], is_admin=False, kbs=_KBS)
+    assert "sales" in text and "public" in text
+    assert "产品知识库" in text
     assert "不要编造" in text
 
 
 def test_knowledge_scope_text_empty_returns_empty():
     """空 tags → 空串（防御性，该用户已被 runner denied_no_access 拦在 LLM 之前）。"""
-    assert build_knowledge_scope_text([], is_admin=False) == ""
+    assert build_knowledge_scope_text([], is_admin=False, kbs=_KBS) == ""
+
+
+def test_knowledge_scope_text_no_kbs_shows_placeholder():
+    """无任何知识库 → 枚举处显示占位，不报错。"""
+    text = build_knowledge_scope_text(["*"], is_admin=True, kbs=[])
+    assert "暂无知识库" in text
 
 
 # ============ 能力集携带 knowledge_scope_text ============
 
 
-def test_admin_capability_scope_text_is_full_access(db_session):
-    """admin 能力集的 knowledge_scope_text 说明可访问全部知识域。"""
+def test_admin_capability_scope_text_enumerates_kbs(db_session):
+    """admin 能力集的 knowledge_scope_text 说明全部知识域并枚举组织内知识库。"""
+    db_session.add(
+        KnowledgeBase(
+            name="产品知识库",
+            description="产品规格",
+            embedding_model_id=1,
+            collection_name="kb_prod",
+        )
+    )
+    db_session.flush()
     admin = db_session.exec(User.select_by_name("admin")).first()
     assert admin is not None
     cap = compute_capability_set(db_session, admin)
     assert "全部知识域" in cap.knowledge_scope_text
+    assert "产品知识库" in cap.knowledge_scope_text
 
 
 def test_normal_capability_scope_text_lists_role_tags(db_session):
-    """普通用户能力集的 knowledge_scope_text 列出其 Role.config.knowledge_scope_tags。"""
+    """普通用户能力集的 knowledge_scope_text 含来源标签 + 知识库范围。"""
     db_session.add(
         Role(
             name="sales",
@@ -388,5 +409,5 @@ def test_normal_capability_scope_text_lists_role_tags(db_session):
     db_session.flush()
     user = _make_user(db_session, "alice", role="sales")
     cap = compute_capability_set(db_session, user)
-    assert "- sales" in cap.knowledge_scope_text
-    assert "- public" in cap.knowledge_scope_text
+    assert "sales" in cap.knowledge_scope_text
+    assert "public" in cap.knowledge_scope_text

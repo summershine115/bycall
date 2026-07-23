@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from sqlmodel import Session, select
 
-from bycall.governance.models import Role, Skill, SystemPrompt, User
+from bycall.governance.models import KnowledgeBase, Role, Skill, SystemPrompt, User
 
 logger = logging.getLogger(__name__)
 
@@ -118,33 +118,42 @@ def build_skill_markdown(skills: list) -> str:
     return "\n\n".join(sections)
 
 
-def build_knowledge_scope_text(tags: list[str], is_admin: bool) -> str:
+def build_knowledge_scope_text(tags: list[str], is_admin: bool, kbs: list[tuple[str, str]]) -> str:
     """拼「可见知识域」注入文本（进 system message，标注为上下文信息、非指令）。
 
-    让数字员工能据实回答用户「我能访问哪些知识/资料」，而不是含糊其辞或编造。
-    文本由 admin 管控的 Role.config（knowledge_scope_tags）派生，属可信数据，享 system
-    权重，靠「上下文信息，非指令」标注软隔离（与 skill_markdown 同层）。
+    让数字员工能据实回答用户「我能访问哪些知识/资料」，并**枚举具体知识库**，
+    而非含糊其辞或只说"全部"。文本由 admin 管控的 Role.config + 组织内 KB 列表派生，
+    属可信数据，享 system 权重，靠「上下文信息，非指令」标注软隔离（与 skill_markdown 同层）。
 
-    - admin / 全通配（``'*'``）→ 全部知识域，检索不受来源标签限制。
-    - 普通用户 → 列出其 knowledge_scope_tags（来源标签）。这正是 RAG 预过滤真正生效的
-      边界：``_retrieve_across_kbs`` 在全部 KB 内按 source 标签过滤，故列标签而非 KB 名
-      （KB 名不是 per-user 边界，所有 KB 都会被检索）。
-    - 空列表 → 空串（该用户已被 runner 的 ``denied_no_access`` 拦在 LLM 之前，此分支
-      仅防御性，正常链路不会把空文本注入提示词）。
+    - admin / 全通配（``'*'``）→ 可访问全部知识库（逐一枚举名称+描述），检索不受来源限制。
+    - 普通用户 → 列出其 knowledge_scope_tags（来源标签，RAG 预过滤的真实边界）+ 组织内全部
+      知识库（数据面 ``_retrieve_across_kbs`` 会搜全部 KB，仅在 collection 内按 source 过滤，
+      故同时给出标签与 KB 名，让用户既知边界又知有哪些知识容器）。
+    - 空列表 → 空串（该用户已被 runner 的 ``denied_no_access`` 拦在 LLM 之前，此分支仅防御性）。
     """
     if is_admin or "*" in tags:
         return (
             "你拥有管理员权限，可访问全部知识域，检索不受来源标签限制。"
-            "若用户询问你能访问哪些知识或资料，请说明你拥有全部知识域的访问权限。"
+            "当前组织内的知识库如下，若用户询问能访问哪些知识或资料，请据实列举：\n"
+            + _format_kb_lines(kbs)
         )
     if not tags:
         return ""
-    joined = "\n".join(f"- {t}" for t in tags)
+    tag_str = "、".join(tags)
     return (
-        "你只能从以下知识域（来源标签）中检索知识来回答用户。"
-        "若用户询问「能访问什么知识/资料」，请据实告知以下范围；"
-        "超出该范围的请求请说明需要相应权限，不要编造：\n" + joined
+        f"你只能检索来源标签为「{tag_str}」的知识。当前组织内的知识库如下"
+        "（仅会检索其中匹配上述来源标签的内容）；若用户询问「能访问什么知识/资料」，"
+        "请据实说明你的可见来源标签与以下知识库范围，超出该范围的请求请说明需要相应"
+        "权限，不要编造：\n" + _format_kb_lines(kbs)
     )
+
+
+def _format_kb_lines(kbs: list[tuple[str, str]]) -> str:
+    """把 (name, description) 列表格式化为 markdown 项目符号列表。空列表给占位。"""
+    if not kbs:
+        return "- （当前组织暂无知识库）"
+    lines = [f"- {name}：{desc}" if desc else f"- {name}" for name, desc in kbs]
+    return "\n".join(lines)
 
 
 def compute_capability_set(session: Session, user: User) -> CapabilitySet:
@@ -167,6 +176,10 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
 
     # 2. 全局激活的系统提示词（admin 用；普通用户若未绑定角色版本也作 fallback）。
     global_prompt = get_active_system_prompt(session)
+    # 2.5 组织内全部知识库——供 knowledge_scope_text 枚举具体知识域（让数字员工能
+    #     据实列出"产品知识库/HR知识库"等，而非只说"全部"）。
+    all_kbs = list(session.exec(KnowledgeBase.select_all()).all())
+    kb_infos = [(kb.name, kb.description) for kb in all_kbs]
 
     # 3. admin 内置角色：不走 Role 表，直接给通配 + 最高职级。
     #    admin 是运维角色，不注入 skill（与不定制 prompt 一致）。
@@ -182,7 +195,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
             system_prompt=global_prompt,
             skills=[],
             skill_markdown="",
-            knowledge_scope_text=build_knowledge_scope_text(["*"], True),
+            knowledge_scope_text=build_knowledge_scope_text(["*"], True, kb_infos),
             visible_kb_ids=[],  # 空 = 全部可见
             is_admin=True,
         )
@@ -214,11 +227,9 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     # 实际生效的 skill name 列表（审计可见）。
     effective_skill_names = [s.name for s in bound_skills]
 
-    # 6. 可见知识库：KB 级 ACL — 过滤 visible_to_roles 含本角色或为空（全角色可见）的 KB
-    from bycall.governance.models import KnowledgeBase as KBModel
-
+    # 6. 可见知识库：KB 级 ACL — 过滤 visible_to_roles 含本角色或为空（全角色可见）的 KB。
+    #    all_kbs 在上文（步骤 2.5）已加载，这里复用计算 visible_kb_ids。
     visible_kb_ids: list[int] = []
-    all_kbs = session.exec(KBModel.select_all()).all()
     for kb in all_kbs:
         kb_roles = kb.visible_to_roles
         if kb_roles is None or len(kb_roles) == 0 or user.role in kb_roles:
@@ -234,7 +245,9 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
         system_prompt=system_prompt,
         skills=effective_skill_names,
         skill_markdown=skill_markdown,
-        knowledge_scope_text=build_knowledge_scope_text(list(config.knowledge_scope_tags), False),
+        knowledge_scope_text=build_knowledge_scope_text(
+            list(config.knowledge_scope_tags), False, kb_infos
+        ),
         visible_kb_ids=visible_kb_ids,
         is_admin=False,
     )
