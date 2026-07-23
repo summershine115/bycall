@@ -236,9 +236,12 @@ def _split_adaptive(text: str, config: ChunkingConfig) -> list[str]:
     strategy = config.strategy
     if strategy == "auto":
         strategy = _detect_strategy(text)
-    if strategy == "heading":
-        return _split_by_heading(text, config)
-    return _split_recursive(text, config)
+    raw = _split_by_heading(text, config) if strategy == "heading" else _split_recursive(text, config)
+    # 过滤空/纯空白块：连续分隔符或文档首尾的空白区会被 split 切出空白块
+    #（见 _split_by_separator 的 text.split(sep) 产物不过滤）。这种块直接送 embedding
+    # 会被部分 provider 拒绝——硅基流动 bge 对空/空白输入返回 code 20015「参数无效」，
+    # 整批 400 导致该批 chunk 全部丢失。空白块本就无语义价值，统一丢弃。
+    return [c for c in raw if c and c.strip()]
 
 
 def _detect_strategy(text: str) -> str:
@@ -373,6 +376,8 @@ def _hard_split_final(text: str, config: ChunkingConfig) -> list[str]:
     while start < len(text):
         end = min(start + config.chunk_size, len(text))
         chunks.append(text[start:end])
+        if end >= len(text):
+            break  # 已到末尾：必须终止，否则 start=end-overlap 会让末尾重叠段无限循环
         start = end - config.overlap
     return chunks
 

@@ -1,0 +1,109 @@
+/**
+ * 全局基础样式：排版层级、通用工具类（页面骨架 / 工具行 / 弱化文本）。
+ * 页面统一使用 .bc-page > PageHeader + 内容区 的结构。
+ */
+
+/* ============ 排版层级 ============ */
+h1, h2, h3, h4 {
+  color: var(--bc-text-1);
+  font-weight: var(--bc-weight-semibold);
+  line-height: var(--bc-leading-tight);
+  margin: 0;
+}
+h1 { font-size: var(--bc-text-2xl); }
+h2 { font-size: var(--bc-text-xl); }
+h3 { font-size: var(--bc-text-lg); }
+h4 { font-size: var(--bc-text-md); }
+
+code, pre, .mono {
+  font-family: var(--bc-font-mono);
+  font-size: 0.92em;
+}
+
+/* ============ 页面骨架 ============ */
+.bc-page {
+  max-width: var(--bc-content-max);
+  margin: 0 auto;
+}
+
+/* 工具行：页面列表上方的筛选/操作条 */
+.bc-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--bc-space-3);
+  margin-bottom: var(--bc-space-4);
+}
+.bc-toolbar__spacer { flex: 1; }
+
+/* 卡片式面板（表格/内容容器统一外观） */
+.bc-panel {
+  background: var(--bc-bg-surface);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-lg);
+  box-shadow: var(--bc-shadow-xs);
+  overflow: hidden;
+}
+.bc-panel .el-table {
+  border-radius: 0;
+}
+
+/* ============ 文本工具 ============ */
+.bc-muted { color: var(--bc-text-3); }
+.bc-text-sm { font-size: var(--bc-text-sm); }
+.bc-text-xs { font-size: var(--bc-text-xs); }
+.bc-strong { color: var(--bc-text-1); font-weight: var(--bc-weight-semibold); }
+
+/* 表单内帮助说明 */
+.bc-hint {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  line-height: var(--bc-leading-normal);
+  margin-top: var(--bc-space-1);
+}
+
+/* 长文本截断单元格（表格内复用） */
+.bc-cell-clamp {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 84px;
+  overflow: hidden;
+  font-size: var(--bc-text-sm);
+  color: var(--bc-text-2);
+  line-height: var(--bc-leading-normal);
+}
+
+/* 空单元格占位 */
+.bc-empty {
+  color: var(--bc-text-4);
+}
+
+/* 状态点（不只靠颜色传达状态时配文字/图标使用） */
+.bc-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--bc-radius-full);
+  margin-right: var(--bc-space-2);
+  vertical-align: 1px;
+}
+.bc-dot--ok { background: var(--bc-success); }
+.bc-dot--warn { background: var(--bc-warning); }
+.bc-dot--err { background: var(--bc-danger); }
+.bc-dot--idle { background: var(--bc-gray-4); }
+
+/* 统计键值对（详情区复用） */
+.bc-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+.bc-kv__label {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+.bc-kv__value {
+  font-size: var(--bc-text-md);
+  color: var(--bc-text-1);
+  font-weight: var(--bc-weight-medium);
+}

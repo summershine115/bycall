@@ -85,6 +85,15 @@ class TestSplitDocument:
         for c in chunks:
             assert len(c) <= 500
 
+    def test_long_doc_split_overlap_zero_terminates(self):
+        """overlap=0 时硬切必须终止并恰好铺满原文（回归 _hard_split_final 终止 bug）。"""
+        long_text = "字" * 1200
+        doc = Document(doc_id="d2b", text=long_text, source="public")
+        chunks = split_document(doc, config=ChunkingConfig(chunk_size=500, overlap=0))
+        assert len(chunks) > 1
+        assert all(len(c) <= 500 for c in chunks)
+        assert "".join(chunks) == long_text  # overlap=0 应恰好铺满，无重叠无遗漏
+
     def test_multi_paragraph_split(self):
         """多段落在段落边界切开，不合并。"""
         text = "段落一内容。\n\n段落二内容。\n\n段落三内容。"

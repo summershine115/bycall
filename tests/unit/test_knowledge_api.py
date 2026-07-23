@@ -1,25 +1,30 @@
-"""知识库文档管理 Admin REST API 单元测试（per-KB 版）。
+"""知识库文档管理 Admin REST API 单元测试（per-KB 版，异步入库 + 实时进度）。
 
 覆盖：
-- 创建文档并入库（source ACL 标注，绑定到 KB）
+- 创建文档并异步入库（source ACL 标注，绑定到 KB）
 - 列表 + source 过滤
 - 文档详情（status=completed, chunk_count>0, embedding_model_id 记录）
-- 无绑定 embedding 模型 → 400 + status=failed
+- 无绑定 embedding 模型 → 入库失败 status=failed
 - 级联删除（删文档 → zvec chunks 清理）
 - reindex（重新入库）
 - sources 列表
-- 文件上传（multipart）
+- 文件上传（multipart，同步解析 + 异步入库）
 - 更新文档标题（不触发重入库）
-- 更新 source（触发重入库）
+- 更新 source（触发同步重入库，含 ACL 回滚）
+- 入库实时进度 /progress（阶段切换、终态 percent=100）
+- /ingest/active 列出在途入库
+- 失败终态：status=failed + error_message，绝不卡在 processing
 
-每个测试先建 embedding Model 记录 + KnowledgeBase，再在 KB 下建文档。
-``resolve_embed_model`` 被 mock（_ingest_document 内部调用），返回 sha256 派生的稳定小维度向量。
+入库已异步化：create/upload/reindex 立即返回 IngestAccepted，真正入库在后台线程跑。
+``_wait_for_ingest`` 轮询 /progress 直到终态后再断言 chunk_count/status。
+``resolve_embed_model`` 被 mock（返回 sha256 派生的稳定小维度向量），无需真实 embedding 服务。
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -43,6 +48,7 @@ def client(tmp_path: Path, monkeypatch):
 
     ``resolve_embed_model`` 被 patch 成返回 mock EmbedModel（sha256 派生向量）。
     这样入库流程不需要真实 API key 也不连真实 embedding 服务。
+    SQLite 加 busy timeout，兼容后台入库线程的并发写。
     """
     db_path = tmp_path / "test_knowledge.db"
     monkeypatch.setenv("BYCALL_POSTGRES_DSN", f"sqlite:///{db_path}")
@@ -50,7 +56,12 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BYCALL_VECTOR_STORE_DATA_DIR", str(tmp_path / "zvec"))
     get_settings.cache_clear()
 
-    set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
+    set_engine(
+        create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
+    )
     init_db()
 
     # mock embedding：embed 返回 sha256 派生的归一化向量
@@ -71,7 +82,24 @@ def client(tmp_path: Path, monkeypatch):
 
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    test_client = TestClient(app)
+    yield test_client
+    # 用例结束前排空本用例提交的后台入库任务，避免残留线程跨用例写旧 engine/污染 tracker。
+    from bycall.admin.api import _drain_ingest
+
+    _drain_ingest(timeout=30)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ingest_tracker():
+    """每个用例前后清空内存进度表（模块级单例，需跨用例隔离）。"""
+    from bycall.rag.ingest_tracker import ingest_tracker
+
+    with ingest_tracker._lock:
+        ingest_tracker._items.clear()
+    yield
+    with ingest_tracker._lock:
+        ingest_tracker._items.clear()
 
 
 def _create_embedding_model(client: TestClient, dim: int = DIM, name: str = "mock-embed") -> int:
@@ -111,7 +139,7 @@ def _create_doc(
     source: str = "sales",
     content: str = "我们的报价流程如下：先询价再签约。\n\n报价需要走审批流程。",
 ):
-    """在指定 KB 下建文档并入库。"""
+    """在指定 KB 下建文档并提交异步入库（返回 IngestAccepted）。"""
     return client.post(
         f"/api/admin/knowledge-bases/{kb_id}/documents",
         json={
@@ -123,22 +151,39 @@ def _create_doc(
     )
 
 
+def _wait_for_ingest(client: TestClient, kb_id: int, doc_id: int, timeout: float = 10.0) -> dict:
+    """轮询 /progress 直到 status 终态（completed/failed），返回最终进度。"""
+    deadline = time.monotonic() + timeout
+    last: dict | None = None
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/progress")
+        assert resp.status_code == 200, resp.text
+        last = resp.json()
+        if last["status"] in ("completed", "failed"):
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"入库未在 {timeout}s 内到达终态: {last}")
+
+
 # ============ 创建 + 入库 ============
 
 
 def test_create_document_ingests_successfully(client: TestClient):
-    """创建文档 → 201 + ok=True + chunk_count>0 + status=completed。"""
+    """创建文档 → 201 + status=processing（受理），轮询后 completed + chunk_count>0。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = _create_doc(client, kb_id)
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["ok"] is True
-    assert body["chunk_count"] > 0
-    assert body["errors"] == []
+    assert body["status"] == "processing"
+    doc_id = body["document_id"]
+
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "completed"
+    assert prog["chunk_count"] > 0
+    assert prog["percent"] == 100
 
     # 文档详情确认状态
-    doc_id = body["document_id"]
     detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
     assert detail["status"] == "completed"
     assert detail["chunk_count"] > 0
@@ -147,11 +192,13 @@ def test_create_document_ingests_successfully(client: TestClient):
 
 
 def test_create_empty_content_returns_400(client: TestClient):
-    """空正文 → 400。"""
+    """空正文 → 400（同步校验，不创建文档、不提交后台任务）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = _create_doc(client, kb_id, content="   ")
     assert resp.status_code == 400
+    # 同步失败：没有后台入库任务在途
+    assert client.get("/api/admin/ingest/active").json() == []
 
 
 def test_create_empty_source_returns_400(client: TestClient):
@@ -172,7 +219,7 @@ def test_list_documents_and_filter_by_source(client: TestClient):
     _create_doc(client, kb_id, title="销售文档", source="sales", content="销售内容。")
     _create_doc(client, kb_id, title="HR文档", source="hr", content="HR内容。")
 
-    # 全部
+    # 全部（文档建好即返回，不依赖入库完成）
     all_docs = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents").json()
     assert len(all_docs) == 2
 
@@ -235,7 +282,10 @@ def test_delete_document_cleans_chunks(client: TestClient):
         client, kb_id, title="待删", source="public", content="要被删除的唯一内容。"
     )
     doc_id = create_resp.json()["document_id"]
-    chunk_count = create_resp.json()["chunk_count"]
+    # 先等入库完成拿到 chunk_count（异步入库，不能从受理响应直接读）
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "completed"
+    chunk_count = prog["chunk_count"]
     assert chunk_count > 0
 
     # 删除前：zvec 里有 chunk
@@ -280,12 +330,16 @@ def test_reindex_document(client: TestClient):
         client, kb_id, title="重入库", source="public", content="要重新入库的内容。"
     )
     doc_id = create_resp.json()["document_id"]
-    original_count = create_resp.json()["chunk_count"]
+    original = _wait_for_ingest(client, kb_id, doc_id)
+    original_count = original["chunk_count"]
 
     reindex_resp = client.post(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
     assert reindex_resp.status_code == 200
-    assert reindex_resp.json()["ok"] is True
-    assert reindex_resp.json()["chunk_count"] == original_count
+    assert reindex_resp.json()["status"] == "processing"
+
+    reindexed = _wait_for_ingest(client, kb_id, doc_id)
+    assert reindexed["status"] == "completed"
+    assert reindexed["chunk_count"] == original_count
 
 
 def test_reindex_does_not_leave_ghost_chunks(client: TestClient):
@@ -302,17 +356,19 @@ def test_reindex_does_not_leave_ghost_chunks(client: TestClient):
         client, kb_id, title="重入库", source="public", content="唯一的重入库内容。"
     )
     doc_id = create_resp.json()["document_id"]
-    original_count = create_resp.json()["chunk_count"]
+    original = _wait_for_ingest(client, kb_id, doc_id)
+    original_count = original["chunk_count"]
     before = _get_zvec_collection_doc_count(kb_id)
     assert before == original_count, f"初始文档数应为 {original_count}，实际 {before}"
 
     # reindex
     reindex_resp = client.post(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
     assert reindex_resp.status_code == 200
-    assert reindex_resp.json()["ok"] is True
+    reindexed = _wait_for_ingest(client, kb_id, doc_id)
+    assert reindexed["status"] == "completed"
 
     # 关键：reindex 后 chunk 数应等于 original_count（upsert 覆盖，不是 insert 追加）
-    assert reindex_resp.json()["chunk_count"] == original_count
+    assert reindexed["chunk_count"] == original_count
     after = _get_zvec_collection_doc_count(kb_id)
     assert after == original_count, (
         f"reindex 后文档数应不变（={original_count}），实际 {after}（幽灵 chunk 累积）"
@@ -328,6 +384,7 @@ def test_update_title_no_reingest(client: TestClient):
     kb_id = _create_kb(client, mid)
     create_resp = _create_doc(client, kb_id, title="原标题", source="sales", content="内容。")
     doc_id = create_resp.json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
 
     resp = client.put(
         f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}",
@@ -339,11 +396,12 @@ def test_update_title_no_reingest(client: TestClient):
 
 
 def test_update_source_triggers_reingest(client: TestClient):
-    """改 source 触发重入库。"""
+    """改 source 触发同步重入库（保持即时回滚语义）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     create_resp = _create_doc(client, kb_id, title="标题", source="sales", content="内容。")
     doc_id = create_resp.json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
 
     resp = client.put(
         f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}",
@@ -357,7 +415,7 @@ def test_update_source_triggers_reingest(client: TestClient):
 
 
 def test_upload_txt_file(client: TestClient):
-    """上传 .txt 文件 → 201 + 入库成功。"""
+    """上传 .txt 文件 → 201 + 受理，轮询后入库成功 + 元数据正确。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = client.post(
@@ -367,19 +425,21 @@ def test_upload_txt_file(client: TestClient):
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["ok"] is True
-    assert body["chunk_count"] > 0
+    assert body["status"] == "processing"
+    doc_id = body["document_id"]
+
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "completed"
+    assert prog["chunk_count"] > 0
 
     # 文档元数据正确
-    detail = client.get(
-        f"/api/admin/knowledge-bases/{kb_id}/documents/{body['document_id']}"
-    ).json()
+    detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
     assert detail["file_name"] == "test.txt"
     assert detail["file_type"] == "txt"
 
 
 def test_upload_unsupported_format_returns_400(client: TestClient):
-    """上传不支持的格式 → 400。"""
+    """上传不支持的格式 → 400（同步校验）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = client.post(
@@ -408,6 +468,7 @@ def test_delete_document_keeps_metadata_when_vector_delete_fails(client: TestCli
     kb_id = _create_kb(client, mid)
     created = _create_doc(client, kb_id, title="保留元数据", source="public", content="内容")
     doc_id = created.json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
 
     import bycall.admin.api as admin_api
 
@@ -422,11 +483,12 @@ def test_delete_document_keeps_metadata_when_vector_delete_fails(client: TestCli
 
 
 def test_source_change_rolls_back_when_vector_delete_fails(client: TestClient, monkeypatch):
-    """ACL 更新失败时 DB source 必须回滚到旧授权状态。"""
+    """ACL 更新失败时 DB source 必须回滚到旧授权状态（同步路径保持即时回滚）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     created = _create_doc(client, kb_id, title="ACL 文档", source="public", content="内容")
     doc_id = created.json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
 
     import bycall.admin.api as admin_api
 
@@ -515,6 +577,7 @@ def test_get_document_content(client: TestClient):
     kb_id = _create_kb(client, mid)
     body = _create_doc(client, kb_id, content="这是用于核对入库的正文内容。").json()
     doc_id = body["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
     resp = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/content")
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -528,15 +591,16 @@ def test_get_document_content_cross_kb_404(client: TestClient):
     kb_a = _create_kb(client, mid, name="知识库A")
     kb_b = _create_kb(client, mid, name="知识库B")
     doc_id = _create_doc(client, kb_a).json()["document_id"]
+    _wait_for_ingest(client, kb_a, doc_id)
     resp = client.get(f"/api/admin/knowledge-bases/{kb_b}/documents/{doc_id}/content")
     assert resp.status_code == 404
 
 
-# ============ 入库失败终态：status=failed + error_message（修复"失败无日志"）===========
+# ============ 入库失败终态：status=failed + error_message（绝不卡在 processing）===========
 
 
 def test_ingest_failure_records_error_message(client: TestClient, monkeypatch):
-    """embedding 失败 → 文档 status=failed 且 error_message 非空，不卡在 pending/processing。
+    """embedding 失败 → 文档 status=failed 且 error_message 非空，不卡在 processing。
 
     对齐 WeKnora dead-letter：入库失败必须进入终态并记录原因。
     """
@@ -550,18 +614,38 @@ def test_ingest_failure_records_error_message(client: TestClient, monkeypatch):
     monkeypatch.setattr(resolver, "resolve_embed_model", lambda session, model: failing)
 
     resp = _create_doc(client, kb_id, content="一段需要入库但 embedding 会失败的正文。")
-    assert resp.status_code == 201  # 文档已创建
-    assert resp.json()["ok"] is False  # 入库失败
+    assert resp.status_code == 201  # 文档已创建并受理
+    doc_id = resp.json()["document_id"]
 
-    detail = client.get(
-        f"/api/admin/knowledge-bases/{kb_id}/documents/{resp.json()['document_id']}"
-    ).json()
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "failed"
+    assert prog["error_message"]
+
+    detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
     assert detail["status"] == "failed"
     assert "embedding" in detail["error_message"]
 
 
+def test_failed_ingest_never_stuck_in_processing(client: TestClient, monkeypatch):
+    """入库失败后 status 一定是 failed，绝不留在 processing（无僵尸文档）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+
+    failing = MagicMock(spec=EmbedModel)
+    failing.dimension = DIM
+    failing.embed.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(resolver, "resolve_embed_model", lambda session, model: failing)
+
+    doc_id = _create_doc(client, kb_id, content="会失败的正文。").json()["document_id"]
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "failed"
+    assert prog["status"] != "processing"
+    # tracker 也应标记 failed（实时 stage）
+    assert prog["stage"] == "failed"
+
+
 def test_upload_failure_records_error_message(client: TestClient, monkeypatch):
-    """文件上传入库失败 → status=failed + error_message（同步化前的 NameError 会卡死）。"""
+    """文件上传入库失败 → status=failed + error_message（解析同步、入库异步失败也落终态）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
 
@@ -582,8 +666,154 @@ def test_upload_failure_records_error_message(client: TestClient, monkeypatch):
         },
     )
     assert resp.status_code == 201
-    assert resp.json()["ok"] is False
     doc_id = resp.json()["document_id"]
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "failed"
     detail = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
     assert detail["status"] == "failed"
     assert detail["error_message"]
+
+
+# ============ 实时进度 /progress + /ingest/active ============
+
+
+def _slow_embed_factory(delay: float):
+    """构造一个会延迟 delay 秒的 mock embedding，便于在途观测进度。"""
+    slow = MagicMock(spec=EmbedModel)
+    slow.dimension = DIM
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        time.sleep(delay)
+        return [[0.0] * DIM for _ in texts]
+
+    slow.embed.side_effect = embed
+    return slow
+
+
+def test_progress_endpoint_reports_stages_and_final_percent(client: TestClient, monkeypatch):
+    """/progress 在途阶段非空，完成后 percent=100、stage=done。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    monkeypatch.setattr(
+        resolver, "resolve_embed_model", lambda session, model: _slow_embed_factory(0.3)
+    )
+
+    resp = _create_doc(client, kb_id, content="一段会被慢速向量化的较长正文。\n" * 5)
+    assert resp.status_code == 201
+    doc_id = resp.json()["document_id"]
+
+    # 轮询抓取在途阶段（start() 后短暂为 ""，工作线程很快进入 chunking/embedding）。
+    seen_stage = ""
+    poll_deadline = time.monotonic() + 3.0
+    while time.monotonic() < poll_deadline:
+        prog = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/progress").json()
+        if prog["stage"]:
+            seen_stage = prog["stage"]
+            break
+        time.sleep(0.02)
+    assert seen_stage in ("chunking", "embedding", "indexing"), seen_stage
+
+    final = _wait_for_ingest(client, kb_id, doc_id)
+    assert final["status"] == "completed"
+    assert final["percent"] == 100
+    assert final["stage"] == "done"
+
+
+def test_ingest_active_lists_processing_doc(client: TestClient, monkeypatch):
+    """/ingest/active 在入库在途时列出该文档。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    monkeypatch.setattr(
+        resolver, "resolve_embed_model", lambda session, model: _slow_embed_factory(0.5)
+    )
+
+    resp = _create_doc(client, kb_id, content="一段会被慢速向量化的文本。")
+    doc_id = resp.json()["document_id"]
+
+    # 轮询直到 active 列出该文档（工作线程进入 chunking/embedding/indexing 才算 active）。
+    matched = None
+    poll_deadline = time.monotonic() + 3.0
+    while time.monotonic() < poll_deadline:
+        active = client.get("/api/admin/ingest/active").json()
+        matched = next((a for a in active if a["document_id"] == doc_id), None)
+        if matched is not None:
+            break
+        time.sleep(0.02)
+    assert matched is not None, "入库在途期间未在 /ingest/active 中出现"
+    assert matched["stage"] in ("chunking", "embedding", "indexing")
+    assert matched["status"] == "processing"
+
+    # 完成后 active 不再包含
+    _wait_for_ingest(client, kb_id, doc_id)
+    active_after = client.get("/api/admin/ingest/active").json()
+    assert not any(a["document_id"] == doc_id for a in active_after)
+
+
+def test_progress_processing_without_tracker_suggests_rebuild(client: TestClient):
+    """DB 标 processing 但无 tracker 记录（服务重启中途）→ 提示重建，不假装有进度。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    # 直接构造一个卡在 processing 的文档（模拟服务重启中途丢失 tracker）
+    from bycall.db import session_scope
+    from bycall.governance.models import Document
+
+    with session_scope() as s:
+        s.add(
+            Document(
+                knowledge_base_id=kb_id,
+                title="僵尸文档",
+                source="public",
+                content="x",
+                status="processing",
+            )
+        )
+    # 取出 doc_id
+    listing = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents").json()
+    doc_id = listing[0]["id"]
+
+    prog = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/progress").json()
+    assert prog["status"] == "processing"
+    assert prog["stage"] == ""
+    assert "重建" in prog["error_message"]
+
+
+def test_batch_reindex_submits_async(client: TestClient):
+    """批量重入库 → 返回受理列表，每个文档各自异步完成。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    d1 = _create_doc(client, kb_id, title="甲", source="public", content="文档一内容。").json()[
+        "document_id"
+    ]
+    d2 = _create_doc(client, kb_id, title="乙", source="public", content="文档二内容。").json()[
+        "document_id"
+    ]
+    _wait_for_ingest(client, kb_id, d1)
+    _wait_for_ingest(client, kb_id, d2)
+
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/batch-reindex",
+        json={"document_ids": [d1, d2]},
+    )
+    assert resp.status_code == 200, resp.text
+    accepted = resp.json()
+    assert len(accepted) == 2
+    assert {a["document_id"] for a in accepted} == {d1, d2}
+    assert all(a["status"] == "processing" for a in accepted)
+
+    # 两个都应异步完成
+    for did in (d1, d2):
+        assert _wait_for_ingest(client, kb_id, did)["status"] == "completed"
+
+
+def test_batch_reindex_unknown_doc_returns_404(client: TestClient):
+    """批量重入库含不存在文档 → 404（fail-fast，不静默丢弃）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    d1 = _create_doc(client, kb_id, content="内容。").json()["document_id"]
+    _wait_for_ingest(client, kb_id, d1)
+
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/batch-reindex",
+        json={"document_ids": [d1, 9999]},
+    )
+    assert resp.status_code == 404

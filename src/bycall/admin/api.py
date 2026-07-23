@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 from fastapi import (
     APIRouter,
@@ -33,9 +36,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
+    ApprovalOut,
+    ApprovalReview,
     AuditOut,
     BatchReindexRequest,
-    BatchReindexResult,
     ChunkPreviewItem,
     ChunkPreviewRequest,
     ChunkPreviewResult,
@@ -45,6 +49,8 @@ from bycall.admin.schemas import (
     DocumentIngestResult,
     DocumentOut,
     DocumentUpdate,
+    IngestAccepted,
+    IngestProgressOut,
     KBChunkListResult,
     KBChunkOut,
     KBSearchRequest,
@@ -82,7 +88,7 @@ from bycall.admin.schemas import (
     UserOut,
     UserUpdate,
 )
-from bycall.db import get_session
+from bycall.db import get_session, session_scope
 from bycall.governance.models import (
     AuditLog,
     Conversation,
@@ -99,6 +105,7 @@ from bycall.governance.models import (
     UserMemory,
 )
 from bycall.governance.security import hash_password
+from bycall.rag.ingest_tracker import ingest_tracker
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -113,6 +120,42 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 # 审计日志中需要脱敏的字段名（值不落审计，只记 "<masked>"）。
 _SENSITIVE_FIELDS = frozenset({"password_hash", "api_key", "value", "secret"})
+
+
+# ============ 异步入库基础设施 ============
+# 后台入库线程池（lazy singleton）。create/upload/reindex 提交后立即返回 IngestAccepted，
+# 真正的 切块→向量化→写库 在此线程池里跑；HTTP 请求不阻塞。
+# ⚠️ 线程内**必须**用独立的 ``session_scope()``，禁止跨线程共享请求的 Session
+# （SQLAlchemy Session 非线程安全）。
+_ingest_executor: ThreadPoolExecutor | None = None
+
+# 已提交但未确认完成的后台入库 Future（测试用 ``_drain_ingest`` 排空，保证用例隔离）。
+_ingest_futures: list = []
+
+# 按 collection 维度的入库串行锁。zvec 的写锁靠 GC 释放（见 ZvecStore.close 注释），
+# 同一 collection 并发 open+upsert 会互相踩写锁。这里按 collection_name 加锁，
+# 保证同一 KB 的入库任务串行访问向量库，不同 KB 仍可并发——既守住 upsert/flush 契约
+# （架构红线：不得在向量操作未确认前提交元数据），又保留跨知识库并发能力。
+_collection_ingest_locks: dict[str, threading.Lock] = {}
+_collection_ingest_locks_guard = threading.Lock()
+
+
+def _get_collection_ingest_lock(collection_name: str) -> threading.Lock:
+    """取（或懒建）某 collection 的入库串行锁。"""
+    with _collection_ingest_locks_guard:
+        lock = _collection_ingest_locks.get(collection_name)
+        if lock is None:
+            lock = threading.Lock()
+            _collection_ingest_locks[collection_name] = lock
+        return lock
+
+
+def _get_ingest_executor() -> ThreadPoolExecutor:
+    """后台入库线程池（lazy singleton，max_workers=4）。"""
+    global _ingest_executor
+    if _ingest_executor is None:
+        _ingest_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ingest")
+    return _ingest_executor
 
 
 def _audit_admin(
@@ -1361,8 +1404,13 @@ def _ingest_document(
     title: str,
     source: str,
     content: str,
+    on_progress=None,
 ) -> DocumentIngestResult:
     """同步入库：标记 processing → 用 KB 的 embedding 模型 → 删旧 chunk → 入库 → 更新。
+
+    保留同步语义，仅给 ``update_document`` 改 source 这种需要即时回滚的路径用——
+    失败立刻返回，调用方可据 result.ok 回滚 ACL。``on_progress`` 把入库阶段回调出去，
+    与异步入库共享同一套进度语义。
 
     全链路结构化日志（修复"入库失败无日志"）：开始/模型解析/删旧/写库/完成或失败
     各阶段都留痕，错误带 kb/doc/title 上下文，便于定位。
@@ -1408,41 +1456,50 @@ def _ingest_document(
 
     embed_model = resolve_embed_model(session, embed_entity)
 
-    # 3. 删旧 chunk（幂等，支持 reindex）。
-    try:
-        _delete_chunks_for_doc(kb, doc_id)
-    except Exception as exc:
-        error = f"删除旧索引失败: {exc}"
-        logger.error("入库失败·删旧 chunk 异常: kb=%s(%s) doc=%s %s", kb.id, kb.name, doc_id, error)
-        doc.status = "failed"
-        doc.error_message = error
-        session.add(doc)
-        session.commit()
-        return DocumentIngestResult(
-            ok=False,
-            document_id=doc_id,
-            chunk_count=doc.chunk_count,
-            errors=[error],
-        )
-
-    # 4. 入库（用 KB 的 collection + 维度）。
+    # 3+4. 删旧 chunk + 入库。同一 collection 串行（守 zvec GC 释放的写锁），
+    #      删旧与写库在一个锁段内，避免并发任务互相踩写锁。
     errors: list[str] = []
     chunk_count = 0
-    try:
-        store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+    with _get_collection_ingest_lock(kb.collection_name):
+        # 删旧 chunk（幂等，支持 reindex）。
         try:
-            pipeline = IngestPipeline(store, embed_model, collection_name=kb.collection_name)
-            config = _kb_chunking_config(kb)
-            result = pipeline.ingest_text(
-                content, source=source, doc_id=f"doc_{doc_id}", config=config
+            _delete_chunks_for_doc(kb, doc_id)
+        except Exception as exc:
+            error = f"删除旧索引失败: {exc}"
+            logger.error(
+                "入库失败·删旧 chunk 异常: kb=%s(%s) doc=%s %s", kb.id, kb.name, doc_id, error
             )
-            errors = result.errors
-            chunk_count = result.chunk_count
-        finally:
-            store.close()
-    except Exception as exc:
-        logger.exception("入库异常: kb=%s(%s) doc=%s", kb.id, kb.name, doc_id)
-        errors.append(f"入库异常: {exc}")
+            doc.status = "failed"
+            doc.error_message = error
+            session.add(doc)
+            session.commit()
+            return DocumentIngestResult(
+                ok=False,
+                document_id=doc_id,
+                chunk_count=doc.chunk_count,
+                errors=[error],
+            )
+
+        # 入库（用 KB 的 collection + 维度）。
+        try:
+            store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+            try:
+                pipeline = IngestPipeline(store, embed_model, collection_name=kb.collection_name)
+                config = _kb_chunking_config(kb)
+                result = pipeline.ingest_text(
+                    content,
+                    source=source,
+                    doc_id=f"doc_{doc_id}",
+                    config=config,
+                    on_progress=on_progress,
+                )
+                errors = result.errors
+                chunk_count = result.chunk_count
+            finally:
+                store.close()
+        except Exception as exc:
+            logger.exception("入库异常: kb=%s(%s) doc=%s", kb.id, kb.name, doc_id)
+            errors.append(f"入库异常: {exc}")
 
     # 5. 更新 Document + KB 统计。
     old_chunk_count = doc.chunk_count
@@ -1461,6 +1518,7 @@ def _ingest_document(
     session.refresh(doc)
 
     if errors:
+        ingest_tracker.fail(doc_id, "; ".join(errors))
         logger.error(
             "入库失败: kb=%s(%s) doc=%s 切块=%d 错误=%s",
             kb.id,
@@ -1470,6 +1528,7 @@ def _ingest_document(
             "; ".join(errors),
         )
     else:
+        ingest_tracker.finish(doc_id)
         logger.info(
             "入库完成: kb=%s(%s) doc=%s 切块=%d",
             kb.id,
@@ -1484,6 +1543,184 @@ def _ingest_document(
         chunk_count=chunk_count,
         errors=errors,
     )
+
+
+def _run_background_ingest(kb_id: int, doc_id: int, title: str, source: str, content: str) -> None:
+    """后台入库工作线程：用独立 session 跑完整入库，全程写终态，绝不卡在 processing。
+
+    与 ``_ingest_document`` 同构（模型解析→删旧→入库→更新 DB+KB 统计），差异：
+    - 开自己的 ``session_scope()``（线程内独立会话，不碰请求 Session）。
+    - 进度通过 ``ingest_tracker`` 写出，供 /progress 端点轮询。
+    - 任何异常都兜底写 status=failed + error_message，保证不会留下"processing 僵尸"。
+    """
+    from bycall.config import get_settings
+    from bycall.llm.resolver import resolve_embed_model
+    from bycall.rag.ingest import IngestPipeline
+    from bycall.vector_store.factory import create_vector_store
+
+    # tracker 已在提交时（请求线程）start 过，这里不再重复；回调/失败会更新它。
+    try:
+        with session_scope() as session:
+            kb = session.get(KnowledgeBase, kb_id)
+            doc = session.get(Document, doc_id)
+            if kb is None or doc is None:
+                # KB 或文档在提交后被删——无法写终态，只更新 tracker 后退出。
+                logger.warning("后台入库取消: kb/doc 已不存在 kb=%s doc=%s", kb_id, doc_id)
+                ingest_tracker.fail(doc_id, "知识库或文档已被删除")
+                return
+
+            logger.info(
+                "后台入库开始: kb=%s(%s) doc=%s title=%r source=%r 字符数=%d",
+                kb.id,
+                kb.name,
+                doc_id,
+                title,
+                source,
+                len(content),
+            )
+
+            # 1. 用 KB 绑定的 embedding 模型。
+            embed_entity = session.get(Model, kb.embedding_model_id)
+            if embed_entity is None:
+                error = f"KB 绑定的 embedding 模型不存在 (id={kb.embedding_model_id})"
+                logger.error(
+                    "后台入库失败·模型缺失: kb=%s(%s) doc=%s %s",
+                    kb.id,
+                    kb.name,
+                    doc_id,
+                    error,
+                )
+                _persist_ingest_failure(session, doc, error, doc_id)
+                return
+
+            embed_model = resolve_embed_model(session, embed_entity)
+
+            # 2+3. 删旧 + 入库（同一 collection 串行，守 zvec 写锁）。
+            errors: list[str] = []
+            chunk_count = 0
+            with _get_collection_ingest_lock(kb.collection_name):
+                try:
+                    _delete_chunks_for_doc(kb, doc_id)
+                except Exception as exc:
+                    error = f"删除旧索引失败: {exc}"
+                    logger.error(
+                        "后台入库失败·删旧 chunk 异常: kb=%s(%s) doc=%s %s",
+                        kb.id,
+                        kb.name,
+                        doc_id,
+                        error,
+                    )
+                    _persist_ingest_failure(session, doc, error, doc_id)
+                    return
+
+                try:
+                    store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+                    try:
+                        pipeline = IngestPipeline(
+                            store, embed_model, collection_name=kb.collection_name
+                        )
+                        config = _kb_chunking_config(kb)
+                        result = pipeline.ingest_text(
+                            content,
+                            source=source,
+                            doc_id=f"doc_{doc_id}",
+                            config=config,
+                            on_progress=lambda **kw: ingest_tracker.update(doc_id, **kw),
+                        )
+                        errors = result.errors
+                        chunk_count = result.chunk_count
+                    finally:
+                        store.close()
+                except Exception as exc:
+                    logger.exception("后台入库异常: kb=%s(%s) doc=%s", kb.id, kb.name, doc_id)
+                    errors.append(f"入库异常: {exc}")
+
+            # 4. 更新 Document + KB 统计（成功/软错误都落终态）。
+            success = not errors
+            old_chunk_count = doc.chunk_count
+            doc.status = "completed" if success else "failed"
+            doc.chunk_count = chunk_count
+            doc.char_count = len(content)
+            doc.embedding_model_id = kb.embedding_model_id
+            doc.error_message = "; ".join(errors) if errors else ""
+            session.add(doc)
+            kb.chunk_count += chunk_count - old_chunk_count
+            kb.total_chars += len(content)
+            session.add(kb)
+            session.commit()
+
+            if success:
+                ingest_tracker.finish(doc_id)
+                logger.info(
+                    "后台入库完成: kb=%s(%s) doc=%s 切块=%d",
+                    kb.id,
+                    kb.name,
+                    doc_id,
+                    chunk_count,
+                )
+            else:
+                ingest_tracker.fail(doc_id, "; ".join(errors))
+                logger.error(
+                    "后台入库失败: kb=%s(%s) doc=%s 切块=%d 错误=%s",
+                    kb.id,
+                    kb.name,
+                    doc_id,
+                    chunk_count,
+                    "; ".join(errors),
+                )
+    except Exception:
+        # 终极兜底：上面任何未预期异常也要写 failed，绝不静默留 processing。
+        logger.exception("后台入库未捕获异常: kb=%s doc=%s", kb_id, doc_id)
+        try:
+            with session_scope() as session:
+                doc = session.get(Document, doc_id)
+                if doc is not None:
+                    doc.status = "failed"
+                    doc.error_message = "入库未捕获异常，请联系管理员或重试"
+                    session.add(doc)
+                    session.commit()
+        except Exception:
+            logger.exception("写入失败终态时再次异常: doc=%s", doc_id)
+        ingest_tracker.fail(doc_id, "入库未捕获异常")
+
+
+def _persist_ingest_failure(session: Session, doc: Document, error: str, doc_id: int) -> None:
+    """后台入库中途失败：写 status=failed + error_message 并提交，同步更新 tracker。"""
+    doc.status = "failed"
+    doc.error_message = error
+    session.add(doc)
+    session.commit()
+    ingest_tracker.fail(doc_id, error)
+
+
+def _submit_ingest(kb_id: int, doc_id: int, title: str, source: str, content: str) -> None:
+    """把一次入库任务提交到后台线程池（立即返回，不阻塞 HTTP 请求）。
+
+    Future 登记到 ``_ingest_futures``，供测试用 ``_drain_ingest`` 排空，避免跨用例
+    残留线程写旧 engine/污染 tracker。运行时不读这个列表。
+    """
+    # 先在请求线程登记进度（start），让 /progress 在响应返回那一刻就有记录——
+    # 否则工作线程调度间隙会误触发"进度不可用（服务可能重启）"提示。
+    ingest_tracker.start(doc_id, title)
+    future = _get_ingest_executor().submit(
+        _run_background_ingest, kb_id, doc_id, title, source, content
+    )
+    _ingest_futures.append(future)
+
+
+def _drain_ingest(timeout: float = 30.0) -> None:
+    """等待所有已提交的后台入库任务完成（主要用于测试隔离）。
+
+    运行时一般不调用——入库是 fire-and-forget；测试用它确保用例结束前无残留线程。
+    """
+    from concurrent.futures import wait
+
+    futures = list(_ingest_futures)
+    _ingest_futures.clear()
+    if futures:
+        _done, not_done = wait(futures, timeout=timeout)
+        if not_done:
+            logger.warning("排空后台入库任务超时: %d 个未完成", len(not_done))
 
 
 # ============ 知识库 CRUD ============
@@ -1714,7 +1951,7 @@ def list_documents(
 
 @router.post(
     "/knowledge-bases/{kb_id}/documents",
-    response_model=DocumentIngestResult,
+    response_model=IngestAccepted,
     status_code=status.HTTP_201_CREATED,
 )
 def create_document(
@@ -1722,8 +1959,12 @@ def create_document(
     payload: DocumentCreate,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> DocumentIngestResult:
-    """在指定 KB 内创建文档并入库。"""
+) -> IngestAccepted:
+    """在指定 KB 内创建文档并提交异步入库。
+
+    校验（空正文/空 source）同步返回 4xx；通过后建文档、置 processing、提交后台入库，
+    立即返回 IngestAccepted。前端轮询 /progress 看实时阶段与终态。
+    """
     kb = _get_kb_or_404(session, kb_id)
 
     content = payload.content.strip()
@@ -1744,7 +1985,7 @@ def create_document(
         content=content,
         file_name=payload.file_name,
         file_type=file_type,
-        status="pending",
+        status="processing",
     )
     session.add(doc)
     kb.document_count += 1
@@ -1752,7 +1993,8 @@ def create_document(
     session.commit()
     session.refresh(doc)
 
-    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+    _submit_ingest(kb_id, doc.id, doc.title, doc.source, content)
+    return IngestAccepted(document_id=doc.id, status="processing")
 
 
 @router.get("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=DocumentOut)
@@ -1799,7 +2041,15 @@ def update_document(
     session.refresh(doc)
 
     if need_reingest:
-        result = _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+        result = _ingest_document(
+            session,
+            kb,
+            doc.id,
+            doc.title,
+            doc.source,
+            doc.content,
+            on_progress=lambda **kw: ingest_tracker.update(doc.id, **kw),
+        )
         if not result.ok:
             # 旧 chunk 若仍存在，其 ACL 仍是 old_source；DB 必须回滚到相同授权状态。
             doc.source = old_source
@@ -1853,20 +2103,111 @@ def delete_document(
 
 @router.post(
     "/knowledge-bases/{kb_id}/documents/{doc_id}/reindex",
-    response_model=DocumentIngestResult,
+    response_model=IngestAccepted,
 )
 def reindex_document(
     kb_id: int,
     doc_id: int,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> DocumentIngestResult:
-    """重新入库。"""
-    kb = _get_kb_or_404(session, kb_id)
+) -> IngestAccepted:
+    """重新入库（异步）：置 processing 后提交后台任务，立即返回 IngestAccepted。"""
+    _get_kb_or_404(session, kb_id)
     doc = _get_document_or_404(session, doc_id)
     if doc.knowledge_base_id != kb_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
-    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+
+    doc.status = "processing"
+    doc.error_message = ""
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    _submit_ingest(kb_id, doc.id, doc.title, doc.source, doc.content)
+    return IngestAccepted(document_id=doc.id, status="processing")
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/documents/{doc_id}/progress",
+    response_model=IngestProgressOut,
+)
+def get_document_progress(
+    kb_id: int,
+    doc_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> IngestProgressOut:
+    """入库进度：DB 持久态（status/chunk_count/error_message/title）+
+    内存 tracker 实时阶段（stage/percent/total/processed）合并。
+
+    - tracker 有记录 → 叠加 stage/percent/total_chunks/processed_chunks。
+    - 服务重启导致 processing 文档无 tracker 记录 → stage 置空并给"进度不可用，可重建"
+      提示（不假装有进度），前端可据此引导 reindex。
+    - DB 已 completed/failed 但 tracker 记录已清 → 从 DB 终态反推 stage/percent。
+    """
+    doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"文档不属于该知识库: {doc_id}")
+
+    live = ingest_tracker.get(doc_id)
+    error_message = doc.error_message
+    if live is not None:
+        stage = live.stage
+        percent = live.percent
+        total_chunks = live.total_chunks
+        processed_chunks = live.processed_chunks
+    else:
+        # tracker 无记录：从 DB 终态反推阶段（重启/清理后的兜底）。
+        total_chunks = 0
+        processed_chunks = 0
+        if doc.status == "completed":
+            stage, percent = "done", 100
+        elif doc.status == "failed":
+            stage, percent = "failed", 0
+        else:
+            # processing 但无进度（服务重启中途）→ 明确提示重建。
+            stage, percent = "", 0
+            if not error_message:
+                error_message = "入库进度不可用（服务可能重启），可尝试重建"
+
+    return IngestProgressOut(
+        document_id=doc_id,
+        title=doc.title,
+        status=doc.status,
+        stage=stage,
+        percent=percent,
+        total_chunks=total_chunks,
+        processed_chunks=processed_chunks,
+        chunk_count=doc.chunk_count,
+        error_message=error_message,
+    )
+
+
+@router.get("/ingest/active", response_model=list[IngestProgressOut])
+def list_active_ingest(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[IngestProgressOut]:
+    """列出所有"进行中"的入库任务（tracker.active() 叠加 DB 持久态）。"""
+    out: list[IngestProgressOut] = []
+    for live in ingest_tracker.active():
+        doc = session.get(Document, live.document_id)
+        if doc is None:
+            continue
+        out.append(
+            IngestProgressOut(
+                document_id=live.document_id,
+                title=doc.title,
+                status=doc.status,
+                stage=live.stage,
+                percent=live.percent,
+                total_chunks=live.total_chunks,
+                processed_chunks=live.processed_chunks,
+                chunk_count=doc.chunk_count,
+                error_message=doc.error_message,
+            )
+        )
+    return out
 
 
 @router.get("/knowledge/sources", response_model=list[str])
@@ -1881,7 +2222,7 @@ def list_knowledge_sources(
 
 @router.post(
     "/knowledge-bases/{kb_id}/upload",
-    response_model=DocumentIngestResult,
+    response_model=IngestAccepted,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
@@ -1891,13 +2232,12 @@ async def upload_document(
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> DocumentIngestResult:
-    """文件上传入库（到指定 KB）——同步解析 + 入库，与创建文档一致。
+) -> IngestAccepted:
+    """文件上传入库（到指定 KB）——同步解析 + 异步入库。
 
     支持格式：PDF / Word (.docx/.doc) / Markdown / HTML / TXT / CSV / JSON / 代码等。
-    入库同步执行（解析→切块→embedding→写库），结果直接返回 DocumentIngestResult。
-    之前用 BackgroundTasks 异步入库存在 NameError（kb 未定义）且无终态保证，现已改为同步，
-    失败时 error_message 一定落库、日志一定留痕。
+    文件读取与解析**同步**执行（解析错误立即返回 4xx，文件内容就在手上），
+    解析出正文后建文档、置 processing、提交后台入库，立即返回 IngestAccepted。
     """
     kb = _get_kb_or_404(session, kb_id)
 
@@ -1953,7 +2293,7 @@ async def upload_document(
         content=content,
         file_name=file.filename,
         file_type=ext,
-        status="pending",
+        status="processing",
     )
     session.add(doc)
     kb.document_count += 1
@@ -1961,8 +2301,9 @@ async def upload_document(
     session.commit()
     session.refresh(doc)
 
-    # 同步入库（与创建文档一致）：解析→切块→embedding→写库，结果直接返回。
-    return _ingest_document(session, kb, doc.id, doc.title, doc.source, doc.content)
+    # 仅入库异步：解析已同步完成（content 在手），后台跑切块→向量化→写库。
+    _submit_ingest(kb_id, doc.id, doc.title, doc.source, content)
+    return IngestAccepted(document_id=doc.id, status="processing")
 
 
 @router.post(
@@ -1999,10 +2340,12 @@ def preview_chunks(
 
     items = [
         ChunkPreviewItem(
+            id=p.id,
             chunk_index=p.chunk_index,
             chunk_type=p.chunk_type,
             char_count=len(p.text),
             text=p.text,
+            parent_id=p.parent_id,
         )
         for p in pre_chunks
     ]
@@ -2063,7 +2406,15 @@ def list_kb_chunks(
             vector=dummy_vec,
             filters=filters if filters else None,
             topk=limit,
-            output_fields=["chunk_type", "chunk_index", "doc_id", "source", "title", "parent_id"],
+            output_fields=[
+                "text",
+                "chunk_type",
+                "chunk_index",
+                "doc_id",
+                "source",
+                "title",
+                "parent_id",
+            ],
         )
         results = store.search(req)
     finally:
@@ -2127,61 +2478,106 @@ def search_kb(
     return KBSearchResult(kb_id=kb_id, question=payload.question, results=items, total=len(items))
 
 
-# ============ Batch 批量操作 ============
+@router.get(
+    "/knowledge-bases/{kb_id}/documents/{doc_id}/chunks",
+    response_model=KBChunkListResult,
+)
+def list_document_chunks(
+    kb_id: int,
+    doc_id: int,
+    limit: int = Query(default=50, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> KBChunkListResult:
+    """列出指定文档的所有切块。"""
+    _get_document_or_404(session, doc_id)
+    from bycall.config import get_settings
+    from bycall.vector_store.factory import create_vector_store
+    from bycall.vector_store.models import FilterCondition, SearchRequest
+
+    kb = _get_kb_or_404(session, kb_id)
+    store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
+    try:
+        store.open(kb.collection_name)
+        dummy_vec = [0.0] * kb.dimension
+        doc_id_str = f"doc_{doc_id}"
+        req = SearchRequest(
+            vector=dummy_vec,
+            filters=[FilterCondition(field="doc_id", op="=", value=doc_id_str)],
+            topk=limit,
+            output_fields=[
+                "text",
+                "chunk_type",
+                "chunk_index",
+                "doc_id",
+                "source",
+                "title",
+                "parent_id",
+            ],
+        )
+        results = store.search(req)
+    finally:
+        store.close()
+
+    items = [
+        KBChunkOut(
+            chunk_id=r.id,
+            chunk_type=str(r.fields.get("chunk_type", "child")),
+            chunk_index=int(r.fields.get("chunk_index", 0)),
+            doc_id=str(r.fields.get("doc_id", "")),
+            source=str(r.fields.get("source", "")),
+            title=str(r.fields.get("title", "")),
+            text=r.text[:500] if r.text else "",
+            char_count=len(r.text) if r.text else 0,
+            parent_id=str(r.fields.get("parent_id", "")) or None,
+        )
+        for r in results
+    ]
+    return KBChunkListResult(kb_id=kb_id, doc_id=str(doc_id), total=len(items), items=items)
 
 
-@router.post("/knowledge-bases/{kb_id}/documents/batch-reindex", response_model=BatchReindexResult)
+@router.post(
+    "/knowledge-bases/{kb_id}/documents/batch-reindex",
+    response_model=list[IngestAccepted],
+)
 def batch_reindex_documents(
     kb_id: int,
     payload: BatchReindexRequest,
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> BatchReindexResult:
-    """批量重新入库——对指定文档列表依次执行 reindex。上限 100 个文档/次。"""
-    kb = _get_kb_or_404(session, kb_id)
+) -> list[IngestAccepted]:
+    """批量重新入库（异步）：每个文档置 processing 后各自提交后台入库，返回受理列表。
 
-    details: list[DocumentIngestResult] = []
-    succeeded = 0
-    failed = 0
+    设计选择：批量场景本质是"提交一堆异步入库"，旧的 BatchReindexResult
+    （succeeded/failed/details）是同步语义——任务还没跑完时给"成功/失败"计数会误导。
+    改为返回 ``list[IngestAccepted]``：每个受理的文档一个条目，前端按 document_id
+    各自轮询 /progress。文档不存在/不属于本 KB 同步校验直接 404（fail-fast，避免
+    静默丢弃），与 create/upload 的同步校验语义一致。
+    """
+    _get_kb_or_404(session, kb_id)
 
+    # 先同步校验全部 doc_id 归属，任一无效直接 404（不静默丢弃）。
+    accepted: list[IngestAccepted] = []
+    docs: list[Document] = []
     for doc_id in payload.document_ids:
         doc = session.get(Document, doc_id)
         if doc is None or doc.knowledge_base_id != kb_id:
-            details.append(
-                DocumentIngestResult(
-                    ok=False,
-                    document_id=doc_id,
-                    chunk_count=0,
-                    errors=[f"文档不存在或不属于本 KB: {doc_id}"],
-                )
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail=f"文档不存在或不属于该知识库: {doc_id}",
             )
-            failed += 1
-            continue
+        docs.append(doc)
 
-        try:
-            result = _ingest_document(session, kb, doc_id, doc.title, doc.source, doc.content)
-            details.append(result)
-            if result.ok:
-                succeeded += 1
-            else:
-                failed += 1
-        except Exception as exc:
-            details.append(
-                DocumentIngestResult(
-                    ok=False,
-                    document_id=doc_id,
-                    chunk_count=0,
-                    errors=[f"入库异常: {exc}"],
-                )
-            )
-            failed += 1
-
-    return BatchReindexResult(
-        total=len(payload.document_ids),
-        succeeded=succeeded,
-        failed=failed,
-        details=details,
-    )
+    # 全部合法 → 置 processing、提交后台入库。
+    for doc in docs:
+        doc.status = "processing"
+        doc.error_message = ""
+        session.add(doc)
+    session.commit()
+    for doc in docs:
+        _submit_ingest(kb_id, doc.id, doc.title, doc.source, doc.content)
+        accepted.append(IngestAccepted(document_id=doc.id, status="processing"))
+    return accepted
 
 
 # ============ 会话管理（Conversation + Message，参考 Hermes SessionStore）============
@@ -2376,6 +2772,19 @@ def list_tools(
         ToolOut(name=t.name, description=t.description, parameters=t.parameters, source=t.source)
         for t in get_all_tools()
     ]
+
+
+# ============ 解析器注册表（文档解析器列表）============
+
+
+@router.get("/parsers", response_model=list[dict])
+def list_parsers_endpoint(
+    _admin: None = Depends(_require_admin),
+) -> list[dict]:
+    """列出已注册的文档解析器及其支持的文件类型。"""
+    from bycall.rag.parsers.registry import list_parsers
+
+    return list_parsers()
 
 
 # ============ MCP 工具服务器（M4 工具网关）============
@@ -2598,3 +3007,175 @@ def test_mcp_server(
         )
     finally:
         client.close()
+
+# ============ 审批队列（M4 Slice C HITL 完整闭环）============
+
+
+def _get_operator_name(request: Request) -> str:
+    """从请求 cookie 提取操作者用户名（审批人记录用）。"""
+    from bycall.governance.auth import load_session_cookie
+
+    token = request.cookies.get("bycall_session")
+    if token:
+        data = load_session_cookie(token)
+        if data is not None:
+            return data.user_name
+    return "unknown"
+
+
+def _get_approval_or_404(session: Session, approval_id: int):
+    """按 id 取审批请求，不存在 → 404。"""
+    from bycall.governance.models import ApprovalRequest
+
+    req = session.get(ApprovalRequest, approval_id)
+    if req is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"审批请求不存在: {approval_id}",
+        )
+    return req
+
+
+def _approval_to_out(req) -> ApprovalOut:
+    """ApprovalRequest ORM → ApprovalOut。tool_args_json 解析为 dict。"""
+    try:
+        args = json.loads(req.tool_args_json) if req.tool_args_json else {}
+    except (ValueError, TypeError):
+        args = {}
+    return ApprovalOut(
+        id=req.id,
+        user_id=req.user_id,
+        user_name=req.user_name,
+        conversation_id=req.conversation_id,
+        channel=req.channel,
+        tool_name=req.tool_name,
+        tool_args=args,
+        status=req.status,
+        reviewed_by=req.reviewed_by,
+        reviewed_at=req.reviewed_at,
+        review_note=req.review_note,
+        result_text=req.result_text,
+        executed_at=req.executed_at,
+        created_at=req.created_at,
+        updated_at=req.updated_at,
+    )
+
+
+@router.get("/approvals", response_model=list[ApprovalOut])
+def list_approvals(
+    status_filter: str | None = Query(
+        default=None, alias="status", description="按状态过滤（pending/executed/rejected/failed）"
+    ),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[ApprovalOut]:
+    """列出审批请求（默认全部，按创建时间倒序）。可按状态过滤。"""
+    from bycall.governance.models import ApprovalRequest
+
+    if status_filter:
+        rows = session.exec(ApprovalRequest.select_by_status(status_filter)).all()
+    else:
+        rows = session.exec(ApprovalRequest.select_all()).all()
+    return [_approval_to_out(r) for r in rows[:limit]]
+
+
+@router.get("/approvals/{approval_id}", response_model=ApprovalOut)
+def get_approval(
+    approval_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalOut:
+    """审批请求详情。"""
+    return _approval_to_out(_get_approval_or_404(session, approval_id))
+
+
+@router.post("/approvals/{approval_id}/approve", response_model=ApprovalOut)
+def approve_approval(
+    approval_id: int,
+    payload: ApprovalReview,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalOut:
+    """审批通过：执行工具 + 记录结果 + 追加到会话历史 + 审计。
+
+    仅 pending 状态可审批；已处理的 → 409。
+    执行在独立 session 中完成（工具可能跨线程，如 MCP），结果回写本 session。
+    """
+    from bycall.governance.models import ApprovalRequest  # noqa: F811
+
+    req = _get_approval_or_404(session, approval_id)
+    if req.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"审批请求已处理（当前状态：{req.status}），不可重复审批",
+        )
+
+    # 执行工具（在独立 session + 独立 capability 上下文中）。
+    from bycall.tools.approval import execute_approved_tool
+
+    ok, result_text = execute_approved_tool(req)
+
+    operator = _get_operator_name(request)
+    now = datetime.now(UTC)
+    req.status = "executed" if ok else "failed"
+    req.result_text = result_text
+    req.reviewed_by = operator
+    req.reviewed_at = now
+    req.executed_at = now if ok else None
+    req.review_note = payload.note
+    session.add(req)
+
+    # 追加执行结果到会话历史（用户下次交互可见）。
+    if req.conversation_id is not None:
+        from bycall.agent.session_store import save_message
+
+        if ok:
+            msg = f"✅ 审批 #{req.id} 已通过并执行：{req.tool_name} → {result_text[:500]}"
+        else:
+            msg = f"❌ 审批 #{req.id} 已通过但执行失败：{result_text[:500]}"
+        save_message(session, req.conversation_id, "assistant", msg)
+
+    _audit_admin(session, request, "approve_tool", f"ApprovalRequest(#{req.id}, {req.tool_name})")
+    session.commit()
+    session.refresh(req)
+    return _approval_to_out(req)
+
+
+@router.post("/approvals/{approval_id}/reject", response_model=ApprovalOut)
+def reject_approval(
+    approval_id: int,
+    payload: ApprovalReview,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalOut:
+    """拒绝审批：标记 rejected + 通知会话 + 审计。仅 pending 可拒绝。"""
+    req = _get_approval_or_404(session, approval_id)
+    if req.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"审批请求已处理（当前状态：{req.status}），不可重复操作",
+        )
+
+    operator = _get_operator_name(request)
+    req.status = "rejected"
+    req.reviewed_by = operator
+    req.reviewed_at = datetime.now(UTC)
+    req.review_note = payload.note
+    session.add(req)
+
+    # 通知会话：操作被拒绝。
+    if req.conversation_id is not None:
+        from bycall.agent.session_store import save_message
+
+        msg = f"🚫 审批 #{req.id}（{req.tool_name}）已被拒绝。"
+        if payload.note:
+            msg += f" 备注：{payload.note}"
+        save_message(session, req.conversation_id, "assistant", msg)
+
+    _audit_admin(session, request, "reject_tool", f"ApprovalRequest(#{req.id}, {req.tool_name})")
+    session.commit()
+    session.refresh(req)
+    return _approval_to_out(req)

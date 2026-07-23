@@ -437,6 +437,36 @@ class DocumentIngestResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class IngestAccepted(BaseModel):
+    """入库任务已受理（异步）：文档已建/已定位，入库在后台进行。
+
+    前端拿到后轮询 ``GET .../documents/{id}/progress`` 直到 status 终态。
+    """
+
+    document_id: int
+    status: str = "processing"
+
+
+class IngestProgressOut(BaseModel):
+    """入库进度响应：DB 持久态（status/chunk_count/error_message/title）+
+    内存态实时阶段（stage/percent/total_chunks/processed_chunks）合并。
+
+    - ``status``：DB 的终态/持久态 pending|processing|completed|failed（权威）。
+    - ``stage``：内存 tracker 的实时阶段 "" | chunking | embedding | indexing | done | failed。
+    - ``chunk_count``：DB 已落库的子块数（入库完成后才有值）。
+    """
+
+    document_id: int
+    title: str
+    status: str
+    stage: str
+    percent: int
+    total_chunks: int
+    processed_chunks: int
+    chunk_count: int
+    error_message: str
+
+
 # ============ Chunk 预览（参考 WeKnora chunker/preview，不落库不入库）============
 
 
@@ -451,18 +481,23 @@ class ChunkPreviewRequest(BaseModel):
     title: str = Field(default="", description="文档标题（影响 heading 上下文，可选）")
     chunk_size: int | None = Field(default=None, description="单块字符数（默认 500）")
     overlap: int | None = Field(default=None, description="重叠字符数（默认 50）")
-    enable_parent_child: bool = Field(
-        default=False, description="是否启用父子块切分（child=384 / parent=4096）"
+    strategy: str | None = Field(
+        default=None, description='切块策略覆盖: "auto" | "heading" | "recursive"'
+    )
+    enable_parent_child: bool | None = Field(
+        default=None, description="是否启用父子块切分（child=384 / parent=4096）"
     )
 
 
 class ChunkPreviewItem(BaseModel):
     """单条切块预览。"""
 
+    id: str = Field(default="", description="切块 id（父子模式下作为层级锚点，前端据此建立 parent→child 树）")
     chunk_index: int
     chunk_type: str = Field(default="child", description="child | parent")
     char_count: int
     text: str
+    parent_id: str | None = Field(default=None, description="父块 id：child 指向其 parent，parent 自身为 None")
 
 
 class ChunkPreviewResult(BaseModel):
@@ -557,15 +592,6 @@ class BatchReindexRequest(BaseModel):
     document_ids: list[int] = Field(
         ..., min_length=1, max_length=100, description="要重新入库的文档 ID 列表"
     )
-
-
-class BatchReindexResult(BaseModel):
-    """批量重新入库结果。"""
-
-    total: int
-    succeeded: int
-    failed: int
-    details: list[DocumentIngestResult] = Field(default_factory=list)
 
 
 # ============ Conversation + Message（会话管理）============
@@ -713,3 +739,32 @@ class MCPTestResult(BaseModel):
     message: str = ""
     tool_count: int = 0
     tools: list[str] = Field(default_factory=list, description="发现的工具名（空间化后）")
+
+
+# ============ ApprovalRequest（M4 Slice C HITL 审批队列）============
+
+
+class ApprovalOut(BaseModel):
+    """审批请求响应。result_text 在审批通过执行后才有值。"""
+
+    id: int
+    user_id: int
+    user_name: str
+    conversation_id: int | None = None
+    channel: str = ""
+    tool_name: str
+    tool_args: dict = Field(default_factory=dict, description="LLM 生成的调用参数")
+    status: str  # pending / executed / rejected / failed
+    reviewed_by: str = ""
+    reviewed_at: datetime | None = None
+    review_note: str = ""
+    result_text: str = ""
+    executed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApprovalReview(BaseModel):
+    """审批操作请求体（approve / reject 共用）。"""
+
+    note: str = Field(default="", description="审批备注（可选）")

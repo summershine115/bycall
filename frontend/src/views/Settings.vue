@@ -1,50 +1,69 @@
 <template>
-  <div v-loading="loading">
-    <el-alert
-      title="IM 渠道配置"
-      type="info"
-      :closable="false"
-      style="margin-bottom: 16px"
-      description="企业微信智能机器人凭证在此管理。保存后可热重连（不重启服务）。LLM/向量模型请在「模型管理」页配置。"
-    />
-
-    <el-card>
-      <template #header>
-        <div class="card-title"><el-icon><ChatDotRound /></el-icon> 企业微信</div>
-      </template>
-      <el-form label-width="140px">
-        <el-form-item label="启用 IM 渠道">
-          <el-switch v-model="imEnable" />
-          <div class="hint">开启后启动企微长连接（需重启服务生效首次）；凭证从下方读取</div>
-        </el-form-item>
-        <el-form-item label="企微 bot_id">
-          <el-input v-model="form['im.wecom_bot_id']" placeholder="企业微信后台「智能机器人」获取" />
-        </el-form-item>
-        <el-form-item label="企微 bot_secret">
-          <el-input
-            v-model="form['im.wecom_bot_secret']"
-            :placeholder="masks['im.wecom_bot_secret'] || '企微后台获取的 secret'"
-            show-password
-          />
-          <div class="hint" v-if="masks['im.wecom_bot_secret']">
-            当前: {{ masks['im.wecom_bot_secret'] }} —— 不改则留空保存
-          </div>
-        </el-form-item>
-      </el-form>
-    </el-card>
-
-    <div class="actions">
+  <div class="bc-page">
+    <PageHeader
+      title="运行时设置"
+      description="IM 渠道（企业微信）凭证与连接管理；保存后可热重连，无需重启服务。"
+    >
+      <el-button :loading="reloading" :icon="Refresh" @click="onReconnect">立即重连</el-button>
       <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
-      <el-button @click="load">重置</el-button>
-      <el-button type="success" :loading="reloading" @click="onReconnect">立即重连</el-button>
-    </div>
+    </PageHeader>
+
+    <ContentLoader v-if="loading" :rows="4" />
+
+    <template v-else>
+      <div class="settings-grid">
+        <!-- 连接状态卡 -->
+        <div class="bc-panel status-card">
+          <div class="status-card__head">
+            <h3>连接状态</h3>
+            <StatusBadge :type="imEnable ? 'ok' : 'idle'" :text="imEnable ? '已启用' : '未启用'" />
+          </div>
+          <p class="bc-muted bc-text-sm status-card__desc">
+            企微智能机器人长连接状态。LLM / 向量 / 重排模型请在「模型管理」页配置。
+          </p>
+        </div>
+
+        <!-- 凭证表单卡 -->
+        <div class="bc-panel form-card">
+          <h3 class="form-card__title">企业微信凭证</h3>
+          <el-form label-position="top">
+            <el-form-item label="启用 IM 渠道">
+              <el-switch v-model="imEnable" active-text="启用" inactive-text="停用" />
+              <div class="bc-hint">开启后建立企微长连接；凭证从下方字段读取</div>
+            </el-form-item>
+            <el-form-item label="企微 bot_id">
+              <el-input v-model="form['im.wecom_bot_id']" placeholder="企业微信后台「智能机器人」获取" />
+            </el-form-item>
+            <el-form-item label="企微 bot_secret">
+              <el-input
+                v-model="form['im.wecom_bot_secret']"
+                :placeholder="masks['im.wecom_bot_secret'] || '企微后台获取的 secret'"
+                show-password
+              />
+              <div v-if="masks['im.wecom_bot_secret']" class="bc-hint">
+                当前已设置：{{ masks['im.wecom_bot_secret'] }} —— 不修改则留空保存
+              </div>
+            </el-form-item>
+          </el-form>
+        </div>
+      </div>
+
+      <div class="settings-actions">
+        <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
+        <el-button @click="load">重置</el-button>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import PageHeader from '../components/PageHeader.vue'
+import ContentLoader from '../components/ContentLoader.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -82,11 +101,11 @@ async function onSave() {
     const imChanged = result.updated.some((k) => k.startsWith('im.'))
     if (imChanged) {
       try {
-        await ElMessageBox.confirm(
-          'IM 凭证已更新，是否立即重连？',
-          'IM 渠道',
-          { confirmButtonText: '立即重连', cancelButtonText: '稍后', type: 'success' },
-        )
+        await ElMessageBox.confirm('IM 凭证已更新，是否立即重连？', 'IM 渠道', {
+          confirmButtonText: '立即重连',
+          cancelButtonText: '稍后',
+          type: 'success',
+        })
         const r = await admin.reloadIm()
         ElMessage.success(r.message || 'IM 渠道已重连')
       } catch {
@@ -115,18 +134,38 @@ onMounted(load)
 </script>
 
 <style scoped>
-.card-title {
-  font-weight: 600;
+.settings-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: var(--bc-space-4);
+  align-items: start;
+}
+.status-card {
+  padding: var(--bc-space-5);
+}
+.status-card__head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
 }
-.hint {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
+.status-card__desc {
+  margin: var(--bc-space-3) 0 0;
+  line-height: var(--bc-leading-relaxed);
 }
-.actions {
-  margin-top: 16px;
+.form-card {
+  padding: var(--bc-space-5) var(--bc-space-6);
+}
+.form-card__title {
+  margin: 0 0 var(--bc-space-5);
+}
+.settings-actions {
+  margin-top: var(--bc-space-5);
+  display: flex;
+  gap: var(--bc-space-3);
+}
+@media (max-width: 1280px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

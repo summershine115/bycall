@@ -150,9 +150,24 @@ def run_agent(
     # 5. 执行工具回路（LangGraph）：model ↔ tool 循环，直到无 tool_calls。
     #    能力令牌（M4 Slice B）：通过 contextvars 注入当前 CapabilitySet，MCPClient.call_tool
     #    读取并编码为 meta 传给 MCP server 自行鉴权。
+    #    审批上下文（M4 Slice C）：携带 user/conversation/channel，供审批门创建
+    #    ApprovalRequest（破坏性工具调用人审拦截）。
     from bycall.mcp.context import reset_current_capability, set_current_capability
+    from bycall.tools.approval import (
+        ApprovalContext,
+        reset_approval_context,
+        set_approval_context,
+    )
 
     cap_token = set_current_capability(cap)
+    approval_token = set_approval_context(
+        ApprovalContext(
+            user_id=user.id,  # type: ignore[arg-type]
+            user_name=user.name,
+            conversation_id=conversation_id,
+            channel=channel,
+        )
+    )
     try:
         graph_result: GraphResult = run_tool_loop(
             chat_model=llm,
@@ -172,6 +187,7 @@ def run_agent(
         )
     finally:
         reset_current_capability(cap_token)
+        reset_approval_context(approval_token)
 
     # 6. 会话持久化：存 user + assistant 消息 + 压缩检查。
     if conversation_id is not None:
@@ -418,9 +434,23 @@ async def run_agent_stream(
 
     # 5. 流式执行工具回路。
     #    能力令牌：注入 CapabilitySet 供 MCPClient.call_tool 使用。
+    #    审批上下文（M4 Slice C）：供审批门创建 ApprovalRequest。
     from bycall.mcp.context import reset_current_capability, set_current_capability
+    from bycall.tools.approval import (
+        ApprovalContext,
+        reset_approval_context,
+        set_approval_context,
+    )
 
     cap_token = set_current_capability(cap)
+    approval_token = set_approval_context(
+        ApprovalContext(
+            user_id=user.id,  # type: ignore[arg-type]
+            user_name=user.name,
+            conversation_id=conversation_id,
+            channel=channel,
+        )
+    )
     full_answer = ""
     graph_result: GraphResult | None = None
     try:
@@ -455,6 +485,7 @@ async def run_agent_stream(
             return
     finally:
         reset_current_capability(cap_token)
+        reset_approval_context(approval_token)
 
     if graph_result is None:
         graph_result = GraphResult(answer=full_answer)

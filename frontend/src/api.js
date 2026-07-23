@@ -112,6 +112,9 @@ export const admin = {
     http.delete(`/api/admin/knowledge-bases/${kbId}/documents/${id}`),
   reindexDocument: (kbId, id) =>
     http.post(`/api/admin/knowledge-bases/${kbId}/documents/${id}/reindex`).then((r) => r.data),
+  getIngestProgress: (kbId, docId) =>
+    http.get(`/api/admin/knowledge-bases/${kbId}/documents/${docId}/progress`).then((r) => r.data),
+  listActiveIngests: () => http.get('/api/admin/ingest/active').then((r) => r.data),
   listSources: () => http.get('/api/admin/knowledge/sources').then((r) => r.data),
   uploadDocument: (kbId, file, source, title) => {
     const formData = new FormData()
@@ -127,6 +130,11 @@ export const admin = {
     http.post(`/api/admin/knowledge-bases/${kbId}/documents/preview-chunks`, data).then((r) => r.data),
   getDocumentContent: (kbId, id) =>
     http.get(`/api/admin/knowledge-bases/${kbId}/documents/${id}/content`).then((r) => r.data),
+  // 文档切块列表
+  listDocumentChunks: (kbId, docId) =>
+    http.get(`/api/admin/knowledge-bases/${kbId}/documents/${docId}/chunks`).then((r) => r.data),
+  // 解析器列表
+  listParsers: () => http.get('/api/admin/parsers').then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),

@@ -226,18 +226,28 @@ class MCPClient:
     # ---------- 工具发现 → ToolSpec ----------
 
     def _tool_to_spec(self, tool: Any) -> ToolSpec:
-        """把 MCP Tool 转成 ToolSpec（注册进共享 _REGISTRY，对治理管道透明）。"""
+        """把 MCP Tool 转成 ToolSpec（注册进共享 _REGISTRY，对治理管道透明）。
+
+        destructiveHint（M4 Slice C）：MCP Tool 的 ``annotations.destructiveHint=True``
+        表示该工具会修改/删除外部状态——标记 ``requires_approval=True``，审批门据此拦截。
+        """
         full_name = f"{_TOOL_PREFIX}{self._config.name}__{tool.name}"
         params = (
             dict(tool.inputSchema) if tool.inputSchema else {"type": "object", "properties": {}}
         )
         description = tool.description or f"MCP 工具 {tool.name}（来自 {self._config.name}）"
+        # MCP annotations.destructiveHint → requires_approval（HITL 审批门）。
+        destructive = bool(
+            tool.annotations is not None
+            and getattr(tool.annotations, "destructiveHint", False) is True
+        )
         return ToolSpec(
             name=full_name,
             description=description,
             parameters=params,
             func=self._make_sync_func(tool.name),
             source="mcp",
+            requires_approval=destructive,
         )
 
     def _make_sync_func(self, tool_name: str):

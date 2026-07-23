@@ -83,17 +83,42 @@ def _ensure_schema_compatibility() -> None:
 
     engine = get_engine()
     inspector = inspect(engine)
-    if "auditlog" not in inspector.get_table_names():
-        return
-    columns = {column["name"] for column in inspector.get_columns("auditlog")}
-    missing = {"before", "after", "tool_results"} - columns
-    if not missing:
-        return
-    with engine.begin() as connection:
-        for column in sorted(missing):
-            connection.execute(
-                text(f"ALTER TABLE auditlog ADD COLUMN \"{column}\" VARCHAR NOT NULL DEFAULT ''")
-            )
+
+    # auditlog: 补 before / after / tool_results 列
+    if "auditlog" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("auditlog")}
+        missing = {"before", "after", "tool_results"} - columns
+        if missing:
+            with engine.begin() as connection:
+                for column in sorted(missing):
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE auditlog ADD COLUMN \"{column}\" VARCHAR NOT NULL DEFAULT ''"
+                        )
+                    )
+
+    # knowledgebase: 补切块配置等新增列（chunk_size 等）
+    if "knowledgebase" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("knowledgebase")}
+        # (列名, DDL 类型+默认值)
+        kb_migrations = [
+            ("chunk_size", "INTEGER NOT NULL DEFAULT 500"),
+            ("chunk_overlap", "INTEGER NOT NULL DEFAULT 50"),
+            (
+                "separators",
+                'VARCHAR NOT NULL DEFAULT \'["\\n\\n","\\n","。","！","？","；",".","!","?",";","，",","," "]\'',
+            ),
+            ("strategy", "VARCHAR NOT NULL DEFAULT 'auto'"),
+            ("enable_parent_child", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("parent_chunk_size", "INTEGER NOT NULL DEFAULT 4096"),
+            ("child_chunk_size", "INTEGER NOT NULL DEFAULT 384"),
+            ("total_chars", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        missing = [(name, ddl) for name, ddl in kb_migrations if name not in columns]
+        if missing:
+            with engine.begin() as connection:
+                for name, ddl in missing:
+                    connection.execute(text(f'ALTER TABLE knowledgebase ADD COLUMN "{name}" {ddl}'))
 
 
 def _migrate_plaintext_secrets() -> None:

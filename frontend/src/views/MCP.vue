@@ -1,72 +1,83 @@
 <template>
-  <div v-loading="loading">
-    <el-alert
+  <div class="bc-page">
+    <PageHeader
       title="MCP 工具服务器"
-      type="info"
-      :closable="false"
-      style="margin-bottom: 16px"
-      description="注册外部 MCP server，其工具自动发现并纳入治理脊柱——LLM 只能通过角色白名单调用（mcp__{服务名}__{工具}）。agent 永不直连 MCP server。"
-    />
+      description="注册外部 MCP server，工具自动发现并纳入治理脊柱 —— LLM 只能经角色白名单调用，agent 永不直连。"
+    >
+      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
+      <el-button type="primary" :icon="Plus" @click="openCreate">注册 MCP Server</el-button>
+    </PageHeader>
 
-    <div class="toolbar">
-      <el-button type="primary" @click="openCreate">
-        <el-icon><Plus /></el-icon> 注册 MCP Server
-      </el-button>
-      <el-button @click="load" :loading="loading">刷新</el-button>
+    <ContentLoader v-if="loading" :rows="3" />
+
+    <div v-else class="bc-panel">
+      <EmptyState
+        v-if="!servers.length"
+        icon="Connection"
+        title="还没有 MCP Server"
+        description="注册后其工具以 mcp__服务名__工具 形式进入工具目录，可在角色白名单中放行。"
+      >
+        <el-button type="primary" :icon="Plus" @click="openCreate">注册第一个 MCP Server</el-button>
+      </EmptyState>
+
+      <el-table v-else :data="servers">
+        <el-table-column label="名称" min-width="160">
+          <template #default="{ row }">
+            <div class="srv-cell">
+              <span class="bc-strong mono">{{ row.name }}</span>
+              <span class="bc-muted bc-text-xs">{{ row.description || '—' }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="传输" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.transport === 'stdio' ? 'info' : 'primary'" size="small">
+              {{ row.transport }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="地址" min-width="220">
+          <template #default="{ row }">
+            <span v-if="row.transport === 'stdio'" class="mono bc-text-xs bc-muted">
+              {{ row.command }} {{ row.args.join(' ') }}
+            </span>
+            <span v-else class="mono bc-text-xs bc-muted">{{ row.url }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="工具数" width="90" align="center">
+          <template #default="{ row }">
+            <span class="bc-strong">{{ row.tool_count }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <StatusBadge :type="row.connected ? 'ok' : 'idle'" :text="row.connected ? '已连接' : '未连接'" />
+          </template>
+        </el-table-column>
+        <el-table-column label="启用" width="80" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="row.is_enabled" @change="(v) => toggleEnabled(row, v)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="250" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" :loading="row._testing" @click="onTest(row)">测试</el-button>
+            <el-button size="small" @click="onReload(row)">重载</el-button>
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" plain @click="onDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
 
-    <el-table :data="servers" border>
-      <el-table-column prop="name" label="名称" width="140" />
-      <el-table-column prop="transport" label="传输" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.transport === 'stdio' ? '' : 'success'" size="small">
-            {{ row.transport }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="地址" min-width="200">
-        <template #default="{ row }">
-          <span v-if="row.transport === 'stdio'" class="mono">
-            {{ row.command }} {{ row.args.join(' ') }}
-          </span>
-          <span v-else class="mono">{{ row.url }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="工具" width="80" align="center">
-        <template #default="{ row }">
-          <el-badge :value="row.tool_count" :type="row.connected ? 'primary' : 'info'" />
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="100" align="center">
-        <template #default="{ row }">
-          <el-tag :type="row.connected ? 'success' : 'info'" size="small">
-            {{ row.connected ? '已连接' : '未连接' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="启用" width="80" align="center">
-        <template #default="{ row }">
-          <el-switch :model-value="row.is_enabled" @change="(v) => toggleEnabled(row, v)" />
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="onTest(row)" :loading="row._testing">测试</el-button>
-          <el-button size="small" @click="onReload(row)">重载</el-button>
-          <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-
     <!-- 注册/编辑对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑 MCP Server' : '注册 MCP Server'" width="600px">
-      <el-form :model="form" label-width="110px">
-        <el-form-item label="名称" v-if="!editing">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑 MCP Server' : '注册 MCP Server'" width="620px">
+      <el-form :model="form" label-position="top">
+        <el-form-item v-if="!editing" label="名称">
           <el-input v-model="form.name" placeholder="如 sales-tools（工具前缀 mcp__名称__）" />
         </el-form-item>
         <el-form-item label="描述">
-          <el-input v-model="form.description" />
+          <el-input v-model="form.description" placeholder="这个工具服务器提供什么能力" />
         </el-form-item>
         <el-form-item label="传输方式">
           <el-radio-group v-model="form.transport">
@@ -92,7 +103,7 @@
               :rows="3"
               placeholder='JSON，如 {"API_KEY": "xxx"}；留空 = 不改（编辑时）'
             />
-            <div class="hint" v-if="editing && form._hasEnv">已配置环境变量（不改则留空）</div>
+            <div v-if="editing && form._hasEnv" class="bc-hint">已配置环境变量（不改则留空）</div>
           </el-form-item>
         </template>
 
@@ -107,11 +118,11 @@
               :rows="3"
               placeholder='JSON，如 {"Authorization": "Bearer xxx"}；留空 = 不改（编辑时）'
             />
-            <div class="hint" v-if="editing && form._hasHeaders">已配置 header（不改则留空）</div>
+            <div v-if="editing && form._hasHeaders" class="bc-hint">已配置 header（不改则留空）</div>
           </el-form-item>
         </template>
 
-        <el-form-item label="启用" v-if="!editing">
+        <el-form-item v-if="!editing" label="启用">
           <el-switch v-model="form.is_enabled" />
         </el-form-item>
       </el-form>
@@ -128,14 +139,9 @@
         :title="testResult.ok ? '连接成功' : '连接失败'"
         :sub-title="testResult.message"
       />
-      <div v-if="testResult.ok && testResult.tools.length" style="margin-top: 12px">
-        <div class="muted" style="margin-bottom: 8px">发现的工具：</div>
-        <el-tag
-          v-for="t in testResult.tools"
-          :key="t"
-          style="margin: 2px"
-          size="small"
-        >{{ t }}</el-tag>
+      <div v-if="testResult.ok && testResult.tools.length" class="test-tools">
+        <div class="bc-muted bc-text-sm test-tools__label">发现的工具：</div>
+        <el-tag v-for="t in testResult.tools" :key="t" class="test-tools__tag" size="small">{{ t }}</el-tag>
       </div>
     </el-dialog>
   </div>
@@ -144,7 +150,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import PageHeader from '../components/PageHeader.vue'
+import ContentLoader from '../components/ContentLoader.vue'
+import EmptyState from '../components/EmptyState.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 
 const servers = ref([])
 const loading = ref(false)
@@ -282,21 +293,18 @@ async function toggleEnabled(row, enabled) {
 </script>
 
 <style scoped>
-.toolbar {
-  margin-bottom: 16px;
+.srv-cell {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  line-height: 1.4;
 }
-.mono {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
+.test-tools {
+  margin-top: var(--bc-space-3);
 }
-.muted {
-  color: #909399;
+.test-tools__label {
+  margin-bottom: var(--bc-space-2);
 }
-.hint {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
+.test-tools__tag {
+  margin: 2px;
 }
 </style>

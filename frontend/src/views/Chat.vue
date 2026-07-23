@@ -1,79 +1,125 @@
 <template>
-  <div>
-    <el-alert
-      v-if="actAsInfo"
-      type="warning"
-      :closable="false"
-      style="margin-bottom: 16px"
-      show-icon
+  <div class="bc-page chat-page">
+    <PageHeader
+      title="对话测试"
+      description="在控制台直接走数据面 /chat 多轮对话；配合用户页的「扮演」验证目标角色的权限链路。"
     >
-      当前以 <strong>{{ actAsInfo }}</strong> 身份测试。所有权限判定按该用户的角色生效。
-      <el-button size="small" @click="onClearActAs" style="margin-left: 12px">恢复 admin</el-button>
-    </el-alert>
+      <el-button :icon="Plus" @click="onNewConversation">新对话</el-button>
+    </PageHeader>
 
-    <el-card>
-      <template #header>
-        <div class="chat-header">
-          <span>对话测试（数据面 /chat · 多轮）</span>
-          <el-button size="small" @click="onNewConversation">新对话</el-button>
-        </div>
-      </template>
+    <!-- act-as 身份条：状态不只靠颜色（图标 + 文字 + 操作） -->
+    <div v-if="actAsInfo" class="actas-banner" role="status">
+      <el-icon :size="16" aria-hidden="true"><View /></el-icon>
+      <span>
+        当前以 <strong>{{ actAsInfo }}</strong> 身份测试，所有权限判定按该用户的角色生效
+      </span>
+      <el-button size="small" @click="onClearActAs">恢复 admin</el-button>
+    </div>
 
-      <div class="chat-messages" ref="msgContainer">
-        <div v-for="(msg, i) in chatHistory" :key="i" class="chat-msg" :class="msg.role">
-          <div class="chat-role">{{ roleLabel(msg.role) }}</div>
-          <div class="chat-content">{{ msg.content }}</div>
-        </div>
-        <div v-if="loading" class="chat-msg assistant">
-          <div class="chat-role">助手</div>
-          <div class="chat-content muted">思考中...</div>
-        </div>
-        <div v-if="!chatHistory.length && !loading" class="muted center">
-          问一个业务问题开始对话，如：上季度销售额是多少？
-        </div>
+    <div class="chat-shell bc-panel">
+      <!-- 消息流 -->
+      <div ref="msgContainer" class="chat-stream">
+        <EmptyState
+          v-if="!chatHistory.length && !loading"
+          icon="ChatDotRound"
+          title="开始一轮测试对话"
+          description="问一个业务问题（如「我们技术部有哪些代码规范？」），观察下方治理决策面板如何判定。"
+        />
+        <template v-else>
+          <div v-for="(msg, i) in chatHistory" :key="i" class="msg" :class="`msg--${msg.role}`">
+            <div class="msg__avatar" aria-hidden="true">
+              <el-icon :size="15">
+                <User v-if="msg.role === 'user'" />
+                <MagicStick v-else />
+              </el-icon>
+            </div>
+            <div class="msg__bubble">
+              <div class="msg__role">{{ roleLabel(msg.role) }}</div>
+              <div class="msg__content">{{ msg.content }}</div>
+            </div>
+          </div>
+          <div v-if="loading" class="msg msg--assistant">
+            <div class="msg__avatar" aria-hidden="true">
+              <el-icon :size="15"><MagicStick /></el-icon>
+            </div>
+            <div class="msg__bubble">
+              <div class="msg__role">助手</div>
+              <div class="msg__content msg__content--thinking">
+                <span class="thinking-dot" /><span class="thinking-dot" /><span class="thinking-dot" />
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
-      <el-divider />
-
-      <div class="chat-input">
+      <!-- 输入区 -->
+      <div class="chat-composer">
         <el-input
           v-model="question"
           placeholder="输入问题，回车发送..."
-          @keyup.enter="onAsk"
           :disabled="loading"
+          size="large"
+          @keyup.enter="onAsk"
         >
           <template #append>
-            <el-button :loading="loading" @click="onAsk">发送</el-button>
+            <el-button type="primary" :loading="loading" @click="onAsk">发送</el-button>
           </template>
         </el-input>
       </div>
 
-      <el-collapse v-if="lastResult" style="margin-top: 16px">
-        <el-collapse-item title="治理决策（透明化）" name="1">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="当前用户">{{ lastResult.user }}</el-descriptions-item>
-            <el-descriptions-item label="角色">{{ lastResult.role }}</el-descriptions-item>
-            <el-descriptions-item label="知识域权限">
-              <el-tag v-for="t in lastResult.knowledge_scope" :key="t" size="small" type="success" style="margin-right: 4px">
+      <!-- 治理决策透明化面板 -->
+      <div v-if="lastResult" class="gov-panel">
+        <button class="gov-panel__toggle" type="button" @click="govOpen = !govOpen">
+          <el-icon :size="14" aria-hidden="true">
+            <ArrowDown v-if="govOpen" />
+            <ArrowRight v-else />
+          </el-icon>
+          治理决策（透明化）
+          <el-tag :type="lastResult.decision === 'answered' ? 'success' : 'danger'" size="small">
+            {{ lastResult.decision }}
+          </el-tag>
+        </button>
+        <div v-if="govOpen" class="gov-panel__body">
+          <div class="gov-item">
+            <span class="gov-item__label">当前用户</span>
+            <span class="gov-item__value bc-strong">{{ lastResult.user }}</span>
+          </div>
+          <div class="gov-item">
+            <span class="gov-item__label">角色</span>
+            <span class="gov-item__value">{{ lastResult.role }}</span>
+          </div>
+          <div class="gov-item">
+            <span class="gov-item__label">知识域权限</span>
+            <span class="gov-item__value">
+              <el-tag
+                v-for="t in lastResult.knowledge_scope"
+                :key="t"
+                size="small"
+                type="success"
+                class="gov-tag"
+              >
                 {{ t }}
               </el-tag>
-              <span v-if="!lastResult.knowledge_scope.length" class="muted">无（默认隔离）</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="命中授权 chunk">{{ lastResult.retrieved_chunks }}</el-descriptions-item>
-            <el-descriptions-item label="决策">
-              <el-tag :type="lastResult.decision === 'answered' ? 'success' : 'danger'">{{ lastResult.decision }}</el-tag>
-            </el-descriptions-item>
-          </el-descriptions>
-        </el-collapse-item>
-      </el-collapse>
-    </el-card>
+              <span v-if="!lastResult.knowledge_scope.length" class="bc-muted">无（默认隔离）</span>
+            </span>
+          </div>
+          <div class="gov-item">
+            <span class="gov-item__label">命中授权 chunk</span>
+            <span class="gov-item__value bc-strong">{{ lastResult.retrieved_chunks }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Plus, User, MagicStick, View, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 import { admin, chat } from '../api'
+import PageHeader from '../components/PageHeader.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const question = ref('')
 const loading = ref(false)
@@ -81,6 +127,7 @@ const chatHistory = ref([])
 const lastResult = ref(null)
 const actAsInfo = ref('')
 const msgContainer = ref(null)
+const govOpen = ref(true)
 
 async function onAsk() {
   if (!question.value.trim() || loading.value) return
@@ -95,7 +142,6 @@ async function onAsk() {
   try {
     const result = await chat.ask(q)
     lastResult.value = result
-    // 显示助手回答
     chatHistory.value.push({ role: 'assistant', content: result.answer })
 
     if (result.decision === 'denied_no_access') {
@@ -137,18 +183,171 @@ async function onClearActAs() {
 }
 
 function roleLabel(r) {
-  return { user: '我', assistant: '助手' }[r] || r
+  return { user: '我', assistant: '数字员工' }[r] || r
 }
 </script>
 
 <style scoped>
-.chat-header { display: flex; align-items: center; justify-content: space-between; }
-.chat-messages { height: 400px; overflow-y: auto; padding: 8px; }
-.chat-msg { margin-bottom: 16px; }
-.chat-role { font-size: 12px; color: #909399; margin-bottom: 4px; }
-.chat-content { padding: 10px 14px; border-radius: 8px; line-height: 1.7; white-space: pre-wrap; }
-.chat-msg.user .chat-content { background: #ecf5ff; color: #303133; }
-.chat-msg.assistant .chat-content { background: #f4f4f5; color: #303133; }
-.muted { color: #909399; }
-.center { text-align: center; padding: 40px; }
+.chat-page {
+  max-width: 960px;
+}
+
+/* act-as 身份条 */
+.actas-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-3) var(--bc-space-4);
+  background: var(--bc-warning-bg);
+  border: 1px solid var(--bc-warning-border);
+  border-radius: var(--bc-radius-md);
+  color: var(--bc-warning-strong);
+  font-size: var(--bc-text-sm);
+  margin-bottom: var(--bc-space-4);
+}
+.actas-banner .el-button {
+  margin-left: auto;
+}
+
+/* 对话外壳 */
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 250px);
+  min-height: 480px;
+}
+.chat-stream {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--bc-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-5);
+}
+.chat-stream .empty-state {
+  margin: auto;
+}
+
+/* 消息气泡 */
+.msg {
+  display: flex;
+  gap: var(--bc-space-3);
+  max-width: 82%;
+}
+.msg--user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+.msg__avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--bc-radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--bc-gray-2);
+  color: var(--bc-text-3);
+}
+.msg--user .msg__avatar {
+  background: var(--bc-primary-6);
+  color: var(--bc-bg-surface);
+}
+.msg__bubble {
+  min-width: 0;
+}
+.msg__role {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  margin-bottom: var(--bc-space-1);
+}
+.msg--user .msg__role {
+  text-align: right;
+}
+.msg__content {
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border-radius: var(--bc-radius-lg);
+  font-size: var(--bc-text-md);
+  line-height: var(--bc-leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bc-gray-2);
+  color: var(--bc-text-1);
+}
+.msg--user .msg__content {
+  background: var(--bc-primary-1);
+  border: 1px solid var(--bc-primary-2);
+}
+.msg--assistant .msg__content {
+  border: 1px solid var(--bc-border);
+  background: var(--bc-bg-surface);
+}
+.msg__content--thinking {
+  display: flex;
+  gap: var(--bc-space-1);
+  align-items: center;
+  min-height: 24px;
+}
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--bc-radius-full);
+  background: var(--bc-text-4);
+  animation: bc-think 1.2s infinite var(--bc-ease-out);
+}
+.thinking-dot:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bc-think {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* 输入区 */
+.chat-composer {
+  padding: var(--bc-space-4) var(--bc-space-6);
+  border-top: 1px solid var(--bc-border);
+  background: var(--bc-bg-surface);
+}
+
+/* 治理决策面板 */
+.gov-panel {
+  border-top: 1px solid var(--bc-border);
+  background: var(--bc-gray-1);
+}
+.gov-panel__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  width: 100%;
+  padding: var(--bc-space-3) var(--bc-space-6);
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--bc-text-sm);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-2);
+  cursor: pointer;
+}
+.gov-panel__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--bc-space-4);
+  padding: 0 var(--bc-space-6) var(--bc-space-4);
+}
+.gov-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bc-space-1);
+}
+.gov-item__label {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+.gov-item__value {
+  font-size: var(--bc-text-sm);
+  color: var(--bc-text-1);
+}
+.gov-tag {
+  margin-right: var(--bc-space-1);
+}
 </style>

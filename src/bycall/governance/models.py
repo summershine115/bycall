@@ -373,6 +373,77 @@ class MCPServer(SQLModel, table=True):
         return select(MCPServer).where(MCPServer.name == name)
 
 
+# ============ ApprovalRequest：HITL 审批队列（M4 Slice C）============
+
+
+class ApprovalRequest(SQLModel, table=True):
+    """破坏性工具调用的人审请求 M4 HITL 完整闭环。
+
+    当 LLM 调用一个标记了 destructiveHint（或显式 requires_approval）的工具时，
+    工具网关的审批门拦截执行：不直接调用工具，而是创建一条 pending 审批请求，
+    返回待审批消息给 LLM（LLM 据此告知用户已提交审批）。admin 在审批队列里
+    review 后 approve（执行工具 + 记录结果）或 reject。
+
+    闭环（红线 #5 补完 MCP 工具的破坏性操作走人审）：
+    审批通过后用存储的参数实际执行工具（重新计算能力集验证权限仍在），结果脱敏后
+    存 result_text 并追加到会话历史（用户下次交互可见），审计落库。
+
+    设计要点：tool_args_json 存 LLM 生成的原始参数 JSON 审批通过后原样回放执行；
+    status 状态机 pending, executed, rejected, failed 不可逆；conversation_id 可空
+    （REST 单轮无会话时仅记录不回写）；执行时重新计算能力集 若权限已变更则拒绝执行。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    user_name: str = ""
+    conversation_id: int | None = Field(default=None, index=True)
+    channel: str = ""
+    tool_name: str = Field(index=True)
+    tool_args_json: str = "{}"
+    status: str = Field(default="pending", index=True)
+    reviewed_by: str = ""
+    reviewed_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
+    review_note: str = ""
+    result_text: str = ""
+    executed_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_pending():
+        """列待审批请求（按创建时间倒序，最新的在前）。"""
+        from sqlmodel import select
+
+        return (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.status == "pending")
+            .order_by(ApprovalRequest.created_at.desc())
+        )
+
+    @staticmethod
+    def select_by_status(status: str):
+        """按状态列审批请求（按创建时间倒序）。"""
+        from sqlmodel import select
+
+        return (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.status == status)
+            .order_by(ApprovalRequest.created_at.desc())
+        )
+
+    @staticmethod
+    def select_all():
+        """列全部审批请求（按创建时间倒序）。"""
+        from sqlmodel import select
+
+        return select(ApprovalRequest).order_by(ApprovalRequest.created_at.desc())
+
+
 # ============ KnowledgeBase：知识库实体（参考 WeKnora，per-KB embedding + collection）============
 
 

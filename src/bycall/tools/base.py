@@ -46,6 +46,10 @@ class ToolSpec:
     # 工具来源："builtin"（内置）/ "mcp"（MCP 网关注入）。供 /tools 端点分组展示，
     # 不参与权限判定（谁能用仍由治理脊柱的 allowed_tools 白名单决定）。
     source: str = "builtin"
+    # 是否需要人审（HITL）：MCP 工具的 ``destructiveHint=true`` 或内置工具显式标记时为 True。
+    # 工具网关的审批门拦截此类工具的执行——不直接调用，而是创建 ApprovalRequest（pending），
+    # 返回"待审批"消息给 LLM。admin 审批通过后才实际执行（M4 Slice C 完整闭环）。
+    requires_approval: bool = False
 
 
 __all__ = ["ToolSpec"]

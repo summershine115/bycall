@@ -1,0 +1,213 @@
+/**
+ * Bycall 设计系统 —— 语义化设计 token
+ * 单一事实来源：所有颜色 / 排版 / 间距 / 圆角 / 阴影 / 过渡都在这里定义。
+ * 组件里禁止出现 raw hex 与任意 px；一律引用 var(--bc-*)。
+ * 浅色为主主题；深色主题结构预留在 [data-theme='dark'] 下。
+ */
+
+:root {
+  /* ============ 品牌主色（深青绿 teal，克制可信） ============ */
+  --bc-primary-1: #f0faf7;
+  --bc-primary-2: #d7f0e7;
+  --bc-primary-3: #a8dcc8;
+  --bc-primary-4: #6fc09f;
+  --bc-primary-5: #3aa17e;
+  --bc-primary-6: #0e7a5c; /* 主基准 */
+  --bc-primary-7: #0b6249;
+  --bc-primary-8: #084c3a;
+  --bc-primary-9: #053629;
+
+  /* ============ 语义色 ============ */
+  --bc-success: #1a9e6b;
+  --bc-success-bg: #e9f8f1;
+  --bc-success-text: #127a52;
+  --bc-warning: #c77e14;
+  --bc-warning-bg: #fdf3e2;
+  --bc-warning-text: #9c6410;
+  --bc-warning-strong: #7a5209;
+  --bc-warning-border: #f0dcae;
+  --bc-danger: #d4483e;
+  --bc-danger-bg: #fdecea;
+  --bc-danger-text: #b23730;
+  --bc-info: #64748b;
+  --bc-info-bg: #eef2f7;
+  /* 深色底上的亮色文字（品牌区/侧标） */
+  --bc-on-dark-1: #f4faf7;
+
+  /* ============ 中性色阶梯（暖灰，9 级；无纯黑纯白） ============ */
+  --bc-gray-1: #f7f8f7;
+  --bc-gray-2: #f1f3f2;
+  --bc-gray-3: #e6e9e7;
+  --bc-gray-4: #d3d8d5;
+  --bc-gray-5: #a8b0ac;
+  --bc-gray-6: #7d867f;
+  --bc-gray-7: #59625c;
+  --bc-gray-8: #39413c;
+  --bc-gray-9: #212722;
+
+  /* ============ 表面与文字 ============ */
+  --bc-bg-page: var(--bc-gray-1);
+  --bc-bg-surface: #fdfdfc;
+  --bc-bg-sunken: var(--bc-gray-2);
+  --bc-border: var(--bc-gray-3);
+  --bc-border-strong: var(--bc-gray-4);
+  --bc-text-1: var(--bc-gray-9); /* 主文字 */
+  --bc-text-2: var(--bc-gray-7); /* 正文 */
+  --bc-text-3: var(--bc-gray-6); /* 辅助 */
+  --bc-text-4: var(--bc-gray-5); /* 占位/禁用 */
+
+  /* ============ 排版比例尺 ============ */
+  --bc-font-family:
+    'Inter', -apple-system, 'PingFang SC', 'HarmonicOS Sans SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  --bc-font-mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  --bc-text-xs: 12px;
+  --bc-text-sm: 13px;
+  --bc-text-md: 14px;
+  --bc-text-lg: 16px;
+  --bc-text-xl: 18px;
+  --bc-text-2xl: 22px;
+  --bc-text-3xl: 28px;
+  --bc-text-4xl: 34px;
+  --bc-weight-regular: 400;
+  --bc-weight-medium: 500;
+  --bc-weight-semibold: 600;
+  --bc-weight-bold: 700;
+  --bc-leading-tight: 1.25;
+  --bc-leading-normal: 1.5;
+  --bc-leading-relaxed: 1.7;
+
+  /* ============ 间距比例尺（4px 基准） ============ */
+  --bc-space-1: 4px;
+  --bc-space-2: 8px;
+  --bc-space-3: 12px;
+  --bc-space-4: 16px;
+  --bc-space-5: 20px;
+  --bc-space-6: 24px;
+  --bc-space-8: 32px;
+  --bc-space-10: 40px;
+  --bc-space-12: 48px;
+  --bc-space-16: 64px;
+
+  /* ============ 圆角阶梯（克制，不大圆角） ============ */
+  --bc-radius-sm: 4px;
+  --bc-radius-md: 6px;
+  --bc-radius-lg: 10px;
+  --bc-radius-full: 999px;
+
+  /* ============ 阴影阶梯（轻，边界优先于阴影） ============ */
+  --bc-shadow-xs: 0 1px 2px rgba(33, 39, 34, 0.05);
+  --bc-shadow-sm: 0 1px 2px rgba(33, 39, 34, 0.06), 0 2px 8px rgba(33, 39, 34, 0.05);
+  --bc-shadow-md: 0 2px 6px rgba(33, 39, 34, 0.06), 0 8px 24px rgba(33, 39, 34, 0.08);
+  --bc-shadow-lg: 0 4px 12px rgba(33, 39, 34, 0.08), 0 16px 48px rgba(33, 39, 34, 0.12);
+
+  /* ============ 过渡（指数缓出，干脆不弹跳） ============ */
+  --bc-duration-fast: 120ms;
+  --bc-duration-normal: 200ms;
+  --bc-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ============ 布局尺寸 ============ */
+  --bc-sidebar-width: 236px;
+  --bc-sidebar-collapsed-width: 64px;
+  --bc-header-height: 56px;
+  --bc-content-max: 1440px;
+
+  /* ============ Element Plus 变量映射（核心主题接管） ============ */
+  --el-color-primary: var(--bc-primary-6);
+  --el-color-primary-light-3: var(--bc-primary-4);
+  --el-color-primary-light-5: var(--bc-primary-3);
+  --el-color-primary-light-7: var(--bc-primary-2);
+  --el-color-primary-light-8: var(--bc-primary-1);
+  --el-color-primary-light-9: var(--bc-primary-1);
+  --el-color-primary-dark-2: var(--bc-primary-7);
+
+  --el-color-success: var(--bc-success);
+  --el-color-success-light-3: #5bbd95;
+  --el-color-success-light-5: #93d3b8;
+  --el-color-success-light-7: #c4e8d8;
+  --el-color-success-light-8: #dcf1e7;
+  --el-color-success-light-9: var(--bc-success-bg);
+  --el-color-success-dark-2: #157f55;
+
+  --el-color-warning: var(--bc-warning);
+  --el-color-warning-light-3: #d9a457;
+  --el-color-warning-light-5: #e6c28a;
+  --el-color-warning-light-7: #f2deba;
+  --el-color-warning-light-8: #f8ebd4;
+  --el-color-warning-light-9: var(--bc-warning-bg);
+  --el-color-warning-dark-2: #a5680f;
+
+  --el-color-danger: var(--bc-danger);
+  --el-color-error: var(--bc-danger);
+  --el-color-danger-light-3: #e07b72;
+  --el-color-danger-light-5: #eba49e;
+  --el-color-danger-light-7: #f5cbc7;
+  --el-color-danger-light-8: #f9dedb;
+  --el-color-danger-light-9: var(--bc-danger-bg);
+  --el-color-danger-dark-2: #b23730;
+  --el-color-error-light-3: #e07b72;
+  --el-color-error-light-5: #eba49e;
+  --el-color-error-light-7: #f5cbc7;
+  --el-color-error-light-8: #f9dedb;
+  --el-color-error-light-9: var(--bc-danger-bg);
+  --el-color-error-dark-2: #b23730;
+
+  --el-color-info: var(--bc-info);
+  --el-color-info-light-3: #8c9aad;
+  --el-color-info-light-5: #b0bccb;
+  --el-color-info-light-7: #d2dae4;
+  --el-color-info-light-8: #e3e8ee;
+  --el-color-info-light-9: var(--bc-info-bg);
+  --el-color-info-dark-2: #4e5f73;
+
+  /* 文字 / 背景 / 边框接管 */
+  --el-text-color-primary: var(--bc-text-1);
+  --el-text-color-regular: var(--bc-text-2);
+  --el-text-color-secondary: var(--bc-text-3);
+  --el-text-color-placeholder: var(--bc-text-4);
+  --el-text-color-disabled: var(--bc-text-4);
+  --el-bg-color: var(--bc-bg-surface);
+  --el-bg-color-page: var(--bc-bg-page);
+  --el-bg-color-overlay: var(--bc-bg-surface);
+  --el-border-color: var(--bc-border);
+  --el-border-color-light: var(--bc-border);
+  --el-border-color-lighter: var(--bc-border);
+  --el-border-color-extra-light: var(--bc-gray-2);
+  --el-border-color-hover: var(--bc-border-strong);
+  --el-fill-color: var(--bc-gray-2);
+  --el-fill-color-light: var(--bc-gray-1);
+  --el-fill-color-lighter: var(--bc-gray-1);
+  --el-fill-color-extra-light: var(--bc-gray-1);
+  --el-fill-color-blank: var(--bc-bg-surface);
+  --el-disabled-bg-color: var(--bc-gray-2);
+  --el-disabled-border-color: var(--bc-border);
+
+  /* 形状与字体 */
+  --el-border-radius-base: var(--bc-radius-md);
+  --el-border-radius-small: var(--bc-radius-sm);
+  --el-border-radius-round: var(--bc-radius-full);
+  --el-font-family: var(--bc-font-family);
+  --el-font-size-base: var(--bc-text-md);
+  --el-font-size-small: var(--bc-text-sm);
+  --el-font-size-extra-small: var(--bc-text-xs);
+
+  /* 弹层阴影 */
+  --el-box-shadow: var(--bc-shadow-md);
+  --el-box-shadow-light: var(--bc-shadow-sm);
+  --el-box-shadow-lighter: var(--bc-shadow-xs);
+  --el-box-shadow-dark: var(--bc-shadow-lg);
+}
+
+/* ============ 深色主题（结构预留；后续按同 token 覆盖） ============ */
+[data-theme='dark'] {
+  --bc-bg-page: #141816;
+  --bc-bg-surface: #1c211e;
+  --bc-bg-sunken: #171b19;
+  --bc-border: #2c332f;
+  --bc-border-strong: #3d463f;
+  --bc-text-1: #ecefec;
+  --bc-text-2: #b6bdb7;
+  --bc-text-3: #88918a;
+  --bc-text-4: #5f695f;
+  --el-color-primary: var(--bc-primary-5);
+}

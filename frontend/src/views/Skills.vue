@@ -1,47 +1,61 @@
 <template>
-  <div v-loading="loading">
-    <div class="toolbar">
-      <el-button type="primary" @click="openCreate">
-        <el-icon><Plus /></el-icon> 新建技能
-      </el-button>
-      <span class="muted">Skill = admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt</span>
+  <div class="bc-page">
+    <PageHeader
+      title="Skill 管理"
+      description="Skill 是 admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt。"
+    >
+      <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
+    </PageHeader>
+
+    <ContentLoader v-if="loading" :rows="4" />
+
+    <div v-else class="bc-panel">
+      <EmptyState
+        v-if="!skills.length"
+        icon="MagicStick"
+        title="还没有 Skill"
+        description="把领域知识（如销售话术、人事政策）沉淀为 Skill，按角色分发给数字员工。"
+      >
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建第一个技能</el-button>
+      </EmptyState>
+
+      <el-table v-else :data="skills">
+        <el-table-column label="技能名" width="180">
+          <template #default="{ row }">
+            <span class="bc-strong mono">{{ row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" min-width="180">
+          <template #default="{ row }">{{ row.description || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="内容" min-width="300">
+          <template #default="{ row }">
+            <div class="bc-cell-clamp">{{ row.content }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="启用" width="90" align="center">
+          <template #default="{ row }">
+            <el-switch :model-value="row.is_enabled" @change="(val) => onToggle(row, val)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="170">
+          <template #default="{ row }">
+            <span class="bc-text-sm bc-muted">{{ formatTime(row.updated_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" plain @click="onDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
 
-    <el-table :data="skills" border>
-      <el-table-column prop="name" label="技能名" width="180">
-        <template #default="{ row }">
-          <strong>{{ row.name }}</strong>
-        </template>
-      </el-table-column>
-      <el-table-column prop="description" label="描述" min-width="160" />
-      <el-table-column label="内容" min-width="300">
-        <template #default="{ row }">
-          <div class="content-cell">{{ row.content }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
-          <el-switch :model-value="row.is_enabled" @change="(val) => onToggle(row, val)" />
-        </template>
-      </el-table-column>
-      <el-table-column label="更新时间" width="180">
-        <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑技能' : '新建技能'" width="640px">
-      <el-form :model="form" label-width="100px">
-        <el-form-item label="技能名" v-if="!editing">
-          <el-input
-            v-model="form.name"
-            placeholder="小写字母/数字/连字符，如 sales-playbook"
-          />
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑技能' : '新建技能'" width="680px">
+      <el-form :model="form" label-position="top">
+        <el-form-item v-if="!editing" label="技能名">
+          <el-input v-model="form.name" placeholder="小写字母/数字/连字符，如 sales-playbook" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" placeholder="一句话说明这个技能的用途" />
@@ -55,8 +69,8 @@
           />
         </el-form-item>
         <el-form-item label="启用">
-          <el-switch v-model="form.is_enabled" />
-          <span class="muted small" style="margin-left: 8px">停用后该技能不会被注入</span>
+          <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
+          <div class="bc-hint">停用后该技能不会被注入任何角色的 system prompt</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -70,7 +84,11 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import PageHeader from '../components/PageHeader.vue'
+import ContentLoader from '../components/ContentLoader.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const loading = ref(true)
 const skills = ref([])
@@ -145,17 +163,23 @@ async function onSave() {
 
 async function onToggle(row, val) {
   try {
-    await admin.updateSkill(row.name, { is_enabled: val })
+    await admin.updateSkill(row.name, {
+      description: row.description,
+      content: row.content,
+      is_enabled: val,
+    })
+    row.is_enabled = val
     ElMessage.success(val ? '已启用' : '已停用')
-    await load()
   } catch {
-    // 拦截器已统一 toast；失败也要重载，把开关状态同步回真实值
-    await load()
+    // 失败已由拦截器提示；开关回滚
+    row.is_enabled = !val
   }
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确定删除技能「${row.name}」？`, '确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确定删除技能「${row.name}」？已绑定角色将不再注入它`, '确认', {
+    type: 'warning',
+  })
   await admin.deleteSkill(row.name)
   ElMessage.success('已删除')
   await load()
@@ -163,25 +187,3 @@ async function onDelete(row) {
 
 onMounted(load)
 </script>
-
-<style scoped>
-.toolbar {
-  margin-bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.muted {
-  color: #909399;
-}
-.small {
-  font-size: 12px;
-}
-.content-cell {
-  white-space: pre-wrap;
-  max-height: 80px;
-  overflow: hidden;
-  color: #606266;
-  font-size: 13px;
-}
-</style>

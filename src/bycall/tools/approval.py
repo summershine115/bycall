@@ -1,0 +1,214 @@
+"""HITL 审批门——破坏性工具调用的人审拦截（M4 Slice C）。
+
+product-design.md 支柱 3：破坏性操作（删数据 / 发外部邮件 / 大额操作）走 HITL 审批。
+本模块是这条红线的落地。
+
+拦截链路（在 ``tools/gateway.to_langchain_tools`` 中接线）：
+  LLM 调 destructive 工具 → 审批门（本模块）
+    → 创建 ``ApprovalRequest(pending)`` → 返回"待审批"消息给 LLM
+    → LLM 告知用户"已提交审批，请等待"
+
+执行链路（admin 审批通过时，在 ``admin/api.py`` 接线）：
+  admin approve → ``execute_approved_tool``（本模块）
+    → 重新计算能力集 + 验证工具仍在白名单
+    → 设置 capability token（MCP server 鉴权）
+    → 调 ``spec.func(**args)`` + 脱敏 → 结果存 ``ApprovalRequest`` + 追加会话
+
+与 capability token（Slice B）的关系：审批门和 capability token 都在工具执行链路上，
+但关注点不同——token 解决"调用时注入身份让 MCP server 自行鉴权"，审批门解决"破坏性
+操作在执行前必须经过人审"。审批门拦截的是 func 层（返回 pending 而非执行），token
+注入的是 meta 层（传给 MCP server）。两者正交，不冲突。
+
+无 checkpointer 时的闭环设计（对齐 ADR-0002）：
+graph 无状态执行，审批门在 func 层拦截——返回"待审批"消息后本轮对话正常结束（LLM
+告知用户等待）。admin 审批通过后，``execute_approved_tool`` 用存储的参数实际执行工具，
+结果追加到会话历史（``Message`` 表），用户下次交互时 agent 加载历史即可看到执行结果。
+不需要 checkpointer / interrupt——会话状态由 session_store 管，与 ADR-0002 自洽。
+"""
+
+from __future__ import annotations
+
+import contextvars
+import json
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from bycall.db import session_scope
+
+if TYPE_CHECKING:
+    from bycall.tools.base import ToolSpec
+
+logger = logging.getLogger(__name__)
+
+# 每个请求的审批上下文——runner 在调用 graph 前设置，审批门读取。
+# 与 capability token 平行的 contextvars 机制（隔离保证相同：按 asyncio.Task/线程隔离）。
+_current_approval_ctx: contextvars.ContextVar[ApprovalContext | None] = contextvars.ContextVar(
+    "bycall_approval_ctx", default=None
+)
+
+# 审批结果文本截断长度（防爆库 / 防 token 膨胀）。
+_RESULT_TRUNCATE = 2000
+
+
+@dataclass(frozen=True)
+class ApprovalContext:
+    """审批上下文——工具执行时携带，供审批门创建审批请求。
+
+    由 runner 在 graph 执行前设置（与 capability token 同一时机），审批门在拦截
+    破坏性工具调用时读取。``conversation_id`` 可空（REST 单轮请求无会话）。
+    """
+
+    user_id: int
+    user_name: str
+    conversation_id: int | None
+    channel: str
+
+
+def set_approval_context(ctx: ApprovalContext | None) -> contextvars.Token:
+    """设置当前请求的审批上下文（返回 token，需在 finally 中 reset）。"""
+    return _current_approval_ctx.set(ctx)
+
+
+def reset_approval_context(token: contextvars.Token) -> None:
+    """恢复审批上下文到设置前的状态。"""
+    _current_approval_ctx.reset(token)
+
+
+def get_approval_context() -> ApprovalContext | None:
+    """读取当前请求的审批上下文（审批门调用时用）。"""
+    return _current_approval_ctx.get(None)
+
+
+def create_approval_request(
+    ctx: ApprovalContext, tool_name: str, args: dict[str, Any]
+) -> int:
+    """创建一条 pending 审批请求，返回其 id。
+
+    用独立 ``session_scope``（与 runner 的 session 隔离），立即提交——admin 队列需立即可见。
+    """
+    from bycall.governance.models import ApprovalRequest
+
+    args_json = json.dumps(args, ensure_ascii=False, default=str)
+    with session_scope() as session:
+        req = ApprovalRequest(
+            user_id=ctx.user_id,
+            user_name=ctx.user_name,
+            conversation_id=ctx.conversation_id,
+            channel=ctx.channel,
+            tool_name=tool_name,
+            tool_args_json=args_json,
+            status="pending",
+        )
+        session.add(req)
+        session.flush()  # 拿到自增 id
+        assert req.id is not None  # flush 后自增主键必已填充
+        req_id: int = req.id
+    logger.info("审批请求 #%d 已创建: tool=%s user=%s", req_id, tool_name, ctx.user_name)
+    return req_id
+
+
+def make_approval_gated_func(spec: ToolSpec):
+    """构造审批门包装的 func：破坏性工具不执行，而是创建审批请求并返回"待审批"消息。
+
+    ``StructuredTool`` 按 schema 反射调用（``**kwargs``），故签名用 ``**kwargs``。
+    无审批上下文时（管理连通性测试 / 单元测试直接调 func）降级为直接执行（不拦截）。
+    """
+
+    def _gated(**kwargs: Any) -> str:
+        ctx = get_approval_context()
+        if ctx is None:
+            # 无审批上下文（admin 测试连通性 / 单元测试直接调 func）→ 降级直接执行。
+            return spec.func(**kwargs)
+        req_id = create_approval_request(ctx, spec.name, kwargs)
+        args_summary = _summarize_args(kwargs)
+        return (
+            f"⚠️ 该操作需要管理员审批。已提交审批请求 #{req_id}"
+            f"（工具：{spec.name}"
+            + (f"，参数：{args_summary}" if args_summary else "")
+            + "）。审批通过后将自动执行并记录结果。请告知用户等待审批。"
+        )
+
+    return _gated
+
+
+def execute_approved_tool(req) -> tuple[bool, str]:
+    """执行已批准的工具调用，返回 ``(是否成功, 结果文本)``。
+
+    审批通过后的执行路径（admin approve 端点调用）：
+    1. 从注册表查工具 spec（可能已被禁用/删除 → 失败）。
+    2. 重新计算用户能力集（权限可能已变更 → 若工具不再在白名单 → 拒绝）。
+    3. 设置 capability token（MCP server 鉴权用，与正常调用一致）。
+    4. 调 ``spec.func(**args)`` + 脱敏（若有 redactor）。
+    5. 返回脱敏后结果（截断到 ``_RESULT_TRUNCATE``）。
+
+    ``req`` 是 ``ApprovalRequest`` ORM 实例（status 应为 pending，由调用方保证）。
+    """
+    from bycall.governance.capability import compute_capability_set
+    from bycall.governance.models import User
+    from bycall.mcp.context import reset_current_capability, set_current_capability
+    from bycall.tools.gateway import filter_tools
+    from bycall.tools.registry import get_tool
+
+    spec = get_tool(req.tool_name)
+    if spec is None:
+        msg = f"工具 {req.tool_name} 不再可用（可能已被禁用或移除），无法执行"
+        logger.warning("审批 #%s 执行失败: %s", req.id, msg)
+        return False, msg
+
+    args = json.loads(req.tool_args_json) if req.tool_args_json else {}
+
+    # 重新计算能力集 + 验证工具仍在白名单。
+    with session_scope() as session:
+        user = session.get(User, req.user_id)
+        if user is None:
+            return False, f"请求用户(id={req.user_id})不存在，无法执行"
+        if not user.is_active:
+            return False, f"用户 {user.name} 已被禁用，拒绝执行"
+        cap = compute_capability_set(session, user)
+        # 过滤验证：工具是否仍在用户当前白名单内。
+        allowed_names = {s.name for s in filter_tools(cap.allowed_tools)}
+
+    if spec.name not in allowed_names:
+        msg = f"工具 {spec.name} 已不在用户当前权限范围内，执行被拒绝"
+        logger.warning("审批 #%s 执行被拒: %s", req.id, msg)
+        return False, msg
+
+    # 设置 capability token（MCP server 鉴权用）。
+    cap_token = set_current_capability(cap)
+    try:
+        result = spec.func(**args)
+        # 应用脱敏（支柱 4 第二条泄漏面——审批执行的结果也要脱敏）。
+        if spec.redactor is not None:
+            result = spec.redactor(result, cap)
+    except Exception as e:
+        logger.warning("审批 #%s 工具 %s 执行异常: %s", req.id, spec.name, e)
+        return False, f"工具执行异常: {e}"
+    finally:
+        reset_current_capability(cap_token)
+
+    result_str = str(result)[:_RESULT_TRUNCATE]
+    logger.info("审批 #%s 执行成功: tool=%s result_len=%d", req.id, spec.name, len(result_str))
+    return True, result_str
+
+
+def _summarize_args(args: dict[str, Any], max_len: int = 200) -> str:
+    """把工具参数摘要成短字符串（给 LLM 看的"待审批"消息用，避免过长）。"""
+    if not args:
+        return ""
+    try:
+        s = json.dumps(args, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        s = str(args)
+    return s[:max_len] + ("…" if len(s) > max_len else "")
+
+
+__all__ = [
+    "ApprovalContext",
+    "create_approval_request",
+    "execute_approved_tool",
+    "get_approval_context",
+    "make_approval_gated_func",
+    "reset_approval_context",
+    "set_approval_context",
+]

@@ -1,86 +1,58 @@
 <template>
-  <div v-loading="loading">
-    <el-alert
+  <div class="bc-page">
+    <PageHeader
       title="模型管理"
-      type="info"
-      :closable="false"
-      style="margin-bottom: 16px"
-      description="对话模型和向量模型是独立的可管理资源，可配置多个、各自选不同服务商。激活的模型即当前使用。切换向量模型若维度变化需重建索引。"
-    />
+      description="对话 / 向量 / 重排模型是独立可管理资源，可配多个、各选服务商；激活的模型即当前生效配置。"
+    >
+      <el-button type="primary" :icon="Plus" @click="openCreate(activeTab)">添加模型</el-button>
+    </PageHeader>
 
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="对话模型 (Chat)" name="chat">
-        <ModelList
-          model-type="chat"
-          :models="modelsByType('chat')"
-          :providers="providers"
-          @refresh="load"
-          @add="openCreate('chat')"
-          @edit="openEdit"
-          @activate="onActivate"
-          @test="onTest"
-          @delete="onDelete"
-        />
-      </el-tab-pane>
-      <el-tab-pane label="向量模型 (Embedding)" name="embedding">
-        <ModelList
-          model-type="embedding"
-          :models="modelsByType('embedding')"
-          :providers="providers"
-          @refresh="load"
-          @add="openCreate('embedding')"
-          @edit="openEdit"
-          @activate="onActivate"
-          @test="onTest"
-          @delete="onDelete"
-        />
-      </el-tab-pane>
+    <ContentLoader v-if="loading" :rows="4" />
 
-      <el-tab-pane label="重排模型 (Rerank)" name="rerank">
-        <ModelList
-          model-type="rerank"
-          :models="modelsByType('rerank')"
-          :providers="providers"
-          @refresh="load"
-          @add="openCreate('rerank')"
-          @edit="openEdit"
-          @activate="onActivate"
-          @test="onTest"
-          @delete="onDelete"
-        />
-      </el-tab-pane>
-    </el-tabs>
+    <div v-else class="bc-panel models-panel">
+      <el-tabs v-model="activeTab" class="models-tabs">
+        <el-tab-pane v-for="t in typeTabs" :key="t.name" :name="t.name">
+          <template #label>
+            {{ t.label }}
+            <span class="models-tabs__count">{{ modelsByType(t.name).length }}</span>
+            <span v-if="activeOfType(t.name)" class="models-tabs__active" title="已有激活模型" />
+          </template>
+          <ModelTable
+            :model-type="t.name"
+            :models="modelsByType(t.name)"
+            @add="openCreate(t.name)"
+            @edit="openEdit"
+            @activate="onActivate"
+            @test="onTest"
+            @delete="onDelete"
+          />
+        </el-tab-pane>
+      </el-tabs>
+    </div>
 
     <!-- 新建/编辑模型对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑模型' : '添加模型'" width="580px">
-      <el-form :model="form" label-width="110px">
-        <el-form-item label="服务商">
-          <el-select
-            v-model="form.provider"
-            filterable
-            allow-create
-            placeholder="选择服务商"
-            style="width: 100%"
-            @change="onProviderChange"
-          >
-            <el-option
-              v-for="p in providerOptions"
-              :key="p.value"
-              :label="p.label"
-              :value="p.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="模型名称">
-          <el-input
-            v-model="form.name"
-            :placeholder="sampleModelHint"
-            list="sample-models"
-          />
-          <datalist id="sample-models">
-            <option v-for="m in sampleModels" :key="m" :value="m" />
-          </datalist>
-        </el-form-item>
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑模型' : '添加模型'" width="600px">
+      <el-form :model="form" label-position="top">
+        <div class="form-row">
+          <el-form-item label="服务商" class="form-row__item">
+            <el-select
+              v-model="form.provider"
+              filterable
+              allow-create
+              placeholder="选择服务商"
+              style="width: 100%"
+              @change="onProviderChange"
+            >
+              <el-option v-for="p in providerOptions" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="模型名称" class="form-row__item">
+            <el-input v-model="form.name" :placeholder="sampleModelHint" list="sample-models" />
+            <datalist id="sample-models">
+              <option v-for="m in sampleModels" :key="m" :value="m" />
+            </datalist>
+          </el-form-item>
+        </div>
         <el-form-item label="显示名">
           <el-input v-model="form.display_name" placeholder="便于识别的名字" />
         </el-form-item>
@@ -93,15 +65,15 @@
             :placeholder="editing && hasKey ? apiMaskHint : 'sk-...'"
             show-password
           />
-          <div class="hint" v-if="editing && hasKey">
-            当前已设密钥 {{ apiMaskHint }}，不改则留空
+          <div v-if="editing && hasKey" class="bc-hint">
+            当前已设密钥 {{ apiMaskHint }}，不修改则留空
           </div>
         </el-form-item>
-        <el-form-item label="向量维度" v-if="form.model_type === 'embedding'">
+        <el-form-item v-if="form.model_type === 'embedding'" label="向量维度">
           <el-input-number v-model="form.embed_dimension" :min="1" :max="8192" />
-          <div class="hint">可先随意填，保存后点"测试连接"自动探测真实维度</div>
+          <div class="bc-hint">可先随意填，保存后点「测试连接」自动探测真实维度</div>
         </el-form-item>
-        <el-form-item label="创建后激活" v-if="!editing">
+        <el-form-item v-if="!editing" label="创建后激活">
           <el-switch v-model="form.is_active" />
         </el-form-item>
       </el-form>
@@ -115,9 +87,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, h, onMounted } from 'vue'
-import { ElMessage, ElMessageBox, ElTag, ElButton, ElTable, ElTableColumn } from 'element-plus'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import PageHeader from '../components/PageHeader.vue'
+import ContentLoader from '../components/ContentLoader.vue'
+import ModelTable from '../components/ModelTable.vue'
 
 const loading = ref(true)
 const activeTab = ref('chat')
@@ -140,6 +116,12 @@ const form = reactive({
   is_active: false,
 })
 
+const typeTabs = [
+  { name: 'chat', label: '对话模型' },
+  { name: 'embedding', label: '向量模型' },
+  { name: 'rerank', label: '重排模型' },
+]
+
 const providerOptions = computed(() =>
   providers.value.filter((p) => p.model_types.includes(form.model_type)),
 )
@@ -157,6 +139,9 @@ const apiMaskHint = computed(() => {
 
 function modelsByType(type) {
   return allModels.value.filter((m) => m.model_type === type)
+}
+function activeOfType(type) {
+  return allModels.value.some((m) => m.model_type === type && m.is_active)
 }
 
 async function load() {
@@ -250,12 +235,11 @@ async function onSave() {
 }
 
 async function onTestForm() {
-  // 表单内测试：先临时构造（用表单值），若编辑中且 key 留空则用已存 key
+  // 后端 test 需要已落库的 model id，未保存的表单无法测
   testing.value = true
   try {
-    // 简化：保存后再测。未保存的无法测（后端 test 需要 model id）
     if (!editing.value) {
-      ElMessage.info('请先保存模型，再点列表里的"测试连接"')
+      ElMessage.info('请先保存模型，再点列表里的「测试」')
     } else {
       await doTest(form.id)
     }
@@ -270,9 +254,10 @@ async function doTest(id) {
     const result = await admin.testModel(id)
     if (result.ok) {
       if (result.embed_dimension != null) {
-        ElMessage.success(`连接成功，检测到维度 ${result.embed_dimension}（${result.latency_ms}ms，已自动填入）`)
+        ElMessage.success(
+          `连接成功，检测到维度 ${result.embed_dimension}（${result.latency_ms}ms，已自动填入）`,
+        )
         await load()
-        // 若正在编辑该模型，同步表单里的维度字段
         if (editing.value && form.id === id) {
           form.embed_dimension = result.embed_dimension
         }
@@ -282,7 +267,7 @@ async function doTest(id) {
     } else {
       ElMessage.error(`连接失败：${result.error}`)
     }
-  } catch (e) {
+  } catch {
     ElMessage.error('测试请求失败')
   }
 }
@@ -326,100 +311,32 @@ async function onDelete(model) {
 }
 
 onMounted(load)
-
-// 内联子组件：模型列表（避免单独文件）
-const ModelList = {
-  props: ['modelType', 'models', 'providers'],
-  emits: ['refresh', 'add', 'edit', 'activate', 'test', 'delete'],
-  setup(props, { emit }) {
-    return () =>
-      h('div', [
-        h(
-          'div',
-          { style: 'margin-bottom: 12px' },
-          [
-            h(
-              ElButton,
-              { type: 'primary', onClick: () => emit('add') },
-              () => '添加模型',
-            ),
-            h(
-              'span',
-              { style: 'margin-left: 12px; color: #909399; font-size: 13px' },
-              `共 ${props.models.length} 个模型`,
-            ),
-          ],
-        ),
-        h(
-          ElTable,
-          { data: props.models, border: true },
-          () => [
-            h(ElTableColumn, { prop: 'display_name', label: '名称', minWidth: 140 }),
-            h(ElTableColumn, { prop: 'name', label: '模型标识', minWidth: 160 }),
-            h(ElTableColumn, { prop: 'provider', label: '服务商', width: 120 }),
-            h(ElTableColumn, {
-              prop: 'base_url',
-              label: 'API 地址',
-              minWidth: 220,
-              formatter: (row) => row.base_url || '(空)',
-            }),
-            props.modelType === 'embedding'
-              ? h(ElTableColumn, {
-                  prop: 'embed_dimension',
-                  label: '维度',
-                  width: 80,
-                })
-              : null,
-            h(ElTableColumn, { label: '状态', width: 90 }, {
-              default: ({ row }) =>
-                h(ElTag, { type: row.is_active ? 'success' : 'info' }, () =>
-                  row.is_active ? '激活中' : '未激活',
-                ),
-            }),
-            h(
-              ElTableColumn,
-              { label: '操作', width: 280, fixed: 'right' },
-              {
-                default: ({ row }) => [
-                  h(
-                    ElButton,
-                    {
-                      size: 'small',
-                      type: row.is_active ? 'info' : 'success',
-                      disabled: row.is_active,
-                      onClick: () => emit('activate', row),
-                    },
-                    () => (row.is_active ? '已激活' : '激活'),
-                  ),
-                  h(
-                    ElButton,
-                    { size: 'small', onClick: () => emit('test', row) },
-                    () => '测试',
-                  ),
-                  h(
-                    ElButton,
-                    { size: 'small', onClick: () => emit('edit', row) },
-                    () => '编辑',
-                  ),
-                  h(
-                    ElButton,
-                    { size: 'small', type: 'danger', onClick: () => emit('delete', row) },
-                    () => '删除',
-                  ),
-                ],
-              },
-            ),
-          ],
-        ),
-      ])
-  },
-}
 </script>
 
 <style scoped>
-.hint {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
+.models-panel {
+  padding: 0 var(--bc-space-5) var(--bc-space-5);
+}
+.models-tabs :deep(.el-tabs__header) {
+  margin-bottom: var(--bc-space-4);
+}
+.models-tabs__count {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-4);
+  margin-left: var(--bc-space-1);
+}
+.models-tabs__active {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--bc-radius-full);
+  background: var(--bc-success);
+  margin-left: var(--bc-space-1);
+  vertical-align: 2px;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--bc-space-4);
 }
 </style>
