@@ -1,6 +1,6 @@
 # M4 实施计划：MCP 工具网关
 
-> 状态：Slice A ✅ · Slice B ✅ · 2026-07-22 · C（HITL 审批）待启动
+> 状态：Slice A ✅ · Slice B ✅ · Slice C ✅ · 2026-07-22 · M4 完成
 
 ## 1. 目标与范围
 
@@ -135,3 +135,44 @@ src/bycall/mcp/                   # ★ 新包
 1. **Slice 起步**：先做 Slice A（网关+注册表端到端），B/C 后续？—— 推荐。
 2. **传输优先级**：stdio + http 都做（A2），还是先只 stdio？—— 推荐都做（SDK 抽象一致，增量小）。
 3. **`/tools` 工具选择 UI**：现状是逗号分隔文本框。MCP 工具多了要不要升级成多选 + 分组？—— Slice A 先保持文本框 + 前缀通配，UI 升级列为 polish。
+
+## 9. Slice C：HITL 审批完整闭环（已完成）
+
+**一句话**：destructiveHint 的 MCP 工具调用人审拦截——LLM 调用时创建 pending 审批请求，
+admin 审批通过后才实际执行，结果回写会话历史。
+
+### 设计要点
+
+**destructiveHint 捕获**：MCPClient 发现工具时读 `tool.annotations.destructiveHint`，
+映射到 `ToolSpec.requires_approval`。
+
+**审批门（func 层拦截）**：`to_langchain_tools` 对 `requires_approval=True` 的工具包装
+审批门（`make_approval_gated_func`）——调用时不执行，而是创建 `ApprovalRequest(pending)`
+并返回"待审批"消息给 LLM（LLM 告知用户等待）。
+
+**审批上下文（contextvars）**：runner 在 graph 执行前设置 `ApprovalContext`
+（user/conversation/channel），审批门读取并创建审批请求。与 capability token 平行。
+
+**执行 + 闭环（无需 checkpointer）**：admin approve → `execute_approved_tool` 用存储的
+参数实际执行（重新计算能力集验证权限仍在 → 设置 capability token → 调 spec.func + 脱敏），
+结果存 `ApprovalRequest.result_text` + 追加到会话历史（用户下次交互可见）。与 ADR-0002 自洽。
+
+**失败安全**：工具已被移除/用户权限已变更/用户已禁用 → 标记 failed/rejected，不崩。
+
+### 新增文件
+
+| 文件 | 职责 |
+|------|------|
+| `tools/approval.py` | 审批上下文（contextvars）+ 审批门 + 执行 + 模型操作 |
+| `governance/models.py` `ApprovalRequest` | 审批请求实体（状态机 pending→executed/rejected/failed） |
+| `admin/api.py` 审批端点 | GET /approvals（列表+过滤）/ approve / reject |
+| `frontend/src/views/Approvals.vue` | 审批队列管理页（列表+过滤+审批+详情） |
+
+### 关键不变量
+
+治理脊柱零改动：审批门在 func 层，RBAC 白名单过滤不变（destructive 工具仍需在 allowed_tools 内才可见）。
+
+审批执行时重新计算能力集：用户权限在审批等待期间可能已变更，执行时重新验证。
+
+与 ADR-0002 自洽：不需要 LangGraph checkpointer/interrupt——审批门在 func 层返回"待审批"消息，
+本轮对话正常结束；审批通过后的执行 + 结果回写是独立路径。
