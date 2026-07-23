@@ -134,6 +134,7 @@ const navGroups = [
       { name: 'models', label: '模型管理', icon: 'Cpu' },
       { name: 'skills', label: 'Skill 管理', icon: 'MagicStick' },
       { name: 'mcp', label: 'MCP 工具', icon: 'Connection' },
+      { name: 'approvals', label: '审批队列', icon: 'DocumentChecked' },
     ],
   },
   {
@@ -159,6 +160,7 @@ const titles = {
   prompts: '提示词版本',
   skills: 'Skill 管理',
   mcp: 'MCP 工具',
+  approvals: '审批队列',
   settings: '运行时设置',
   audit: '审计日志',
   chat: '对话测试',

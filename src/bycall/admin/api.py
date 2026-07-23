@@ -3103,7 +3103,6 @@ def approve_approval(
     仅 pending 状态可审批；已处理的 → 409。
     执行在独立 session 中完成（工具可能跨线程，如 MCP），结果回写本 session。
     """
-    from bycall.governance.models import ApprovalRequest  # noqa: F811
 
     req = _get_approval_or_404(session, approval_id)
     if req.status != "pending":

@@ -22,9 +22,9 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from bycall.tools.approval import make_approval_gated_func
 from bycall.tools.base import ToolSpec
 from bycall.tools.registry import get_all_tools
-from bycall.tools.approval import make_approval_gated_func
 
 if TYPE_CHECKING:
     from bycall.governance.capability import CapabilitySet
