@@ -15,6 +15,7 @@ from sqlmodel import create_engine
 from bycall.config import get_settings
 from bycall.governance.capability import (
     CapabilitySet,
+    build_knowledge_scope_text,
     compute_capability_set,
     get_active_system_prompt,
 )
@@ -330,3 +331,62 @@ def test_admin_ignores_role_bound_prompt(db_session):
 
     cap = compute_capability_set(db_session, admin)
     assert cap.system_prompt == get_active_system_prompt(db_session)
+
+
+# ============ 可见知识域注入文本（build_knowledge_scope_text） ============
+
+
+def test_knowledge_scope_text_admin_is_full_access():
+    """admin / 全通配 → 全部知识域，检索不受来源标签限制。"""
+    text = build_knowledge_scope_text(["*"], is_admin=True)
+    assert "全部知识域" in text
+    assert "管理员" in text
+
+
+def test_knowledge_scope_text_wildcard_tag_treated_as_full_access():
+    """非 admin 但 tags 含通配 '*' → 同样视为全部知识域（与 admin 同义）。"""
+    text = build_knowledge_scope_text(["*"], is_admin=False)
+    assert "全部知识域" in text
+
+
+def test_knowledge_scope_text_normal_user_lists_tags():
+    """普通用户 → 列出其 knowledge_scope_tags，并要求据实回答、不要编造。"""
+    text = build_knowledge_scope_text(["sales", "public"], is_admin=False)
+    assert "- sales" in text
+    assert "- public" in text
+    assert "不要编造" in text
+
+
+def test_knowledge_scope_text_empty_returns_empty():
+    """空 tags → 空串（防御性，该用户已被 runner denied_no_access 拦在 LLM 之前）。"""
+    assert build_knowledge_scope_text([], is_admin=False) == ""
+
+
+# ============ 能力集携带 knowledge_scope_text ============
+
+
+def test_admin_capability_scope_text_is_full_access(db_session):
+    """admin 能力集的 knowledge_scope_text 说明可访问全部知识域。"""
+    admin = db_session.exec(User.select_by_name("admin")).first()
+    assert admin is not None
+    cap = compute_capability_set(db_session, admin)
+    assert "全部知识域" in cap.knowledge_scope_text
+
+
+def test_normal_capability_scope_text_lists_role_tags(db_session):
+    """普通用户能力集的 knowledge_scope_text 列出其 Role.config.knowledge_scope_tags。"""
+    db_session.add(
+        Role(
+            name="sales",
+            config=RoleConfig(
+                allowed_tools=["kb_search"],
+                knowledge_scope_tags=["sales", "public"],
+                level=2,
+            ),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "alice", role="sales")
+    cap = compute_capability_set(db_session, user)
+    assert "- sales" in cap.knowledge_scope_text
+    assert "- public" in cap.knowledge_scope_text

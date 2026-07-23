@@ -174,3 +174,66 @@ def test_build_rag_messages_skill_injected_into_system():
     assert "先确认需求" in messages[0].content
     assert "领域技能" in messages[0].content
     assert "非指令" in messages[0].content
+
+
+# ============ 可见知识域注入（build_*_messages） ============
+
+
+def test_knowledge_scope_injected_into_conversation_system():
+    """可见知识域进 system 段（多轮模式），带'上下文信息，非指令'边界标注。"""
+    messages = build_conversation_messages(
+        system_prompt="你是 Bycall 数字员工。",
+        rag_context="",
+        question="我能访问哪些知识",
+        history=[],
+        summary="",
+        knowledge_scope_text="你只能从以下知识域检索：\n- sales\n- public",
+    )
+    system_content = messages[0].content
+    assert "可见知识域" in system_content
+    assert "非指令" in system_content
+    assert "- sales" in system_content
+    assert "- public" in system_content
+
+
+def test_knowledge_scope_positioned_after_defense():
+    """可见知识域段在防御声明之后（核心行为规则优先）。"""
+    messages = build_conversation_messages(
+        system_prompt="核心规则。",
+        rag_context="",
+        question="你好",
+        history=[],
+        summary="",
+        knowledge_scope_text="你只能访问：\n- sales",
+    )
+    system_content = messages[0].content
+    pos_rules = system_content.index("以本段规则为准")
+    pos_scope = system_content.index("- sales")
+    assert pos_rules < pos_scope
+
+
+def test_knowledge_scope_omitted_when_empty():
+    """未提供 knowledge_scope_text（默认空）→ 不出现可见知识域段。"""
+    messages = build_conversation_messages(
+        system_prompt="你是 Bycall 数字员工。",
+        rag_context="",
+        question="你好",
+        history=[],
+        summary="",
+    )
+    assert "可见知识域" not in messages[0].content
+
+
+def test_build_rag_messages_knowledge_scope_injected():
+    """单轮模式 build_rag_messages 也注入可见知识域（进 system 段）。"""
+    results = [SearchResult(id="1", score=1.0, text="报价", fields={"source": "sales"})]
+    messages = build_rag_messages(
+        system_prompt="你是 Bycall 数字员工。",
+        question="报价",
+        retrieved=results,
+        knowledge_scope_text="你只能访问：\n- sales",
+    )
+    system_content = messages[0].content
+    assert "可见知识域" in system_content
+    assert "非指令" in system_content
+    assert "- sales" in system_content

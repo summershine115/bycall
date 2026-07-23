@@ -71,4 +71,4 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 ## 6. 提交规范
 
 - commit message 用中文，简述本次改了什么、为什么（参考近期 commit 风格）。
-- 仅在用户明确要求时才 commit/push。在 main 分支上先开分支。
+- 仅在用户明确要求时才 commit/push。**改代码前先从 main 创建新分支**，在新分支上开发，完成后再合并回 main。

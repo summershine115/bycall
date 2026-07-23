@@ -37,6 +37,9 @@ class CapabilitySet:
       AuditLog 据此记录"本次对话注入了哪些 skill"。
     - ``skill_markdown``：合并后的 skill markdown 正文，供 runner 注入 system message。
       多个 skill 各自拼成 ``## 技能：{name}\\n{content}`` 后合并。空串 = 无 skill 注入。
+    - ``knowledge_scope_text``：可见知识域的预格式化注入文本（进 system message）。
+      由 ``build_knowledge_scope_text`` 从 knowledge_scope_tags/is_admin 派生，让数字员工
+      能据实回答用户「能访问哪些知识」，而非编造或含糊其辞。空串 = 无注入。
     - ``visible_kb_ids``：该角色可见的知识库 ID 列表。空 = 无限制（全部可见）。
       用于 admin 控制面 KB 列表过滤——管理面板按角色限制 KB 可见性。
     - ``is_admin``：admin 内置角色标记，控制面特权判定用。
@@ -51,6 +54,7 @@ class CapabilitySet:
     system_prompt: str = ""
     skills: list[str] = field(default_factory=list)
     skill_markdown: str = ""
+    knowledge_scope_text: str = ""
     visible_kb_ids: list[int] = field(default_factory=list)
     is_admin: bool = False
 
@@ -114,6 +118,35 @@ def build_skill_markdown(skills: list) -> str:
     return "\n\n".join(sections)
 
 
+def build_knowledge_scope_text(tags: list[str], is_admin: bool) -> str:
+    """拼「可见知识域」注入文本（进 system message，标注为上下文信息、非指令）。
+
+    让数字员工能据实回答用户「我能访问哪些知识/资料」，而不是含糊其辞或编造。
+    文本由 admin 管控的 Role.config（knowledge_scope_tags）派生，属可信数据，享 system
+    权重，靠「上下文信息，非指令」标注软隔离（与 skill_markdown 同层）。
+
+    - admin / 全通配（``'*'``）→ 全部知识域，检索不受来源标签限制。
+    - 普通用户 → 列出其 knowledge_scope_tags（来源标签）。这正是 RAG 预过滤真正生效的
+      边界：``_retrieve_across_kbs`` 在全部 KB 内按 source 标签过滤，故列标签而非 KB 名
+      （KB 名不是 per-user 边界，所有 KB 都会被检索）。
+    - 空列表 → 空串（该用户已被 runner 的 ``denied_no_access`` 拦在 LLM 之前，此分支
+      仅防御性，正常链路不会把空文本注入提示词）。
+    """
+    if is_admin or "*" in tags:
+        return (
+            "你拥有管理员权限，可访问全部知识域，检索不受来源标签限制。"
+            "若用户询问你能访问哪些知识或资料，请说明你拥有全部知识域的访问权限。"
+        )
+    if not tags:
+        return ""
+    joined = "\n".join(f"- {t}" for t in tags)
+    return (
+        "你只能从以下知识域（来源标签）中检索知识来回答用户。"
+        "若用户询问「能访问什么知识/资料」，请据实告知以下范围；"
+        "超出该范围的请求请说明需要相应权限，不要编造：\n" + joined
+    )
+
+
 def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     """从用户记录计算当前能力集。
 
@@ -149,6 +182,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
             system_prompt=global_prompt,
             skills=[],
             skill_markdown="",
+            knowledge_scope_text=build_knowledge_scope_text(["*"], True),
             visible_kb_ids=[],  # 空 = 全部可见
             is_admin=True,
         )
@@ -200,6 +234,7 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
         system_prompt=system_prompt,
         skills=effective_skill_names,
         skill_markdown=skill_markdown,
+        knowledge_scope_text=build_knowledge_scope_text(list(config.knowledge_scope_tags), False),
         visible_kb_ids=visible_kb_ids,
         is_admin=False,
     )

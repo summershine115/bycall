@@ -137,11 +137,16 @@ def run_agent(
             summary=summary,
             user_memories=user_memories,
             skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
         )
     else:
         # 单轮模式（兼容 M1）：system + RAG + user，无历史。
         raw_messages = build_rag_messages(
-            cap.system_prompt, question, retrieved, skill_markdown=cap.skill_markdown
+            cap.system_prompt,
+            question,
+            retrieved,
+            skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
         )
 
     # 自研 LLMMessage → LangChain 消息（ChatOpenAI / graph 需要 LangChain 类型）。
@@ -424,10 +429,15 @@ async def run_agent_stream(
             summary=summary,
             user_memories=user_memories,
             skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
         )
     else:
         raw_messages = build_rag_messages(
-            cap.system_prompt, question, retrieved, skill_markdown=cap.skill_markdown
+            cap.system_prompt,
+            question,
+            retrieved,
+            skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
         )
 
     messages = _to_langchain_messages(raw_messages)
