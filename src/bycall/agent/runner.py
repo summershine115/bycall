@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
@@ -334,6 +335,7 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
         return []
 
     from bycall.config import get_settings
+    from bycall.observability.metrics import RAG_RETRIEVAL_DURATION, RAG_RETRIEVED_CHUNKS
     from bycall.rag.retrieve import retrieve_multi_kb
 
     # 查全部 KB（当前单租户，所有 KB 对所有用户可见，ACL 在 collection 内按 source 过滤）
@@ -343,13 +345,18 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
 
     kb_specs = [(kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id) for kb in kbs]
 
-    return retrieve_multi_kb(
+    start = time.perf_counter()
+    results = retrieve_multi_kb(
         session=session,
         config=get_settings().vector_store,
         kb_specs=kb_specs,
         question=question,
         knowledge_scope_tags=knowledge_scope_tags,
     )
+    elapsed = time.perf_counter() - start
+    RAG_RETRIEVAL_DURATION.observe(elapsed)
+    RAG_RETRIEVED_CHUNKS.observe(len(results))
+    return results
 
 
 async def run_agent_stream(

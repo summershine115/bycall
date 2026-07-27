@@ -7,6 +7,7 @@
 - ``CorrelationMiddleware``：每个入站请求生成 cid（或接受 X-Request-ID 头），写入
   contextvars，并回写响应头 X-Request-ID（前端/排障可关联）。
 - ``AccessLogMiddleware``：记每请求访问日志（method/path/status/耗时）。otel 启用与否都工作。
+- ``MetricsMiddleware``：记 HTTP RED metric（始终注册，独立于 otel.enabled）。
 HTTP span 本身由 OTel FastAPIInstrumentor 自动生成，这里不重复记 span。
 """
 
@@ -21,6 +22,7 @@ from bycall.observability.correlation import (
     reset_correlation_id,
     set_correlation_id,
 )
+from bycall.observability.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS, status_class
 
 logger = logging.getLogger("bycall.access")
 
@@ -94,3 +96,37 @@ class AccessLogMiddleware:
         logger.info(
             "request %s %s %d %.1fms", method, path, status_holder["code"], elapsed_ms
         )
+
+
+class MetricsMiddleware:
+    """记 HTTP RED metric（始终注册，独立于 otel.enabled）。纯 ASGI 流式安全。
+
+    与 AccessLogMiddleware 分离：后者记访问日志（otel enabled 时结构化），
+    本者只记 metric（始终 on），职责单一、互不影响。label 严格低基数（method/status_class）。
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "?")
+        start = time.perf_counter()
+        status_holder = {"code": 0}
+
+        async def send_metric(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                status_holder["code"] = message.get("status", 0)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_metric)
+        finally:
+            elapsed = time.perf_counter() - start
+            HTTP_REQUESTS.labels(
+                method=method, status_class=status_class(status_holder["code"])
+            ).inc()
+            HTTP_REQUEST_DURATION.labels(method=method).observe(elapsed)

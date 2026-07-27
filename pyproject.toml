@@ -52,6 +52,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.49b0",
     "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
     "opentelemetry-instrumentation-httpx>=0.49b0",
+    "prometheus-client>=0.20",  # M5 metrics：RED 指标 + Prometheus /metrics 端点
 ]
 
 [project.optional-dependencies]

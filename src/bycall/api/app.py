@@ -55,6 +55,14 @@ def create_app() -> FastAPI:
     # M5 可观测性（默认关闭；enabled 时启用 trace + 结构化日志 + correlation middleware）。
     _setup_observability(app, settings)
 
+    # M5 metrics（独立于 otel.enabled，始终 on）：HTTP RED + /metrics 端点。
+    # MetricsMiddleware 后注册 → 最外层，覆盖所有请求（含 security middleware）。
+    from bycall.observability.metrics import metrics_asgi_app
+    from bycall.observability.middleware import MetricsMiddleware
+
+    app.add_middleware(MetricsMiddleware)
+    app.mount("/metrics", metrics_asgi_app())
+
     # ---- 健康检查（无认证）----
     app.include_router(health.router, tags=["health"])
 
