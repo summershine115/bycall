@@ -38,6 +38,8 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 
 ## 3. 架构边界（改代码前必须遵守）
 
+**代码探索首选：** 修改任何代码前，必须先调 `codegraph_explore`（`xd://mcp__codegraph_explore`）一次性获取相关符号的源代码 + 调用链 + 影响范围（blast radius）。这是默认路径——grep / Read / LSP 仅在 codegraph 无法覆盖的场景（配置文件、非可解析文本、宽泛全文搜索）降级使用。
+
 两个面 + 一条脊柱（详见 architecture.md「架构红线」）：
 
 - **控制面**（`admin/` + 前端）：admin 定义规则（用户/角色/提示词/模型/审计）。用户的请求永远进不了这里。
