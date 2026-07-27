@@ -100,6 +100,28 @@ class IMConfig(BaseSettings):
     wecom_bot_secret: str = ""
 
 
+class ObservabilityConfig(BaseSettings):
+    """可观测性配置（M5）。前缀 ``BYCALL_OTEL_``。
+
+    OpenTelemetry 全链路 trace + 结构化日志（correlation_id 贯穿）。默认关闭：
+    ``enabled=False`` 时 ``setup_observability()`` 完全 no-op，不影响现有行为与测试。
+    生产经环境变量启用，OTLP endpoint 指向自建 collector（内网无公网）。
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_otel_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    enabled: bool = False
+    # OTLP endpoint（gRPC 或 HTTP，如 http://otel-collector:4317）。空 → 仅 console exporter（开发用）。
+    otlp_endpoint: str = ""
+    service_name: str = "bycall"
+    # head-based 采样率，1.0 = 全采样。
+    sampler_ratio: float = 1.0
+    # 结构化日志：True→JSON（生产），False→人类可读带 correlation_id（开发）。
+    structured_logs: bool = False
+
+
 class AppConfig(BaseSettings):
     """顶层配置。环境变量前缀 ``BYCALL_``（顶层字段如 ``BYCALL_ENV``）。
 
@@ -131,6 +153,7 @@ class AppConfig(BaseSettings):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     im: IMConfig = Field(default_factory=IMConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     @model_validator(mode="after")
     def _validate_prod_security(self) -> AppConfig:

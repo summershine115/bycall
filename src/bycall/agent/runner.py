@@ -43,10 +43,13 @@ from bycall.agent.session_store import (
 from bycall.governance.capability import CapabilitySet, compute_capability_set
 from bycall.governance.models import AuditLog, Conversation, KnowledgeBase, User
 from bycall.llm.base import Message as LLMMessage
+from bycall.observability import get_tracer, traced
 from bycall.rag.retrieve import build_rag_messages
 from bycall.tools.gateway import filter_tools, to_langchain_tools
 
 logger = logging.getLogger(__name__)
+
+_tracer = get_tracer()
 
 
 @dataclass
@@ -61,6 +64,8 @@ class AgentResult:
     role: str
     tool_calls: list[dict]  # 本次触发的工具调用记录（name, args），审计透明化
 
+
+@traced("bycall.run_agent")
 
 def run_agent(
     *,
@@ -89,7 +94,10 @@ def run_agent(
     """
     # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
     try:
-        cap: CapabilitySet = compute_capability_set(session, user)
+        with _tracer.start_as_current_span("capability") as _span:
+            cap: CapabilitySet = compute_capability_set(session, user)
+            _span.set_attribute("bycall.role", cap.role)
+            _span.set_attribute("bycall.allowed_tools", len(cap.allowed_tools))
     except PermissionError as e:
         _audit(session, user, channel, question, "denied", str(e), "")
         return _result(
@@ -101,7 +109,10 @@ def run_agent(
         )
 
     # 2. RAG 检索（ACL 预过滤）：跨用户可见的全部 KB collection 检索。
-    retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
+    with _tracer.start_as_current_span("rag.retrieve") as _span:
+        retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
+        _span.set_attribute("bycall.retrieved", len(retrieved))
+        _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
 
     # 无任何可见知识域 → 不进 LLM，直接拒绝（不让 LLM 看到问题）。
     has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)

@@ -52,6 +52,9 @@ def create_app() -> FastAPI:
 
     _register_security_middleware(app)
 
+    # M5 可观测性（默认关闭；enabled 时启用 trace + 结构化日志 + correlation middleware）。
+    _setup_observability(app, settings)
+
     # ---- 健康检查（无认证）----
     app.include_router(health.router, tags=["health"])
 
@@ -104,6 +107,52 @@ def create_app() -> FastAPI:
 
     logger.info("Bycall app created (env=%s, version=%s)", settings.env, __version__)
     return app
+
+
+def _setup_observability(app: FastAPI, settings) -> None:
+    """M5 可观测性接线：仅在 ``settings.observability.enabled`` 时生效，否则 no-op。
+
+    注册顺序（外→内）：Correlation → AccessLog → FastAPI auto-instrument → 其余。
+    correlation 最外，确保全链路（含 security middleware）都在 cid 上下文内。
+    auto-instrument 覆盖 HTTP span（FastAPI）/ DB query span（SQLAlchemy）/ 出站 http（httpx = LLM/embed/rerank 调用）。
+    """
+    otel = settings.observability
+    if not otel.enabled:
+        return
+
+    from bycall.observability import (
+        AccessLogMiddleware,
+        CorrelationMiddleware,
+        setup_observability,
+    )
+
+    setup_observability(
+        enabled=True,
+        service_name=otel.service_name,
+        otlp_endpoint=otel.otlp_endpoint,
+        sampler_ratio=otel.sampler_ratio,
+        structured_logs=otel.structured_logs,
+        log_level=settings.log_level,
+    )
+
+    # auto-instrument：框架层 I/O 自动成 span，治理链路手动 span 只补业务语义。
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+    from bycall.db import get_engine
+
+    FastAPIInstrumentor.instrument_app(app)
+    engine = get_engine()
+    if engine is not None:
+        SQLAlchemyInstrumentor().instrument(engine=engine)
+    HTTPXClientInstrumentor().instrument()
+
+    # Starlette add_middleware 后注册的在外层：先 AccessLog 再 Correlation，
+    # 让 Correlation 最外（最先建 cid），AccessLog 次之（记日志时 cid 已设）。
+    app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(CorrelationMiddleware)
+    logger.info("可观测性 middleware 已注册")
 
 
 def _setup_im_channel_deprecated() -> None:
