@@ -132,11 +132,14 @@ def test_user_with_no_scope_denied(env, monkeypatch):
 
 
 def test_authorized_user_gets_answer(env, monkeypatch):
-    """有权用户 → 走完链路得到 LLM 回答。"""
+    """有权用户 → 走完链路得到 LLM 回答；finish 帧携带完整答案（replace 语义）。"""
     _seed_user("erin", "staff", ["public"])
     from bycall.agent import im_handler
 
-    mock_llm = _make_mock_llm("这是基于知识的答案。")
+    # 关闭节流，确保每个 chunk 都发一帧（断言中间帧为累积全量）。
+    monkeypatch.setattr(im_handler, "STREAM_FLUSH_INTERVAL", 0.0)
+    reply = "这是基于知识的答案。"
+    mock_llm = _make_mock_llm(reply)
     _patch_chat_model(monkeypatch, mock_llm)
     capture = []
     sender = _make_sender(capture)
@@ -144,9 +147,54 @@ def test_authorized_user_gets_answer(env, monkeypatch):
 
     asyncio.run(im_handler.handle_im_message(msg, sender))
 
-    # 流式：token 在 finish=False 帧里，finish=True 帧可能为空。聚合全部帧检查。
-    all_text = "".join(c[1] for c in capture if c[0] == "stream")
-    assert "基于知识" in all_text
+    streams = [c for c in capture if c[0] == "stream"]
+    assert streams, "应有流式帧"
+    # finish 帧携带完整 final_answer（replace 语义覆盖全文），不再依赖中间帧聚合。
+    finish_frames = [c for c in streams if c[3] is True]
+    assert len(finish_frames) == 1
+    assert finish_frames[0][1] == reply
+
+
+def test_thinking_placeholder(env, monkeypatch):
+    """流式开始立即发"正在思考…"占位，覆盖首 token 前的空白期。"""
+    _seed_user("tia", "staff", ["public"])
+    from bycall.agent import im_handler
+
+    monkeypatch.setattr(im_handler, "STREAM_FLUSH_INTERVAL", 0.0)
+    _patch_chat_model(monkeypatch, _make_mock_llm("答案。"))
+    capture = []
+    sender = _make_sender(capture)
+    msg = InboundMessage(channel="wecom", im_user_id="im_tia", text="你好")
+
+    asyncio.run(im_handler.handle_im_message(msg, sender))
+
+    streams = [c for c in capture if c[0] == "stream"]
+    assert streams, "应有流式帧"
+    # 第一帧是"正在思考…"占位（finish=False），在真实 chunk 之前发出。
+    assert streams[0][1] == "正在思考…"
+    assert streams[0][3] is False
+
+
+def test_full_replacement_frames(env, monkeypatch):
+    """中间帧是累积全量递增（replace 语义），不是单字符增量。"""
+    _seed_user("rep", "staff", ["public"])
+    from bycall.agent import im_handler
+
+    monkeypatch.setattr(im_handler, "STREAM_FLUSH_INTERVAL", 0.0)
+    reply = "abcd"
+    mock_llm = _make_mock_llm(reply)
+    _patch_chat_model(monkeypatch, mock_llm)
+    capture = []
+    sender = _make_sender(capture)
+    msg = InboundMessage(channel="wecom", im_user_id="im_rep", text="你好")
+
+    asyncio.run(im_handler.handle_im_message(msg, sender))
+
+    streams = [c for c in capture if c[0] == "stream"]
+    # 中间帧 = 排除"正在思考…"占位帧与 finish 帧。
+    middle = [c for c in streams if c[3] is False and c[1] != "正在思考…"]
+    # 第 N 帧含前 N 个字符（累积全量、replace 语义），不是每帧单字符增量。
+    assert [c[1] for c in middle] == ["a", "ab", "abc", "abcd"]
 
 
 def test_empty_message_ignored(env, monkeypatch):

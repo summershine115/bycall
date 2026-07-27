@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from typing import Any
 
 from bycall.db import session_scope
 from bycall.gateway.base import InboundMessage, ReplySender
@@ -18,6 +20,9 @@ from bycall.gateway.identity import resolve_user_by_im
 logger = logging.getLogger(__name__)
 
 MAX_IM_QUESTION_LEN = 4000
+# 流式全量刷新节流间隔（秒）：企微是 replace 语义，每帧都发完整全文，帧过密无感知增益
+# 且浪费带宽。参考 WeKnora 的 streamFlushInterval，300ms 一帧。测试可 monkeypatch 为 0 关闭。
+STREAM_FLUSH_INTERVAL = 0.3
 
 
 async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
@@ -71,40 +76,56 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
     import uuid
 
     stream_id = uuid.uuid4().hex[:12]
-    collected: list[str] = []
+    # 企微 WebSocket 流式协议是 replace 语义：每帧 content 是"当前应显示的完整文本"，
+    # 客户端用它覆盖之前显示的全部内容（非增量追加）。因此这里维护 full_text 累积全文，
+    # 每帧发送累积全文，而不是单 token 增量——否则客户端每次只显示最新一个字符（闪烁）。
+    full_text = ""
     can_stream = sender.send_stream is not None
+    first_chunk = True
+    last_flush = time.monotonic()
+
+    # 流式开始前先发"正在思考…"占位，覆盖 RAG 检索 + LLM 首 token 延迟（可达数秒）
+    # 期间的空白，提升用户感知（参考 WeKnora）。首个真实 chunk 到来时由 full_text 覆盖占位。
+    if can_stream:
+        await sender.send_stream("正在思考…", stream_id, False)
 
     try:
         async for chunk_text, is_final, result in _run_stream(user_id, text, msg.channel):
             if is_final:
                 final_answer = _format_answer(result.decision, result.answer)
                 if can_stream:
-                    already_sent = "".join(collected)
-                    # 未流式覆盖的部分（如 denied 路径全文一次到达）一次性在 finish 帧发送。
-                    if not final_answer.startswith(already_sent):
-                        await sender.send_stream(final_answer, stream_id, True)
-                    else:
-                        remainder = final_answer[len(already_sent) :]
-                        # 企微流式协议的 finish 帧内容会覆盖客户端已显示的全部文本；
-                        # 空 finish 帧会把之前的流式内容清空（表现为"空白气泡"）。
-                        # 因此 remainder 为空时必须发送完整 final_answer 保底。
-                        finish_content = remainder if remainder else final_answer
-                        await sender.send_stream(finish_content, stream_id, True)
+                    # finish 帧发完整 final_answer（replace 语义覆盖全文），不受节流影响立即发送。
+                    # 空 finish 会让企微客户端清空已显示内容（空白气泡），故必须非空——
+                    # final_answer 为空时回退到已累积全文或占位文本保底。
+                    finish_content = final_answer or full_text or "正在思考…"
+                    await sender.send_stream(finish_content, stream_id, True)
                 else:
-                    await sender.send_text(final_answer or "".join(collected))
+                    await sender.send_text(final_answer or full_text)
                 break
             elif chunk_text:
-                collected.append(chunk_text)
+                # 首个真实 chunk 重置 full_text（覆盖"正在思考…"占位），后续累加。
+                if first_chunk:
+                    full_text = chunk_text
+                    first_chunk = False
+                else:
+                    full_text += chunk_text
+                # 节流：避免每个 token 都发一帧（replace 语义下每帧都是全文，帧过密
+                # 无感知增益且浪费带宽）。内容累积在 full_text 里不会丢失，下次 flush 一并
+                # 发出；is_final 帧不受节流，始终立即发送。
                 if can_stream:
-                    await sender.send_stream(chunk_text, stream_id, False)
+                    now = time.monotonic()
+                    if now - last_flush >= STREAM_FLUSH_INTERVAL:
+                        await sender.send_stream(full_text, stream_id, False)
+                        last_flush = now
     except Exception:
         logger.exception("治理链路流式执行失败")
-        if can_stream and collected:
-            # 错误时用已收集的内容 + 错误提示作为 finish 帧，
-            # 绝不能发空 finish（企微客户端会清空已显示内容）。
-            error_finish = "".join(collected) + "\n\n[处理时出错，请稍后重试]"
+        if can_stream:
+            # 异常时用已累积全文（或占位）+ 错误提示作为 finish 帧覆盖显示，
+            # 绝不能发空 finish（企微客户端会清空已显示内容 → 空白气泡）。
+            base = full_text or "正在思考…"
+            error_finish = f"{base}\n\n[处理时出错，请稍后重试]"
             await sender.send_stream(error_finish, stream_id, True)
-        elif not collected:
+        else:
             await sender.send_text("抱歉，处理时出错了，请稍后重试。")
 
 

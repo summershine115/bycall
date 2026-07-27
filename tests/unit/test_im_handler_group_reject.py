@@ -38,9 +38,9 @@ def test_group_message_is_rejected():
     )
     sender = _make_sender()
 
-    # patch run_agent 确保它不被调用
+    # patch _run_stream 确保治理链路不被进入（群聊守卫在其之前就 return）
     with (
-        patch("bycall.agent.im_handler.run_agent") as mock_run,
+        patch("bycall.agent.im_handler._run_stream") as mock_run,
         patch("bycall.agent.im_handler.session_scope"),
         patch("bycall.agent.im_handler.resolve_user_by_im") as mock_resolve,
     ):

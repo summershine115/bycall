@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass, field
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -227,10 +227,20 @@ async def run_tool_loop_stream(
 ):
     """流式执行工具回路——逐 token yield 最终答案。
 
-    与 ``run_tool_loop`` 同构，但用 ``graph.astream_events`` 替代 ``graph.invoke``：
-    - 工具调用回合（tool_call_chunks 非空）的 token 被抑制，不推送给用户。
-    - 最终文本答案逐 token yield，用户实时看到生成过程。
+    手动 astream 工具回路（不再用 ``graph.invoke`` + 重跑 ``astream``），保证：
+    - 最终答案只 astream 一次（无浪费的二次 LLM 调用、无两次生成答案不一致）。
+    - 工具调用回合也走流式（边流边判断回合类型），但文本被抑制、不外送——避免污染
+      ``run_agent_stream`` 累积进 DB/审计的 ``full_answer``。
     - 最后 yield 一个 ``(None, True, GraphResult)`` 标记结束并携带审计数据。
+
+    回合类型判定（OpenAI 兼容流式约定）：用第一个有意义的 chunk。
+    - 带 ``tool_call_chunks``（content 空）→ 工具回合：累加 chunk、执行工具、不 yield 文本。
+    - 带 content（无 tool_call_chunks）→ 最终答案回合：逐 token yield。
+
+    AIMessageChunk 累加（``acc = acc + chunk``）：``acc.tool_calls`` 给出组装好的完整
+    tool_calls，``acc.content`` 给完整 content。工具执行复用 ``ToolNode``（与同步
+    ``run_tool_loop`` 一致），审计记录复用 ``_collect_tool_calls``（含 result 截断、
+    「请求未执行」兜底）。
 
     Yields:
         ``(chunk_text: str | None, is_final: bool, result: GraphResult | None)``
@@ -243,89 +253,92 @@ async def run_tool_loop_stream(
             # 无工具：直接 astream，逐 token yield。
             full_content = ""
             async for chunk in chat_model.astream(messages):
-                content = _content_to_text(chunk.content) if hasattr(chunk, "content") else ""
+                content = _content_to_text(getattr(chunk, "content", None))
                 if content:
                     full_content += content
                     yield content, False, None
             yield None, True, GraphResult(answer=full_content)
             return
 
+        # 有工具：手动 astream 回路（model → tool → model，直到无 tool_calls）。
         model_with_tools = chat_model.bind_tools(tools)
-        tool_node = ToolNode(tools)
-        iter_counter = {"n": 0}
+        tool_by_name = {t.name: t for t in tools}
+        current_messages: list[BaseMessage] = list(messages)
 
-        def agent_node(s: MessagesState) -> dict:
-            iter_counter["n"] += 1
-            if iter_counter["n"] > max_iterations:
-                logger.warning("工具回路触及迭代上限 %d，强制终止", max_iterations)
-                return {"messages": [AIMessage(content=_LIMIT_MESSAGE)]}
-            response = model_with_tools.invoke(s["messages"])
-            return {"messages": [response]}
+        for _iteration in range(max_iterations):
+            # 每轮 astream：边流边累加 chunk、判断回合类型。
+            acc: AIMessageChunk | None = None
+            round_text = ""
+            # None=未定, "tool"=工具回合, "answer"=最终答案回合。
+            round_kind: str | None = None
 
-        def route(s: MessagesState) -> str:
-            if iter_counter["n"] > max_iterations:
-                return END
-            return tools_condition(s)
+            async for chunk in model_with_tools.astream(current_messages):
+                acc = chunk if acc is None else acc + chunk
+                content = _content_to_text(getattr(chunk, "content", None))
+                has_tc = bool(getattr(chunk, "tool_call_chunks", None))
+                # 用第一个有意义的 chunk 判定回合类型（tool_call_chunks 优先）。
+                if round_kind is None and (has_tc or content):
+                    round_kind = "tool" if has_tc else "answer"
+                # 仅最终答案回合的文本外送（工具回合文本会污染 runner 累积的 answer）。
+                if round_kind == "answer" and content:
+                    round_text += content
+                    yield content, False, None
 
-        graph_builder = StateGraph(MessagesState)
-        graph_builder.add_node("agent", agent_node)
-        graph_builder.add_node("tools", tool_node)
-        graph_builder.add_edge(START, "agent")
-        graph_builder.add_conditional_edges("agent", route, {"tools": "tools", END: END})
-        graph_builder.add_edge("tools", "agent")
-        graph = graph_builder.compile()
-
-        recursion_limit = max_iterations * 2 + 3
-
-        # 先用非流式 graph.invoke 处理工具调用回合（不向用户展示）。
-        # 工具调用完成后，单独对最终消息列表做一次 astream 得到逐 token 流式输出。
-        result = graph.invoke({"messages": messages}, config={"recursion_limit": recursion_limit})
-        final_messages: list[BaseMessage] = result["messages"]
-        hit_limit = iter_counter["n"] > max_iterations
-
-        # 取最后一条 AIMessage 作为最终答案的起点——对其前面的消息做 astream。
-        # 这样工具调用的 token 不会被用户看到，只看到最终答案的流式生成。
-        answer_prefix = ""
-        stream_input = list(messages)
-        for msg in final_messages[len(messages) :]:
-            if isinstance(msg, AIMessage) and not msg.tool_calls:
-                # 找到最终的纯文本 AIMessage：其前面是完整上下文，用它做 astream。
-                answer_prefix = _content_to_text(msg.content)
-                break
-            stream_input.append(msg)
-
-        if stream_input == list(messages):
-            # 没有额外的 AIMessage（如纯 tool call 无文本回答）：直接用最终消息。
-            graph_result = GraphResult(
-                answer=answer_prefix or _final_answer(final_messages),
-                tool_calls_made=_collect_tool_calls(final_messages),
-                hit_iteration_limit=hit_limit,
+            assembled_tool_calls = (acc.tool_calls if acc else []) or []
+            # round_kind 判定为 answer 时即便偶发携带 tool_calls 也视作最终答案；
+            # 仅当判定为工具回合、或完全未定型却仍累出 tool_calls 时才走工具分支。
+            is_tool_round = round_kind == "tool" or (
+                round_kind is None and bool(assembled_tool_calls)
             )
-            if answer_prefix:
-                yield answer_prefix, False, None
-            yield None, True, graph_result
+
+            if is_tool_round:
+                # 工具回合：把组装好的 AIMessage（含 tool_calls）追加进上下文，
+                # 然后逐个执行 tool_call。此处不能复用 ToolNode——它脱离 graph
+                # 执行上下文时要求 LangGraph config（standalone invoke 会报缺
+                # config key），故手动 tool.invoke 构造 ToolMessage，逻辑等价。
+                # 工具回合的文本一律不向用户 yield（避免污染 runner 的 full_answer）。
+                ai_msg = AIMessage(
+                    content=_content_to_text(acc.content) if acc else "",
+                    tool_calls=assembled_tool_calls,
+                )
+                current_messages.append(ai_msg)
+                for tc in assembled_tool_calls:
+                    tc_id = tc.get("id", "")
+                    tc_name = tc.get("name", "")
+                    tool = tool_by_name.get(tc_name)
+                    if tool is None:
+                        result_str = f"<unknown_tool: {tc_name}>"
+                    else:
+                        try:
+                            result = tool.invoke(tc.get("args", {}))
+                        except Exception as e:  # 工具执行异常不中断回路，记进审计。
+                            logger.warning("工具 %s 执行失败: %s", tc_name, e)
+                            result_str = f"<tool_error: {e}>"
+                        else:
+                            result_str = result if isinstance(result, str) else str(result)
+                    current_messages.append(
+                        ToolMessage(content=result_str, tool_call_id=tc_id, name=tc_name)
+                    )
+                continue
+
+            # 最终答案回合：round_text 已逐 token yield；审计日志从完整消息序列重建
+            # （复用 _collect_tool_calls：name/args/result 三元组，result 截断 + 未执行兜底）。
+            yield None, True, GraphResult(
+                answer=round_text,
+                tool_calls_made=_collect_tool_calls(current_messages),
+            )
             return
 
-        # 对 stream_input 做 astream——这会重新生成最终答案的每个 token。
-        full_content = ""
-        async for chunk in model_with_tools.astream(stream_input):
-            content = _content_to_text(chunk.content) if hasattr(chunk, "content") else ""
-            if content:
-                full_content += content
-                yield content, False, None
-
-        # 用流式累积的 content 覆盖 graph.invoke 里那条 AIMessage（保证一致）。
-        graph_result = GraphResult(
-            answer=full_content or answer_prefix or _final_answer(final_messages),
-            tool_calls_made=_collect_tool_calls(final_messages),
-            hit_iteration_limit=hit_limit,
+        # 循环结束 = 触及迭代上限（LLM 在 max_iterations 轮里始终要求调工具）。
+        logger.warning("流式工具回路触及迭代上限 %d，强制终止", max_iterations)
+        yield _LIMIT_MESSAGE, False, None
+        yield None, True, GraphResult(
+            answer=_LIMIT_MESSAGE,
+            tool_calls_made=_collect_tool_calls(current_messages),
+            hit_iteration_limit=True,
         )
-        yield None, True, graph_result
 
     return _stream()
-
-
-__all__ = ["GraphResult", "run_tool_loop", "run_tool_loop_stream"]
 
 
 __all__ = ["GraphResult", "run_tool_loop", "run_tool_loop_stream"]
