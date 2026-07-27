@@ -363,9 +363,6 @@ async def run_agent_stream(
 
     stream_id 由调用方管理（IM 渠道用 sender.send_stream 的 stream_id），此处不生成。
     """
-    import uuid
-
-    stream_id = uuid.uuid4().hex[:12]
 
     # 1. 策略引擎。
     try:

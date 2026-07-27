@@ -134,7 +134,7 @@ class IngestPipeline:
                             f"embedding 数量不匹配: batch={len(need_idx)} got={len(got)}"
                         )
                         got = [[0.0] * self._embed_model.dimension for _ in need_idx]
-                    for i, vec in zip(need_idx, got):
+                    for i, vec in zip(need_idx, got, strict=False):
                         batch_vecs[i] = vec
                 except Exception as e:
                     logger.warning("embedding 批次失败 (start=%s): %s", start, e)

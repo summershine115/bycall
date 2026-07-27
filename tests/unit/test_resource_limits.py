@@ -23,6 +23,9 @@ def app_client(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "test_limits.db"
     monkeypatch.setenv("BYCALL_POSTGRES_DSN", f"sqlite:///{db_path}")
     monkeypatch.setenv("BYCALL_ENV", "dev")
+    # 隔离 zvec 数据目录到 tmp_path，避免复用全局 ./data/zvec 里残留的
+    # 历史 collection（维度不匹配会让 KB 创建 500，见 test_knowledge_base_api.py 同款隔离）。
+    monkeypatch.setenv("BYCALL_VECTOR_STORE_DATA_DIR", str(tmp_path / "zvec"))
     get_settings.cache_clear()
 
     set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
