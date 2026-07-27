@@ -4,8 +4,9 @@
 >
 > 路线 B（分层混搭自研）：LangGraph 编排 + LangBot IM 层 + zvec 向量库 + PostgreSQL 记忆/元数据 + MCP 网关。
 
-> 🚧 **当前里程碑：M0 基础设施搭建** —— 项目骨架、`VectorStore` 抽象 + zvec 集成、模型无关 LLM 抽象、配置管理、Docker Compose、CI。
-> 完整设计与排期见 [`docs/architecture.md`](docs/architecture.md)。
+> 🚧 **当前里程碑：M4 已完成**（治理脊柱 + 单/多渠道 IM + 混合检索 RAG + LangGraph 编排 + SKILL + MCP 工具网关 + HITL 审批），**M5 生产化待启动**。
+>
+> 完整设计见 [`docs/product-design.md`](docs/product-design.md)（产品形态/治理架构/信任模型），技术分层与架构红线见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
@@ -15,10 +16,11 @@
 |----|------|------|
 | 语言 | Python 3.12 | |
 | Web 框架 | FastAPI | 异步，回调+长连接+流式 |
-| Agent 编排 | LangGraph | M3 引入；M0 未用 |
+| Agent 编排 | LangGraph | ReAct 协调层 + Function Calling 叶子节点（M3 接入）|
 | 向量库 | zvec（起步） | `VectorStore` 抽象，预留 Qdrant/pgvector 迁移 |
 | 关系库 | PostgreSQL + pgvector | 状态/记忆/元数据 |
 | LLM | OpenAI 兼容 / GLM | 模型无关抽象 |
+| 重排 | rerank 模型（硅基流动 / Jina / 自定义）| 混合检索向量+FTS+filter → RRF → rerank（M2）|
 | 部署 | Docker Compose → K8s | 内网无公网 |
 
 ## 快速开始
@@ -56,33 +58,32 @@ make docker-up
   - `VectorStore` 抽象 + zvec 实现（CRUD + 混合检索 + ACL 预过滤）✅
   - 模型无关 LLM 抽象（OpenAI 兼容 / GLM）✅
   - FastAPI 骨架（/health /ready）✅
-- [ ] **M1** MVP —— 单渠道 + 基础 RAG 对话
-- [ ] **M2** 多渠道 + 权限 + 混合检索
-- [ ] **M3** Agent 化 —— LangGraph 编排 + Skill 系统
-- [ ] **M4** MCP 集成 + HITL 审批
-- [ ] **M5** 生产化 —— 可观测 / 高可用 / 迁移准备
+- [x] **M1** 治理脊柱 + 单渠道 MVP —— 身份/RBAC/权限中间件 + 企微长连接 + 基础 RAG（ACL 预过滤）+ 用户/角色管理 + 基础审计
+- [x] **M2** 提示词版本化 + 混合检索增强 —— 提示词/知识库 ACL 管理 + rerank 多服务商 + KB 级角色 ACL
+- [x] **M3** Agent 化 —— LangGraph 编排 + 多用户会话（§2.4）+ 分层记忆 + SKILL 系统 + 工具按权限过滤
+- [x] **M4** MCP 工具网关 + HITL 审批 —— MCP 注册/发现 + capability token + 破坏性操作人审闭环
+- [ ] **M5** 生产化 —— 可观测（OTel/Langfuse）/ 合规审计 dashboard / 高可用 / 迁移准备
 
 ## 目录结构
 
 ```
 src/bycall/
-├── config.py          # pydantic-settings 分层配置（LLM/VectorStore/DB）
-├── llm/               # 模型无关 LLM 抽象（OpenAI 兼容 / GLM）
-│   ├── base.py        #   LLMClient 抽象：chat() / embed()
-│   ├── openai_compat.py
-│   ├── glm.py         #   复用 OpenAI 兼容协议
-│   └── factory.py     #   按 provider 实例化
-├── vector_store/      # VectorStore 抽象 + zvec 实现（M0 核心）
-│   ├── base.py        #   后端无关抽象接口
-│   ├── models.py      #   Chunk / ACLMetadata / SearchRequest ...
-│   ├── zvec_store.py  #   zvec 实现（封装 PoC 踩坑约束）
-│   └── factory.py     #   按 backend 实例化
-├── api/               # FastAPI 骨架（/health /ready）
-└── (agent/ tools/ memory/ gateway/ 占位，M1+ 填充)
+├── config.py          # pydantic-settings 分层配置（DB > .env > 默认）
+├── governance/        # ★ 治理脊柱：身份/角色/权限矩阵/能力集（贯穿控制面+数据面）
+├── admin/             # ★ 控制面 REST API + schemas（用户/角色/提示词/模型/知识库/SKILL/MCP/审计/审批）
+├── agent/             # 数据面执行：runner（治理链路单一真相源）+ im_handler（IM 消息）
+├── gateway/           # IM 渠道抽象 + 企微长连接（ChannelManager 单例，热重载）
+├── rag/               # 检索 + 拼 prompt + 入库（per-KB 切块，混合检索 RRF）
+├── mcp/               # ★ MCP 工具网关（红线 #5：agent 不直连 MCP server）
+├── tools/             # 工具注册表 + 治理（filter_tools 白名单 + 审批门）
+├── memory/            # 分层记忆（工作/情景/语义/治理，红线 #4）
+├── llm/               # 模型无关抽象（chat / embed / rerank，多 provider）
+├── vector_store/      # VectorStore 抽象 + zvec 实现（CRUD + 混合检索 + ACL 预过滤）
+└── api/               # FastAPI 路由（/health /ready /chat + admin + dataplane）
 
 tests/
-├── unit/              # 配置 / LLM / 向量库（真实 zvec）
-└── integration/       # API 健康检查（TestClient，无需外部服务）
+├── unit/              # 单元测试（真实 zvec，覆盖治理/工具/MCP/SKILL/审批/限流）
+└── integration/       # 端到端治理链路（TestClient，含 IM/MCP/SKILL/HITL 注入边界）
 ```
 
 详见 [`docs/architecture.md`](docs/architecture.md) 与
