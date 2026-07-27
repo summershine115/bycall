@@ -48,3 +48,18 @@ def status_class(status: int) -> str:
 def metrics_asgi_app():
     """返回 /metrics ASGI app（Prometheus pull 端点，prometheus_client 提供）。"""
     return make_asgi_app()
+
+
+# ============ 外部依赖（LLM/embed/rerank 调用，on-call Q4）============
+
+LLM_CALLS = Counter(
+    "bycall_llm_calls_total",
+    "外部 LLM/embed/rerank 调用总数",
+    ["kind", "status"],  # kind: chat/embed/rerank；status: ok/error（低基数）
+)
+LLM_CALL_DURATION = Histogram(
+    "bycall_llm_call_duration_seconds",
+    "外部 LLM/embed/rerank 调用耗时分布",
+    ["kind"],
+    buckets=(0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+)

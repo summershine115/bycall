@@ -17,12 +17,15 @@ siliconflow/moonshot/ollama/generic）都提供 OpenAI 兼容端点。
 
 from __future__ import annotations
 
+import time
+
 from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
 from bycall.governance.models import Model
-from bycall.llm.base import EmbedModel, RerankModel
+from bycall.llm.base import EmbedModel, RankResult, RerankModel
 from bycall.llm.openai_compat import OpenAIEmbedModel
+from bycall.observability.metrics import LLM_CALL_DURATION, LLM_CALLS
 
 # ============ 实体查询 ============
 
@@ -33,6 +36,53 @@ def get_active_model(session: Session, model_type: str) -> Model | None:
 
 
 # ============ 实体 → 模型实例 ============
+
+
+class _MeteredEmbedModel(EmbedModel):
+    """包装 EmbedModel：embed 调用记 RED metric（on-call Q4：外部依赖调用频率/失败/耗时）。"""
+
+    def __init__(self, inner: EmbedModel) -> None:
+        self._inner = inner
+
+    @property
+    def dimension(self) -> int:
+        return self._inner.dimension
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        start = time.perf_counter()
+        status = "error"
+        try:
+            result = self._inner.embed(texts)
+            status = "ok"
+            return result
+        finally:
+            LLM_CALLS.labels(kind="embed", status=status).inc()
+            LLM_CALL_DURATION.labels(kind="embed").observe(time.perf_counter() - start)
+
+
+class _MeteredRerankModel(RerankModel):
+    """包装 RerankModel：rerank 调用记 RED metric。"""
+
+    def __init__(self, inner: RerankModel) -> None:
+        self._inner = inner
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    def rerank(
+        self, query: str, documents: list[str], top_n: int | None = None
+    ) -> list[RankResult]:
+        start = time.perf_counter()
+        status = "error"
+        try:
+            result = self._inner.rerank(query, documents, top_n=top_n)
+            status = "ok"
+            return result
+        finally:
+            LLM_CALLS.labels(kind="rerank", status=status).inc()
+            LLM_CALL_DURATION.labels(kind="rerank").observe(time.perf_counter() - start)
+
 
 
 def resolve_chat_model(
@@ -76,12 +126,14 @@ def resolve_embed_model(
     """
     from bycall.governance.secrets import decrypt_secret
 
-    return OpenAIEmbedModel(
-        base_url=model.base_url,
-        api_key=decrypt_secret(model.api_key),
-        model=model.name,
-        dimension=model.embed_dimension,
-        timeout=timeout,
+    return _MeteredEmbedModel(
+        OpenAIEmbedModel(
+            base_url=model.base_url,
+            api_key=decrypt_secret(model.api_key),
+            model=model.name,
+            dimension=model.embed_dimension,
+            timeout=timeout,
+        )
     )
 
 
@@ -112,11 +164,13 @@ def resolve_rerank_model(
     # 从 SystemSetting 或 entity.base_url 取 base_url
     base_url = _resolve_base_url(session, entity)
 
-    return OpenAIRerankModel(
-        model_name=entity.name,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=timeout,
+    return _MeteredRerankModel(
+        OpenAIRerankModel(
+            model_name=entity.name,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
     )
 
 

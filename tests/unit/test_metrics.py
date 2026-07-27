@@ -55,3 +55,71 @@ def test_metrics_middleware_records_http_red():
     resp = client.get("/metrics")
     # GET + 2xx label 出现（HTTP RED Rate 信号，method/status_class 低基数）
     assert 'bycall_http_requests_total{method="GET",status_class="2xx"}' in resp.text
+
+
+# ============ 外部依赖（embed/rerank wrapper）RED ============
+
+
+def _llm_calls_value(kind: str, status: str) -> float:
+    """从 /metrics 文本解析 bycall_llm_calls_total{kind,status} 当前值（累积）。"""
+    from prometheus_client import generate_latest
+
+    target = f'bycall_llm_calls_total{{kind="{kind}",status="{status}"}} '
+    for line in generate_latest().decode().splitlines():
+        if line.startswith(target):
+            return float(line.rsplit(" ", 1)[-1])
+    return 0.0
+
+
+def test_metered_embed_records_ok():
+    from bycall.llm.base import EmbedModel
+    from bycall.llm.resolver import _MeteredEmbedModel
+
+    class FakeEmbed(EmbedModel):
+        @property
+        def dimension(self) -> int:
+            return 4
+
+        def embed(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+    before = _llm_calls_value("embed", "ok")
+    _MeteredEmbedModel(FakeEmbed()).embed(["hi"])
+    assert _llm_calls_value("embed", "ok") == before + 1
+
+
+def test_metered_rerank_records_ok():
+    from bycall.llm.base import RankResult, RerankModel
+    from bycall.llm.resolver import _MeteredRerankModel
+
+    class FakeRerank(RerankModel):
+        @property
+        def name(self) -> str:
+            return "fake"
+
+        def rerank(self, query, documents, top_n=None):
+            return [RankResult(index=i, score=1.0) for i in range(len(documents))]
+
+    before = _llm_calls_value("rerank", "ok")
+    _MeteredRerankModel(FakeRerank()).rerank("q", ["a", "b"])
+    assert _llm_calls_value("rerank", "ok") == before + 1
+
+
+def test_metered_embed_records_error_on_failure():
+    import pytest
+
+    from bycall.llm.base import EmbedModel
+    from bycall.llm.resolver import _MeteredEmbedModel
+
+    class BoomEmbed(EmbedModel):
+        @property
+        def dimension(self) -> int:
+            return 4
+
+        def embed(self, texts):
+            raise RuntimeError("boom")
+
+    before = _llm_calls_value("embed", "error")
+    with pytest.raises(RuntimeError):
+        _MeteredEmbedModel(BoomEmbed()).embed(["x"])
+    assert _llm_calls_value("embed", "error") == before + 1

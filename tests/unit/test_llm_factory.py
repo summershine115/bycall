@@ -209,10 +209,12 @@ def test_create_embed_model_from_db(tmp_path):
     _seed_models(session)
     embed = create_embed_model(session)
     assert embed is not None
-    assert isinstance(embed, OpenAIEmbedModel)
+    # M5 后 resolver 包 _MeteredEmbedModel（metric wrapper），顶层断言接口、内部断言具体实现。
+    assert isinstance(embed, EmbedModel)
+    assert isinstance(embed._inner, OpenAIEmbedModel)
     assert embed.dimension == 1024
     # embedding 用的是本地 ollama endpoint，与 chat 的智谱 endpoint 不同（解耦验证）。
-    assert str(embed._client.base_url).rstrip("/") == "http://localhost:11434/v1"  # type: ignore[attr-defined]
+    assert str(embed._inner._client.base_url).rstrip("/") == "http://localhost:11434/v1"  # type: ignore[attr-defined]
 
 
 def test_create_model_returns_none_when_no_active(tmp_path):

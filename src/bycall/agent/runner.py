@@ -45,6 +45,7 @@ from bycall.governance.capability import CapabilitySet, compute_capability_set
 from bycall.governance.models import AuditLog, Conversation, KnowledgeBase, User
 from bycall.llm.base import Message as LLMMessage
 from bycall.observability import get_tracer, traced
+from bycall.observability.metrics import LLM_CALL_DURATION, LLM_CALLS
 from bycall.rag.retrieve import build_rag_messages
 from bycall.tools.gateway import filter_tools, to_langchain_tools
 
@@ -186,13 +187,18 @@ def run_agent(
         )
     )
     try:
+        _chat_start = time.perf_counter()
         graph_result: GraphResult = run_tool_loop(
             chat_model=llm,
             tools=langchain_tools,
             messages=messages,
         )
+        LLM_CALLS.labels(kind="chat", status="ok").inc()
+        LLM_CALL_DURATION.labels(kind="chat").observe(time.perf_counter() - _chat_start)
         answer = graph_result.answer
     except Exception as e:
+        LLM_CALLS.labels(kind="chat", status="error").inc()
+        LLM_CALL_DURATION.labels(kind="chat").observe(time.perf_counter() - _chat_start)
         logger.error("LLM/graph 执行失败: %s", e)
         _audit(session, user, channel, question, "error", str(e)[:200], "")
         return _result(
@@ -480,6 +486,7 @@ async def run_agent_stream(
     graph_result: GraphResult | None = None
     try:
         try:
+            _chat_start = time.perf_counter()
             stream = await run_tool_loop_stream(
                 chat_model=llm,
                 tools=langchain_tools,
@@ -492,8 +499,12 @@ async def run_agent_stream(
                 if chunk_text:
                     full_answer += chunk_text
                     yield chunk_text, False, None
+            LLM_CALLS.labels(kind="chat", status="ok").inc()
+            LLM_CALL_DURATION.labels(kind="chat").observe(time.perf_counter() - _chat_start)
         except Exception as e:
             logger.error("LLM/graph 流式执行失败: %s", e)
+            LLM_CALLS.labels(kind="chat", status="error").inc()
+            LLM_CALL_DURATION.labels(kind="chat").observe(time.perf_counter() - _chat_start)
             _audit(session, user, channel, question, "error", str(e)[:200], "")
             answer = "抱歉，服务暂时不可用。"
             yield (
