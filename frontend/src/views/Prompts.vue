@@ -73,20 +73,20 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useCrud } from '../composables/useCrud'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
-const loading = ref(true)
 const prompts = ref([])
-const dialogVisible = ref(false)
-const saving = ref(false)
-const form = reactive({ label: '', content: '' })
+const { loading, dialogVisible, saving, form, openCreate } = useCrud({
+  emptyForm: () => ({ label: '', content: '' }),
+})
 
 async function load() {
   loading.value = true
@@ -97,10 +97,6 @@ async function load() {
   }
 }
 
-function openCreate() {
-  Object.assign(form, { label: '', content: '' })
-  dialogVisible.value = true
-}
 
 async function onSave() {
   if (!form.content.trim()) {

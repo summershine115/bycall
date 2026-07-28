@@ -2,7 +2,7 @@
   <!-- 空状态：引导用户下一步，而不是只说"没有数据"。 -->
   <div class="empty-state" role="status">
     <div class="empty-state__icon" aria-hidden="true">
-      <el-icon :size="22"><component :is="icon" /></el-icon>
+      <el-icon :size="22"><component :is="resolvedIcon" /></el-icon>
     </div>
     <p class="empty-state__title">{{ title }}</p>
     <p v-if="description" class="empty-state__desc">{{ description }}</p>
@@ -14,11 +14,17 @@
 
 <script setup>
 // 空状态公共组件：icon/title/description + 操作插槽（通常放"新建"按钮）
-defineProps({
+import { computed } from 'vue'
+import { iconMap } from '../icons'
+
+const props = defineProps({
   icon: { type: String, default: 'Box' },
   title: { type: String, default: '暂无数据' },
   description: { type: String, default: '' },
 })
+
+// 字符串图标名 → 组件（替代全局注册）
+const resolvedIcon = computed(() => iconMap[props.icon] || iconMap.Box)
 </script>
 
 <style scoped>

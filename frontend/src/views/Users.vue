@@ -109,22 +109,30 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useCrud } from '../composables/useCrud'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
-const loading = ref(true)
 const users = ref([])
 const roles = ref([])
-const dialogVisible = ref(false)
-const editing = ref(false)
-const saving = ref(false)
-const form = reactive({ name: '', display_name: '', role: 'member', password: '', is_active: true, im_bindings: {} })
+const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
+  emptyForm: () => ({ name: '', display_name: '', role: 'member', password: '', is_active: true, im_bindings: {} }),
+  toForm: (row) => ({
+    name: row.name,
+    display_name: row.display_name,
+    role: row.role,
+    password: '',
+    is_active: row.is_active,
+    im_bindings: row.im_bindings ? { ...row.im_bindings } : {},
+    _id: row.id,
+  }),
+})
 
 const roleOptions = computed(() => ['admin', 'member', ...roles.value.map((r) => r.name)])
 
@@ -139,25 +147,6 @@ async function load() {
   }
 }
 
-function openCreate() {
-  editing.value = false
-  Object.assign(form, { name: '', display_name: '', role: 'member', password: '', is_active: true, im_bindings: {} })
-  dialogVisible.value = true
-}
-
-function openEdit(row) {
-  editing.value = true
-  Object.assign(form, {
-    name: row.name,
-    display_name: row.display_name,
-    role: row.role,
-    password: '',
-    is_active: row.is_active,
-    im_bindings: row.im_bindings ? { ...row.im_bindings } : {},
-  })
-  form._id = row.id
-  dialogVisible.value = true
-}
 
 async function onSave() {
   saving.value = true

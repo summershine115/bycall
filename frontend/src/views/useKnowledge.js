@@ -4,6 +4,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { admin } from '../api'
+import { formatTime } from '../utils/format'
 
 export function useKnowledge() {
   const route = useRoute()
@@ -124,14 +125,12 @@ export function useKnowledge() {
   }
 
   function rememberProgress(p) {
-    // 存入 progressMap（带 _kbId 便于抽屉里重建），维护顺序，记录最后已知阶段
+    // 存入 progressMap（带 _kbId 便于抽屉里重建），维护顺序，记录最后已知阶段。
+    // 直接 mutate 属性（Vue 3 ref 包裹的对象支持属性级追踪），避免每 tick 全量拷贝。
     if (!progressMap.value[p.document_id]) ingestOrder.value.push(p.document_id)
-    progressMap.value = {
-      ...progressMap.value,
-      [p.document_id]: {
-        ...p,
-        _kbId: p._kbId ?? progressMap.value[p.document_id]?._kbId ?? kbId.value,
-      },
+    progressMap.value[p.document_id] = {
+      ...p,
+      _kbId: p._kbId ?? progressMap.value[p.document_id]?._kbId ?? kbId.value,
     }
     if (p.stage in STAGE_STEP) lastStepMap.value[p.document_id] = STAGE_STEP[p.stage]
   }
@@ -235,7 +234,8 @@ export function useKnowledge() {
   function ensurePolling() {
     if (pollTimer) return
     pollOnce() // 立即跑一轮，避免首个 tick 延迟
-    pollTimer = setInterval(pollOnce, 900)
+    // 入库是分钟级操作，2.5s 轮询足够；降低网络开销和后端压力
+    pollTimer = setInterval(pollOnce, 2500)
   }
   function stopPolling() {
     if (pollTimer) {
@@ -592,10 +592,6 @@ export function useKnowledge() {
   }
   function statusLabel(s) {
     return { pending: '待入库', processing: '入库中', completed: '已完成', failed: '失败' }[s] || s
-  }
-  function formatTime(t) {
-    if (!t) return ''
-    return new Date(t).toLocaleString('zh-CN', { hour12: false })
   }
 
   onMounted(loadAll)

@@ -61,6 +61,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { formatTime as fmtTime } from '../utils/format'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -80,11 +81,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-function fmtTime(s) {
-  if (!s) return ''
-  return new Date(s).toLocaleString('zh-CN', { hour12: false })
 }
 
 function decisionType(d) {

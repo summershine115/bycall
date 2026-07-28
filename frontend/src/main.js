@@ -1,26 +1,18 @@
 import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
+// Element Plus 按需引入（unplugin-vue-components + unplugin-auto-import），
+// 组件和 API 自动导入；此处只需基础重置样式，组件样式由 resolver 按文件注入。
+import 'element-plus/theme-chalk/base.css'
 // 设计系统：token → Element 主题覆盖 → 全局基础（顺序不可换）
 import './styles/tokens.css'
 import './styles/element-overrides.css'
 import './styles/base.css'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
 
 const app = createApp(App)
 
-// 注册所有 Element Plus 图标（admin 控制台会用到很多）
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
-
-app.use(createPinia())
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
+// locale 由 App.vue 的 <el-config-provider> 提供（按需引入不走全局插件）
 
 app.mount('#app')

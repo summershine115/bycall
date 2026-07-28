@@ -137,26 +137,38 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { formatTime } from '../utils/format'
+import { useCrud } from '../composables/useCrud'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 const router = useRouter()
-const loading = ref(true)
-const saving = ref(false)
 const kbs = ref([])
 const embedModels = ref([])
-const dialogVisible = ref(false)
-const editing = ref(false)
-const form = reactive({
-  name: '', description: '', embedding_model_id: null,
-  chunk_size: 500, chunk_overlap: 50, strategy: 'auto',
-  enable_parent_child: false, parent_chunk_size: 4096, child_chunk_size: 384,
+const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
+  emptyForm: () => ({
+    name: '', description: '', embedding_model_id: null,
+    chunk_size: 500, chunk_overlap: 50, strategy: 'auto',
+    enable_parent_child: false, parent_chunk_size: 4096, child_chunk_size: 384,
+  }),
+  toForm: (row) => ({
+    name: row.name,
+    description: row.description,
+    embedding_model_id: row.embedding_model_id,
+    chunk_size: row.chunk_size ?? 500,
+    chunk_overlap: row.chunk_overlap ?? 50,
+    strategy: row.strategy || 'auto',
+    enable_parent_child: row.enable_parent_child ?? false,
+    parent_chunk_size: row.parent_chunk_size ?? 4096,
+    child_chunk_size: row.child_chunk_size ?? 384,
+    _id: row.id,
+  }),
 })
 
 async function load() {
@@ -178,32 +190,6 @@ function embedName(id) {
   return m ? m.name : ''
 }
 
-function openCreate() {
-  editing.value = false
-  Object.assign(form, {
-    name: '', description: '', embedding_model_id: null,
-    chunk_size: 500, chunk_overlap: 50, strategy: 'auto',
-    enable_parent_child: false, parent_chunk_size: 4096, child_chunk_size: 384,
-  })
-  dialogVisible.value = true
-}
-
-function openEdit(row) {
-  editing.value = true
-  Object.assign(form, {
-    name: row.name,
-    description: row.description,
-    embedding_model_id: row.embedding_model_id,
-    chunk_size: row.chunk_size ?? 500,
-    chunk_overlap: row.chunk_overlap ?? 50,
-    strategy: row.strategy || 'auto',
-    enable_parent_child: row.enable_parent_child ?? false,
-    parent_chunk_size: row.parent_chunk_size ?? 4096,
-    child_chunk_size: row.child_chunk_size ?? 384,
-  })
-  form._id = row.id
-  dialogVisible.value = true
-}
 
 async function onSave() {
   if (!form.name.trim()) {
@@ -256,11 +242,6 @@ async function onDelete(row) {
 
 function goDocuments(row) {
   router.push({ name: 'knowledge', query: { kb_id: row.id } })
-}
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN', { hour12: false })
 }
 
 onMounted(load)
