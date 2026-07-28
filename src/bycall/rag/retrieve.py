@@ -108,11 +108,17 @@ def retrieve_multi_kb(
     if not knowledge_scope_tags or not kb_specs:
         return []
 
+    # 按 embedding_model_id 缓存 query 向量：同模型的多个 KB 共享一次 embed（API 调用最贵，
+    # N 个同模型 KB 从 N 次 embed 降为 1 次；resolve_embed_model 的 DB 查+构造也一并去重）。
+    query_vector_cache: dict[int, list[float] | None] = {}
     per_kb_results: list[list[SearchResult]] = []
     for _kb_id, collection_name, dimension, embedding_model_id in kb_specs:
         try:
-            # per-KB embed：用该 KB 绑定的 embedding 模型把 question 向量化。
-            query_vector = _embed_query(session, embedding_model_id, question, dimension)
+            if embedding_model_id not in query_vector_cache:
+                query_vector_cache[embedding_model_id] = _embed_query(
+                    session, embedding_model_id, question, dimension
+                )
+            query_vector = query_vector_cache[embedding_model_id]
 
             store = create_vector_store(config, dimension=dimension)
             store.open(collection_name)

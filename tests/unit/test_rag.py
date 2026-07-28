@@ -394,3 +394,62 @@ class TestRrfFuse:
         assert len(fused) == 1
         assert fused[0].text == "来自KB1"
         assert fused[0].fields == {"source": "sales"}
+
+
+class TestRetrieveMultiKbEmbedDedup:
+    """retrieve_multi_kb：同 embedding_model_id 的 KB 共享一次 embed（去重优化）。
+
+    多 KB 同模型的场景，embed API 调用从 N 次降为 1 次（embed 是网络调用，最贵环节）。
+    """
+
+    def test_same_model_kbs_share_one_embed(self):
+        from unittest.mock import patch
+
+        import bycall.vector_store.factory as vsf
+        from bycall.rag import retrieve
+        from bycall.rag.retrieve import retrieve_multi_kb
+
+        calls = {"n": 0}
+
+        def mock_embed_query(session, mid, q, dim):
+            calls["n"] += 1
+            return [0.0] * dim
+
+        mock_store = MagicMock()
+        mock_store.search.return_value = []
+        # 3 个 KB 共用同一 embedding_model_id（常见：所有 KB 绑同一个 bge-large）
+        kb_specs = [(1, "c1", 8, 42), (2, "c2", 8, 42), (3, "c3", 8, 42)]
+
+        with (
+            patch.object(retrieve, "_embed_query", mock_embed_query),
+            patch.object(vsf, "create_vector_store", MagicMock(return_value=mock_store)),
+            patch.object(retrieve, "_resolve_parent_chunks", lambda *a, **k: []),
+        ):
+            retrieve_multi_kb(MagicMock(), MagicMock(), kb_specs, "q", ["*"])
+        assert calls["n"] == 1  # 去重：3 个同模型 KB 只 embed 1 次
+
+    def test_different_models_each_embed_once(self):
+        from unittest.mock import patch
+
+        import bycall.vector_store.factory as vsf
+        from bycall.rag import retrieve
+        from bycall.rag.retrieve import retrieve_multi_kb
+
+        calls = {"n": 0}
+
+        def mock_embed_query(session, mid, q, dim):
+            calls["n"] += 1
+            return [0.0] * dim
+
+        mock_store = MagicMock()
+        mock_store.search.return_value = []
+        # 3 个 KB 各用不同 embedding_model_id
+        kb_specs = [(1, "c1", 8, 42), (2, "c2", 8, 43), (3, "c3", 8, 44)]
+
+        with (
+            patch.object(retrieve, "_embed_query", mock_embed_query),
+            patch.object(vsf, "create_vector_store", MagicMock(return_value=mock_store)),
+            patch.object(retrieve, "_resolve_parent_chunks", lambda *a, **k: []),
+        ):
+            retrieve_multi_kb(MagicMock(), MagicMock(), kb_specs, "q", ["*"])
+        assert calls["n"] == 3  # 不同模型各 embed 一次（不误去重）
