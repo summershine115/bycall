@@ -73,4 +73,8 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 ## 6. 提交规范
 
 - commit message 用中文，简述本次改了什么、为什么（参考近期 commit 风格）。
-- 仅在用户明确要求时才 commit/push。**改代码前先从 main 创建新分支**，在新分支上开发，完成后再合并回 main。
+- **改代码前先从 main 创建新分支**，在新分支上开发。
+- 任务完成并验证通过后**主动 commit 并合并回 main**——无需等用户要求。线性分支用
+  fast-forward；较大特性可用 `--no-ff` 配 `merge:` 前缀（参考 `merge: M4 Slice C` 风格）
+  保留分支拓扑。当前仓库无远程，合并到 main 即完成集成；将来若配置 remote，push 默认
+  随合并执行，但高风险改动（DB 迁移 / 删数据 / 公开 API 破坏性变更）先停下确认。
