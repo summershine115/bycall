@@ -270,6 +270,168 @@ class TestMinerUEngine:
         assert "pdf" in MinerUEngine(base_url="http://m").supported_types
 
 
+# ---- cloud 协议（mineru.net /api/v4）----
+
+
+class _FakeMinerUCloudHttp:
+    """模拟 mineru.net 云端四阶段：申请链接→PUT 上传→轮询 batch→取 zip。
+
+    ``running_once=True``：首次轮询返回 running、第二次 done（验证轮询循环）。
+    """
+
+    def __init__(self, *, markdown="# 云端结果\n\n正文", fail_state=False, running_once=False,
+                 reject_code=None):
+        self.markdown = markdown
+        self.fail_state = fail_state
+        self.running_once = running_once
+        self.reject_code = reject_code  # 申请阶段业务失败码（code != 0）
+        self.calls: list[tuple] = []
+        self.uploaded: bytes | None = None
+        self._polled = 0
+
+    def post(self, url, *, json=None, headers=None, timeout=None):
+        self.calls.append(("POST", url))
+        if url.endswith("/file-urls/batch"):
+            if self.reject_code is not None:
+                return _FakeResponse(200, json_data={"code": self.reject_code, "msg": "denied"})
+            return _FakeResponse(
+                200,
+                json_data={
+                    "code": 0,
+                    "data": {"batch_id": "b-1", "file_urls": ["http://oss/upload"]},
+                },
+            )
+        return _FakeResponse(404)
+
+    def put(self, url, *, content=None, headers=None, timeout=None):
+        self.calls.append(("PUT", url))
+        self.uploaded = content
+        return _FakeResponse(200)
+
+    def get(self, url, *, headers=None, timeout=None):
+        self.calls.append(("GET", url))
+        if "/extract-results/batch/" in url:
+            if self.fail_state:
+                return _FakeResponse(
+                    200,
+                    json_data={
+                        "code": 0,
+                        "data": {"extract_result": [{"state": "failed", "err_msg": "boom"}]},
+                    },
+                )
+            self._polled += 1
+            if self.running_once and self._polled == 1:
+                return _FakeResponse(
+                    200,
+                    json_data={"code": 0, "data": {"extract_result": [{"state": "running"}]}},
+                )
+            return _FakeResponse(
+                200,
+                json_data={
+                    "code": 0,
+                    "data": {
+                        "extract_result": [
+                            {"file_name": "scan.pdf", "state": "done", "full_zip_url": "http://cdn/r.zip"}
+                        ]
+                    },
+                },
+            )
+        if url.endswith("r.zip"):
+            return _FakeResponse(200, content=_make_result_zip(full_md=self.markdown))
+        return _FakeResponse(404)
+
+
+class TestMinerUCloudClient:
+    def test_apply_upload_put_poll_fetch(self):
+        http = _FakeMinerUCloudHttp()
+        client = MinerUClient(
+            MinerUConfig(base_url="https://mineru.net", api_token="tok", mode="cloud"),
+            http_client=http,
+        )
+        md = client.parse_to_markdown(b"pdf-bytes", "scan.pdf")
+        assert md.startswith("# 云端结果")
+        # 四阶段都打过：申请→上传→轮询→取 zip。
+        assert any(u.endswith("/file-urls/batch") for _, u in http.calls)
+        assert ("PUT", "http://oss/upload") in http.calls
+        assert any("/extract-results/batch/b-1" in u for _, u in http.calls)
+        assert ("GET", "http://cdn/r.zip") in http.calls
+        # PUT 上传的是原始字节。
+        assert http.uploaded == b"pdf-bytes"
+
+    def test_polling_loop_handles_running(self):
+        http = _FakeMinerUCloudHttp(running_once=True)
+        client = MinerUClient(
+            MinerUConfig(base_url="https://mineru.net", api_token="tok", mode="cloud",
+                         poll_interval=0),
+            http_client=http,
+        )
+        md = client.parse_to_markdown(b"x", "scan.pdf")
+        assert md.startswith("# 云端结果")
+        # 轮询至少两次（running → done）。
+        polls = [u for _, u in http.calls if "/extract-results/batch/" in u]
+        assert len(polls) >= 2
+
+    def test_failed_state_raises(self):
+        http = _FakeMinerUCloudHttp(fail_state=True)
+        client = MinerUClient(
+            MinerUConfig(base_url="https://mineru.net", api_token="tok", mode="cloud"),
+            http_client=http,
+        )
+        with pytest.raises(MinerUError, match="失败"):
+            client.parse_to_markdown(b"x", "scan.pdf")
+
+    def test_business_code_rejected(self):
+        http = _FakeMinerUCloudHttp(reject_code=-60005)
+        client = MinerUClient(
+            MinerUConfig(base_url="https://mineru.net", api_token="tok", mode="cloud"),
+            http_client=http,
+        )
+        with pytest.raises(MinerUError, match="拒绝申请"):
+            client.parse_to_markdown(b"x", "scan.pdf")
+
+    def test_base_url_accepts_api_v4_suffix(self):
+        # 用户填 https://mineru.net/api/v4 也能正确拼出 /api/v4/file-urls/batch（不重复）。
+        http = _FakeMinerUCloudHttp()
+        client = MinerUClient(
+            MinerUConfig(base_url="https://mineru.net/api/v4", api_token="tok", mode="cloud"),
+            http_client=http,
+        )
+        client.parse_to_markdown(b"x", "scan.pdf")
+        assert any(u == "https://mineru.net/api/v4/file-urls/batch" for _, u in http.calls)
+
+    def test_empty_base_defaults_to_mineru_net(self):
+        http = _FakeMinerUCloudHttp()
+        client = MinerUClient(
+            MinerUConfig(base_url="", api_token="tok", mode="cloud"),
+            http_client=http,
+        )
+        client.parse_to_markdown(b"x", "scan.pdf")
+        assert any(u.startswith("https://mineru.net/api/v4/") for _, u in http.calls)
+
+
+class TestMinerUEngineCloud:
+    def test_cloud_available_with_token_only(self):
+        # 云端模式：base_url 空（默认 mineru.net），有 token 即可用。
+        eng = MinerUEngine(base_url="", api_token="tok", mode="cloud")
+        assert eng.is_available() is True
+        # 云端描述指向 token，不是 base_url（可用性只看 token）。
+        assert "token" in eng.description
+
+    def test_cloud_unavailable_without_token(self):
+        eng = MinerUEngine(base_url="https://mineru.net", api_token="", mode="cloud")
+        assert eng.is_available() is False
+        assert "TOKEN" in eng.reason_unavailable
+
+    def test_cloud_parse_with_fake_client(self):
+        eng = MinerUEngine(
+            base_url="https://mineru.net", api_token="tok", mode="cloud",
+            client=_FakeMinerUCloudHttp(),
+        )
+        result = eng.parse(b"pdf-bytes", file_name="scan.pdf")
+        assert "云端结果" in result.text
+        assert result.metadata.get("engine") == "mineru"
+
+
 # ============ 4. parse_document 路由与兜底 ============
 
 

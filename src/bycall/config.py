@@ -149,17 +149,27 @@ class ParseConfig(BaseSettings):
     # ---- MarkItDown（本地库）----
     # 启用第三方插件（pip install 的 markitdown 插件）；默认关闭，只用内置 converter。
     markitdown_enable_plugins: bool = False
-    # ---- MinerU 远程 API（自建 mineru-api 或 mineru.net 云端）----
-    # 服务基地址，如 ``https://mineru.net`` 或自建 ``http://127.0.0.1:8000``。空 → 引擎不可用。
+    # ---- MinerU 远程 API（自建 mineru-api 或 mineru.net 云端，由 mode 切换）----
+    # 部署模式：selfhost（自建 /tasks 协议）/ cloud（mineru.net /api/v4 协议）。
+    mineru_mode: Literal["selfhost", "cloud"] = "selfhost"
+    # 服务基地址。selfhost：自建服务根（如 http://127.0.0.1:8000），空→不可用；
+    # cloud：mineru.net 根（如 https://mineru.net），空→默认 mineru.net。
     mineru_base_url: str = ""
-    # 鉴权 token（Bearer）。mineru.net 云端必填；多数自建部署可留空。
+    # 鉴权 token（Bearer）。selfhost 多数可留空；cloud 必填。
     mineru_api_token: SecretStr = SecretStr("")
-    # 解析后端（MinerU --backend）：pipeline / vlm-auto-engine / vlm-http-client /
-    # hybrid-auto-engine / hybrid-http-client。自建服务按其算力选；云端用 hybrid-*。
+    # ---- selfhost 专用（MinerU CLI --backend / --parse_method）----
+    # 解析后端：pipeline / vlm-auto-engine / vlm-http-client / hybrid-auto-engine /
+    # hybrid-http-client，自建服务按其算力选。
     mineru_backend: str = "hybrid-auto-engine"
-    # 解析方法（MinerU --parse_method）：auto / txt / ocr。仅 pipeline/hybrid 生效。
+    # 解析方法：auto / txt / ocr。仅 pipeline/hybrid 生效。
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
-    # OCR 语言组（仅 pipeline/hybrid 生效），如 ch / en / korean / japan。
+    # ---- cloud 专用（mineru.net 精准解析 model_version / is_ocr）----
+    # 模型版本：pipeline / vlm（推荐） / MinerU-HTML（HTML 专用）。
+    mineru_model_version: Literal["pipeline", "vlm", "MinerU-HTML"] = "vlm"
+    # 是否强制 OCR（对应 is_ocr）；默认 false，vlm/pipeline 会自动识别扫描件。
+    mineru_is_ocr: bool = False
+    # ---- 共用 ----
+    # OCR 语言组（仅 pipeline/vlm 生效），如 ch / en / korean / japan。
     mineru_lang: str = "ch"
     # 单任务最长等待秒（提交→完成）。远程解析较慢，默认 10 分钟。
     mineru_timeout: float = 600.0

@@ -203,22 +203,30 @@ _MINERU_TYPES = [
 class MinerUEngine(ParseEngine):
     """MinerU 引擎——远程 API 解析（布局识别 + OCR，适合扫描件 / 复杂版式）。
 
-    依赖配置 ``mineru_base_url``（自建 mineru-api 或 mineru.net 云端）。未配置时
-    ``is_available`` 为 False。每次解析是一次远程异步任务（提交→轮询→取结果）。
+    两种部署（``mode``）：selfhost（自建 mineru-api ``/tasks``）/ cloud（mineru.net
+    云端 ``/api/v4``）。两种协议差异巨大，由 ``mineru_client.MinerUClient`` 按 mode 分派。
+    可用性：selfhost 需配 ``base_url``；cloud 需配 ``api_token``（base_url 空默认 mineru.net）。
     """
 
-    def __init__(self, *, base_url: str, api_token: str = "", backend: str = "hybrid-auto-engine",
-                 parse_method: str = "auto", lang: str = "ch", timeout: float = 600.0,
+    def __init__(self, *, base_url: str, api_token: str = "", mode: str = "selfhost",
+                 backend: str = "hybrid-auto-engine", parse_method: str = "auto",
+                 model_version: str = "vlm", is_ocr: bool = False,
+                 lang: str = "ch", timeout: float = 600.0,
                  poll_interval: float = 2.0, client=None) -> None:
         from bycall.rag.parsers.mineru_client import MinerUClient, MinerUConfig
 
+        self._mode = mode
         self._base_url = base_url
+        self._api_token = api_token
         self._client_factory = client  # 测试注入 fake client
         self._config = MinerUConfig(
             base_url=base_url,
             api_token=api_token,
+            mode=mode,
             backend=backend,
             parse_method=parse_method,
+            model_version=model_version,
+            is_ocr=is_ocr,
             lang=lang,
             timeout=timeout,
             poll_interval=poll_interval,
@@ -231,7 +239,9 @@ class MinerUEngine(ParseEngine):
 
     @property
     def description(self) -> str:
-        return "MinerU 远程 API（布局识别 + OCR，需配置 mineru_base_url）"
+        if self._mode == "cloud":
+            return "MinerU 云端 API（mineru.net /api/v4，需配置 mineru_api_token）"
+        return "MinerU 自建 API（布局识别 + OCR，需配置 mineru_base_url）"
 
     @property
     def supported_types(self) -> list[str]:
@@ -239,9 +249,14 @@ class MinerUEngine(ParseEngine):
 
     @property
     def reason_unavailable(self) -> str:
-        return "未配置 BYCALL_PARSE_MINERU_BASE_URL"
+        if self._mode == "cloud":
+            return "云端模式未配置 BYCALL_PARSE_MINERU_API_TOKEN"
+        return "自建模式未配置 BYCALL_PARSE_MINERU_BASE_URL"
 
     def is_available(self) -> bool:
+        # selfhost 看服务地址；cloud 看 token（base_url 空默认 mineru.net）。
+        if self._mode == "cloud":
+            return bool(self._api_token)
         return bool(self._base_url)
 
     def parse(self, content: bytes, file_name: str = "") -> ParseResult:
@@ -275,8 +290,11 @@ def get_parse_engine(name: str, *, settings: AppConfig | None = None) -> ParseEn
         return MinerUEngine(
             base_url=p.mineru_base_url,
             api_token=p.mineru_api_token.get_secret_value(),
+            mode=p.mineru_mode,
             backend=p.mineru_backend,
             parse_method=p.mineru_parse_method,
+            model_version=p.mineru_model_version,
+            is_ocr=p.mineru_is_ocr,
             lang=p.mineru_lang,
             timeout=p.mineru_timeout,
             poll_interval=p.mineru_poll_interval,
@@ -421,6 +439,9 @@ def _get_settings() -> AppConfig | SimpleNamespace:
                 default=p.markitdown_enable_plugins,
                 env_var="BYCALL_PARSE_MARKITDOWN_ENABLE_PLUGINS",
             ),
+            mineru_mode=_enum(
+                "parse.mineru_mode", p.mineru_mode, ("selfhost", "cloud")
+            ),
             mineru_base_url=get_setting_value(
                 "parse.mineru_base_url",
                 default=p.mineru_base_url,
@@ -440,6 +461,16 @@ def _get_settings() -> AppConfig | SimpleNamespace:
             ),
             mineru_parse_method=_enum(
                 "parse.mineru_parse_method", p.mineru_parse_method, ("auto", "txt", "ocr")
+            ),
+            mineru_model_version=_enum(
+                "parse.mineru_model_version",
+                p.mineru_model_version,
+                ("pipeline", "vlm", "MinerU-HTML"),
+            ),
+            mineru_is_ocr=get_setting_bool(
+                "parse.mineru_is_ocr",
+                default=p.mineru_is_ocr,
+                env_var="BYCALL_PARSE_MINERU_IS_OCR",
             ),
             mineru_lang=get_setting_value(
                 "parse.mineru_lang", default=p.mineru_lang, env_var="BYCALL_PARSE_MINERU_LANG"

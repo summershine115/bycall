@@ -908,6 +908,8 @@ def update_settings(
 # 解析设置合法值（与 config.py 的 ParseConfig 保持一致）
 _PARSE_ENGINE_VALUES = ("builtin", "markitdown", "mineru")
 _PARSE_METHOD_VALUES = ("auto", "txt", "ocr")
+_PARSE_MINERU_MODE_VALUES = ("selfhost", "cloud")
+_PARSE_MINERU_MODEL_VALUES = ("pipeline", "vlm", "MinerU-HTML")
 
 
 def _validate_parse_setting(key: str, value: str) -> None:
@@ -922,10 +924,16 @@ def _validate_parse_setting(key: str, value: str) -> None:
     if key == "parse.engine":
         if value not in _PARSE_ENGINE_VALUES:
             _reject(f"必须是 {' / '.join(_PARSE_ENGINE_VALUES)} 之一")
+    elif key == "parse.mineru_mode":
+        if value not in _PARSE_MINERU_MODE_VALUES:
+            _reject(f"必须是 {' / '.join(_PARSE_MINERU_MODE_VALUES)} 之一")
+    elif key == "parse.mineru_model_version":
+        if value not in _PARSE_MINERU_MODEL_VALUES:
+            _reject(f"必须是 {' / '.join(_PARSE_MINERU_MODEL_VALUES)} 之一")
     elif key == "parse.mineru_parse_method":
         if value not in _PARSE_METHOD_VALUES:
             _reject(f"必须是 {' / '.join(_PARSE_METHOD_VALUES)} 之一")
-    elif key == "parse.markitdown_enable_plugins":
+    elif key in ("parse.markitdown_enable_plugins", "parse.mineru_is_ocr"):
         if value.strip().lower() not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
             _reject("必须是 true / false")
     elif key in ("parse.mineru_timeout", "parse.mineru_poll_interval"):
