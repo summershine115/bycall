@@ -31,10 +31,28 @@ const router = createRouter({
   routes,
 })
 
-// 简易登录守卫：尝试一个需 admin 的请求，401 则跳登录。
-// （后端用 cookie 会话，无显式"当前用户"端点，这里靠 401 拦截器处理跳转。）
-router.beforeEach((to, from, next) => {
-  next()
+// 登录保护由 axios 401 拦截器统一处理（见 api.js），无需路由守卫。
+
+// 路由切换进度条：懒加载路由在慢网下有白屏间隙，用顶部细条提示加载中。
+// 纯 CSS 实现（0 依赖），见 styles/base.css .route-progress。
+let progressBar = null
+function ensureProgressBar() {
+  if (progressBar) return progressBar
+  progressBar = document.createElement('div')
+  progressBar.className = 'route-progress'
+  document.body.appendChild(progressBar)
+  return progressBar
+}
+
+router.beforeEach(() => {
+  const bar = ensureProgressBar()
+  bar.classList.remove('route-progress--done')
+  bar.classList.add('route-progress--active')
+})
+router.afterEach(() => {
+  const bar = ensureProgressBar()
+  bar.classList.remove('route-progress--active')
+  bar.classList.add('route-progress--done')
 })
 
 export default router

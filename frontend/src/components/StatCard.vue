@@ -9,18 +9,19 @@
         <span v-if="unit" class="stat-card__unit">{{ unit }}</span>
       </div>
       <div v-if="hint" class="stat-card__hint">
-        <el-icon v-if="hintIcon" :size="12" aria-hidden="true"><component :is="hintIcon" /></el-icon>
+        <el-icon v-if="resolvedHintIcon" :size="12" aria-hidden="true"><component :is="resolvedHintIcon" /></el-icon>
         {{ hint }}
       </div>
     </div>
-    <el-icon v-if="icon" class="stat-card__icon" :size="20" aria-hidden="true">
-      <component :is="icon" />
+    <el-icon v-if="resolvedIcon" class="stat-card__icon" :size="20" aria-hidden="true">
+      <component :is="resolvedIcon" />
     </el-icon>
   </div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import { iconMap } from '../icons'
 
 // 统计卡公共组件。accent 语义：primary/success/warning/danger/info
 const props = defineProps({
@@ -50,6 +51,10 @@ const displayValue = computed(() => {
   if (typeof props.value === 'number') return props.value.toLocaleString('zh-CN')
   return props.value
 })
+
+// 字符串图标名 → 组件（替代全局注册）
+const resolvedIcon = computed(() => iconMap[props.icon] || null)
+const resolvedHintIcon = computed(() => iconMap[props.hintIcon] || null)
 </script>
 
 <style scoped>

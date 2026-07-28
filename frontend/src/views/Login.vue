@@ -94,7 +94,7 @@
 <script setup>
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { User, Lock } from '@element-plus/icons-vue'
+import { User, Lock, Document, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { auth } from '../api'
 
@@ -110,14 +110,18 @@ const rules = {
 
 // 品牌区卖点：与治理脊柱设计哲学一致
 const points = [
-  { icon: 'Lock', title: '权限前置隔离', desc: 'LLM 看不到无权访问的资源，而非拿到后被拦' },
-  { icon: 'Document', title: '全链路可审计', desc: '谁在何时问了什么、被放行或拒绝，皆有记录' },
-  { icon: 'RefreshLeft', title: '人格版本化', desc: '系统提示词版本管理，随时回滚' },
+  { icon: Lock, title: '权限前置隔离', desc: 'LLM 看不到无权访问的资源，而非拿到后被拦' },
+  { icon: Document, title: '全链路可审计', desc: '谁在何时问了什么、被放行或拒绝，皆有记录' },
+  { icon: RefreshLeft, title: '人格版本化', desc: '系统提示词版本管理，随时回滚' },
 ]
 
 async function onLogin() {
   if (!formRef.value) return
-  await formRef.value.validate().catch(() => Promise.reject())
+  try {
+    await formRef.value.validate()
+  } catch {
+    return // 表单校验未通过，不发起请求
+  }
   loading.value = true
   try {
     await auth.login(form.name, form.password)

@@ -97,6 +97,10 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
+import {
+  ChatDotRound, ChatLineRound, Collection, Connection, Cpu, DataLine,
+  Document, DocumentChecked, Files, Key, List, MagicStick, Setting, User,
+} from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -107,43 +111,43 @@ const navGroups = [
   {
     key: 'overview',
     label: '总览',
-    items: [{ name: 'dashboard', label: '仪表盘', icon: 'DataLine' }],
+    items: [{ name: 'dashboard', label: '仪表盘', icon: DataLine }],
   },
   {
     key: 'governance',
     label: '治理',
     items: [
-      { name: 'users', label: '用户管理', icon: 'User' },
-      { name: 'roles', label: '角色与权限', icon: 'Key' },
-      { name: 'prompts', label: '提示词版本', icon: 'Document' },
-      { name: 'audit', label: '审计日志', icon: 'List' },
+      { name: 'users', label: '用户管理', icon: User },
+      { name: 'roles', label: '角色与权限', icon: Key },
+      { name: 'prompts', label: '提示词版本', icon: Document },
+      { name: 'audit', label: '审计日志', icon: List },
     ],
   },
   {
     key: 'knowledge',
     label: '知识',
     items: [
-      { name: 'knowledge-bases', label: '知识库', icon: 'Files' },
-      { name: 'knowledge', label: '文档管理', icon: 'Collection' },
+      { name: 'knowledge-bases', label: '知识库', icon: Files },
+      { name: 'knowledge', label: '文档管理', icon: Collection },
     ],
   },
   {
     key: 'capability',
     label: '能力',
     items: [
-      { name: 'models', label: '模型管理', icon: 'Cpu' },
-      { name: 'skills', label: 'Skill 管理', icon: 'MagicStick' },
-      { name: 'mcp', label: 'MCP 工具', icon: 'Connection' },
-      { name: 'approvals', label: '审批队列', icon: 'DocumentChecked' },
+      { name: 'models', label: '模型管理', icon: Cpu },
+      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
+      { name: 'mcp', label: 'MCP 工具', icon: Connection },
+      { name: 'approvals', label: '审批队列', icon: DocumentChecked },
     ],
   },
   {
     key: 'system',
     label: '系统',
     items: [
-      { name: 'conversations', label: '会话管理', icon: 'ChatLineRound' },
-      { name: 'chat', label: '对话测试', icon: 'ChatDotRound' },
-      { name: 'settings', label: '运行时设置', icon: 'Setting' },
+      { name: 'conversations', label: '会话管理', icon: ChatLineRound },
+      { name: 'chat', label: '对话测试', icon: ChatDotRound },
+      { name: 'settings', label: '运行时设置', icon: Setting },
     ],
   },
 ]

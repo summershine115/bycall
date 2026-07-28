@@ -82,25 +82,27 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { formatTime } from '../utils/format'
+import { useCrud } from '../composables/useCrud'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
-const loading = ref(true)
 const skills = ref([])
-const dialogVisible = ref(false)
-const editing = ref(false)
-const saving = ref(false)
-const form = reactive({ name: '', description: '', content: '', is_enabled: true })
-
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN', { hour12: false })
-}
+const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
+  emptyForm: () => ({ name: '', description: '', content: '', is_enabled: true }),
+  toForm: (row) => ({
+    name: row.name,
+    description: row.description,
+    content: row.content,
+    is_enabled: row.is_enabled,
+    _original_name: row.name,
+  }),
+})
 
 async function load() {
   loading.value = true
@@ -111,23 +113,6 @@ async function load() {
   }
 }
 
-function openCreate() {
-  editing.value = false
-  Object.assign(form, { name: '', description: '', content: '', is_enabled: true })
-  dialogVisible.value = true
-}
-
-function openEdit(row) {
-  editing.value = true
-  Object.assign(form, {
-    name: row.name,
-    description: row.description,
-    content: row.content,
-    is_enabled: row.is_enabled,
-  })
-  form._original_name = row.name
-  dialogVisible.value = true
-}
 
 async function onSave() {
   if (!form.name.trim()) {

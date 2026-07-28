@@ -69,6 +69,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { formatTime } from '../utils/format'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -130,10 +131,6 @@ function roleType(r) {
 }
 function roleLabel(r) {
   return { user: '用户', assistant: '助手', system: '系统' }[r] || r
-}
-function formatTime(t) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN', { hour12: false })
 }
 
 onMounted(load)

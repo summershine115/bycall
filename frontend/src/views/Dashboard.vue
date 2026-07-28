@@ -92,6 +92,8 @@ async function load() {
       safe(admin.listUsers(), []),
       safe(admin.listRoles(), []),
       safe(admin.listPrompts(), []),
+      // 后端 audit API 返回扁平列表（无 total 字段），limit 上限 500。
+      // 此处拉满 500 用于计数 + 近期列表；若审计量超 500 需后端加 count 端点。
       safe(admin.listAudit(500), []),
       safe(admin.listKnowledgeBases(), []),
       safe(admin.listModels(), []),
