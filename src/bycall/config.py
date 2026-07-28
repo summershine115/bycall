@@ -132,6 +132,10 @@ class ParseConfig(BaseSettings):
 
     非默认引擎**不可用**（依赖未装 / 远程未配置）时，``parse_document`` 对**其不支持的类型**
     自动退回 ``builtin``——保证不回归。仅当引擎声明支持该类型却解析失败时才报错。
+
+    这些配置在运行时由 ``SystemSetting`` 表覆盖（admin 控制台「运行时设置」页编辑，
+    优先级 DB > .env 环境变量 > 代码默认；``rag.parsers.engines._get_settings`` 做叠加）。
+    本类只作为 **.env/默认** 层；控制台改完即时生效，无需重启。
     """
 
     model_config = SettingsConfigDict(

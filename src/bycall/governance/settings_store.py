@@ -56,6 +56,21 @@ def get_setting_int(
         return default
 
 
+def get_setting_float(
+    key: str,
+    *,
+    default: float,
+    env_var: str | None = None,
+    session: Session | None = None,
+) -> float:
+    """浮点设置（解析引擎的 timeout / poll_interval 等）。非法值回退默认。"""
+    raw = get_setting_value(key, default=str(default), env_var=env_var, session=session)
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 def get_setting_bool(
     key: str,
     *,
@@ -142,6 +157,7 @@ def mask_secret(value: str) -> str:
 
 __all__ = [
     "get_setting_bool",
+    "get_setting_float",
     "get_setting_int",
     "get_setting_value",
     "mask_secret",

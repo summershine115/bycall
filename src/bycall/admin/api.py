@@ -876,6 +876,9 @@ def update_settings(
         if existing is None:
             skipped.append(f"{key}（未知 key）")
             continue
+        # 解析设置写入校验：非法值直接 4xx（避免脏数据入库后被运行时静默回退）
+        if key.startswith("parse.") and value != "":
+            _validate_parse_setting(key, value)
         # secret 保护：空串或脱敏占位符（含 ***）→ 用户没真改，跳过。
         # （前端未改的 secret 回传空串；若当 clear 处理会清掉已配置 secret，
         #   曾导致企微鉴权 errcode=853000 invalid bot_id or secret。）
@@ -900,6 +903,38 @@ def update_settings(
     )
     session.commit()
     return {"ok": True, "updated": updated, "skipped": skipped}
+
+
+# 解析设置合法值（与 config.py 的 ParseConfig 保持一致）
+_PARSE_ENGINE_VALUES = ("builtin", "markitdown", "mineru")
+_PARSE_METHOD_VALUES = ("auto", "txt", "ocr")
+
+
+def _validate_parse_setting(key: str, value: str) -> None:
+    """校验 parse.* 设置写入；非法值 4xx 拒绝。
+
+    空串不在此校验（沿用「空串 = 清除该 key、回退 .env/默认」的统一语义）。
+    """
+
+    def _reject(reason: str) -> None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{key}: {reason}")
+
+    if key == "parse.engine":
+        if value not in _PARSE_ENGINE_VALUES:
+            _reject(f"必须是 {' / '.join(_PARSE_ENGINE_VALUES)} 之一")
+    elif key == "parse.mineru_parse_method":
+        if value not in _PARSE_METHOD_VALUES:
+            _reject(f"必须是 {' / '.join(_PARSE_METHOD_VALUES)} 之一")
+    elif key == "parse.markitdown_enable_plugins":
+        if value.strip().lower() not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+            _reject("必须是 true / false")
+    elif key in ("parse.mineru_timeout", "parse.mineru_poll_interval"):
+        try:
+            num = float(value)
+        except ValueError:
+            _reject("必须是数字")
+        if num <= 0:
+            _reject("必须大于 0")
 
 
 # ============ IM 渠道热重载 ============

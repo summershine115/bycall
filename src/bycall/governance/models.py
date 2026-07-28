@@ -752,12 +752,14 @@ class SystemSetting(SQLModel, table=True):
     - ``.env`` 只留启动引导：DB DSN / session_secret / env / debug / log_level
       （这些在"连上 DB 之前"就需要）
     - 本表管运行时可编辑的：LLM 全部配置（provider/base_url/api_key/model/embed_model）、
-      IM 全部配置（enable/bot_id/secret）
+      IM 全部配置（enable/bot_id/secret）、解析引擎配置（parse.engine / parse.mineru_* /
+      parse.markitdown_enable_plugins）
 
     优先级：DB 值 > .env 环境变量 > 代码默认。DB 有值即时生效，无需重启。
     ``is_secret=True`` 的 key 在 API/UI 返回时脱敏（不回显明文）。
 
-    key 命名：扁平，如 ``llm.provider`` / ``llm.api_key`` / ``im.enable`` / ``im.wecom_bot_id``。
+    key 命名：扁平，如 ``llm.provider`` / ``llm.api_key`` / ``im.enable`` / ``im.wecom_bot_id``
+    / ``parse.engine`` / ``parse.mineru_base_url``。
     """
 
     id: int | None = Field(default=None, primary_key=True)
