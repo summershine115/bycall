@@ -113,6 +113,8 @@ def _ensure_schema_compatibility() -> None:
             ("parent_chunk_size", "INTEGER NOT NULL DEFAULT 4096"),
             ("child_chunk_size", "INTEGER NOT NULL DEFAULT 384"),
             ("total_chars", "INTEGER NOT NULL DEFAULT 0"),
+            # per-KB 解析引擎映射（JSON）；nullable——升级前已存在的 KB 为 NULL，代码当 {} 处理。
+            ("parse_engine_map", "VARCHAR"),
         ]
         missing = [(name, ddl) for name, ddl in kb_migrations if name not in columns]
         if missing:

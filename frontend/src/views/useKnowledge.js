@@ -58,8 +58,21 @@ export function useKnowledge() {
   })
   const roles = ref([])
   const embedModels = ref([])
-  const parsers = ref([])
-  const parserLoading = ref(false)
+  // 解析引擎 + per-KB 文件类型→引擎映射（WeKnora 风格）
+  const engines = ref([])
+  const engineLoading = ref(false)
+  // 每行 = { key, label, hint }；engineMap[key] = 选中的引擎名
+  const ENGINE_TYPE_ROWS = [
+    { key: 'default', label: '默认（其他类型）', hint: '未单独配置的文件类型走此引擎' },
+    { key: 'pdf', label: 'PDF', hint: '.pdf' },
+    { key: 'docx', label: 'Word', hint: '.docx / .doc' },
+    { key: 'pptx', label: 'PPT', hint: '.pptx / .ppt' },
+    { key: 'xlsx', label: 'Excel', hint: '.xlsx / .xls' },
+    { key: 'md', label: 'Markdown', hint: '.md / .markdown' },
+    { key: 'html', label: 'HTML', hint: '.html / .htm' },
+    { key: 'txt', label: '纯文本', hint: '.txt' },
+  ]
+  const engineMap = reactive({})
 
   // 查看正文
   const contentVisible = ref(false)
@@ -518,24 +531,32 @@ export function useKnowledge() {
       separators: kb.separators || [],
     })
     settingsVisible.value = true
-    // 并行加载角色列表、embedding 模型列表和解析引擎
+    // 并行加载角色列表、embedding 模型列表；解析引擎单独加载（含可用性）
     const [roleList, models] = await Promise.all([
       admin.listRoles().catch(() => []),
       admin.listModels('embedding').catch(() => []),
     ])
     roles.value = roleList.map((r) => r.name)
     embedModels.value = models
-    loadParsers()
+    loadEngines(kb)
   }
 
-  async function loadParsers() {
-    parserLoading.value = true
+  async function loadEngines(kb) {
+    engineLoading.value = true
     try {
-      parsers.value = await admin.listParsers()
+      const list = await admin.listParseEngines()
+      engines.value = list
+      // 全局默认引擎名（兜底）
+      const globalDefault = (list.find((e) => e.is_default) || {}).name || 'builtin'
+      const stored = kb?.parse_engine_map || {}
+      // 初始化每行引擎选择：KB 配置 > 全局默认
+      ENGINE_TYPE_ROWS.forEach((row) => {
+        engineMap[row.key] = stored[row.key] || globalDefault
+      })
     } catch {
-      parsers.value = []
+      engines.value = []
     } finally {
-      parserLoading.value = false
+      engineLoading.value = false
     }
   }
 
@@ -553,6 +574,8 @@ export function useKnowledge() {
         parent_chunk_size: settingsForm.enable_parent_child ? settingsForm.parent_chunk_size : null,
         child_chunk_size: settingsForm.enable_parent_child ? settingsForm.child_chunk_size : null,
         separators: settingsForm.separators,
+        // per-KB 文件类型→解析引擎映射（WeKnora 风格）
+        parse_engine_map: { ...engineMap },
       })
       ElMessage.success('设置已保存')
       settingsVisible.value = false
@@ -589,7 +612,9 @@ export function useKnowledge() {
     // 切块
     chunksVisible, chunksLoading, chunksData, chunksDocTitle,
     // 设置
-    settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModels, parsers, parserLoading, embedModelName,
+    settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModels, embedModelName,
+    // 解析引擎（per-KB 文件类型→引擎映射）
+    engines, engineLoading, engineMap, ENGINE_TYPE_ROWS,
     // 正文
     contentVisible, contentLoading, contentData,
     // 入库进度

@@ -434,25 +434,44 @@
           </div>
         </el-tab-pane>
         <el-tab-pane label="解析引擎" name="parsers">
-          <div v-loading="parserLoading">
-            <el-table v-if="parsers.length > 0" :data="parsers">
-              <el-table-column prop="name" label="名称" width="160" />
-              <el-table-column prop="description" label="描述" min-width="180" />
-              <el-table-column label="支持的文件类型" min-width="200">
+          <div v-loading="engineLoading" class="engine-map">
+            <p class="engine-map__tip bc-muted">
+              为每种文件类型指定解析引擎（参考 WeKnora）。未单独配置的类型走「默认」；
+              引擎不可用（依赖未装 / 远程未配置）时，对应文件上传会被拒绝——先在后端配置好再选。
+            </p>
+            <el-table :data="ENGINE_TYPE_ROWS" size="small" border>
+              <el-table-column prop="label" label="文件类型" width="160">
+                <template #default="{ row }">
+                  <span class="engine-map__type">{{ row.label }}</span>
+                  <span class="engine-map__hint bc-muted">{{ row.hint }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="解析引擎" min-width="220">
+                <template #default="{ row }">
+                  <el-select v-model="engineMap[row.key]" size="small" style="width: 100%">
+                    <el-option
+                      v-for="eng in engines"
+                      :key="eng.name"
+                      :value="eng.name"
+                      :label="eng.name + (eng.is_default ? '（默认）' : '') + (eng.is_available ? '' : '（未就绪）')"
+                    >
+                      <span>{{ eng.name }}</span>
+                      <span class="engine-map__opt-desc bc-muted">{{ eng.description }}</span>
+                    </el-option>
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
                 <template #default="{ row }">
                   <el-tag
-                    v-for="ft in row.file_types || []"
-                    :key="ft"
+                    v-if="engineStatus(engineMap[row.key]) === 'ready'"
+                    type="success"
                     size="small"
-                    class="parser-tag"
-                  >
-                    {{ ft }}
-                  </el-tag>
-                  <span v-if="!row.file_types?.length" class="bc-muted">—</span>
+                  >就绪</el-tag>
+                  <el-tag v-else type="warning" size="small">未就绪</el-tag>
                 </template>
               </el-table-column>
             </el-table>
-            <EmptyState v-else-if="!parserLoading" icon="Document" title="无可用解析引擎" />
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -528,7 +547,8 @@ const {
   uploadDialogVisible, uploadFile, uploadForm, uploading,
   previewVisible, previewForm, previewResult, previewLoading,
   chunksVisible, chunksLoading, chunksData, chunksDocTitle,
-  settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModels, parsers, parserLoading, embedModelName,
+  settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModels, embedModelName,
+  engines, engineLoading, engineMap, ENGINE_TYPE_ROWS,
   contentVisible, contentLoading, contentData,
   ingestDrawerVisible, activeCount, drawerIngests, STAGE_LABEL,
   ingestPercent, ingestProgressStatus, ingestStageText, stepsActive, isRestartHint,
@@ -537,6 +557,13 @@ const {
   viewContent, viewChunks, openSettings, saveSettings,
   statusType, statusLabel, formatTime,
 } = useKnowledge()
+
+// 选中引擎的就绪状态：builtin 永远就绪；其它看 engines 列表里的 is_available。
+function engineStatus(name) {
+  if (!name || name === 'builtin') return 'ready'
+  const eng = engines.value.find((e) => e.name === name)
+  return eng?.is_available ? 'ready' : 'unready'
+}
 </script>
 
 <style scoped>
@@ -680,5 +707,22 @@ const {
     border-left: none;
     padding: 0;
   }
+}
+.engine-map__tip {
+  margin: 0 0 var(--bc-space-3);
+  font-size: var(--bc-text-xs);
+  line-height: 1.6;
+}
+.engine-map__type {
+  font-weight: 600;
+}
+.engine-map__hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--bc-text-xs);
+}
+.engine-map__opt-desc {
+  float: right;
+  font-size: var(--bc-text-xs);
 }
 </style>

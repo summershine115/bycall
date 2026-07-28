@@ -56,6 +56,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+parse = [
+    # 可切换解析引擎之 MarkItDown（builtin 不依赖它，按需安装）。
+    "markitdown>=0.0.1a2",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

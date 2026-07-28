@@ -35,13 +35,14 @@ class IngestProgress:
     error: str = ""
 
 
-# 处于"进行中"的阶段：active() 只返回这些阶段的进度，便于前端列出正在入库的文档。
-_ACTIVE_STAGES = frozenset({"chunking", "embedding", "indexing"})
+# 解析也是异步阶段（文件上传后先解析再入库）；与入库阶段一起计入"进行中"。
+_ACTIVE_STAGES = frozenset({"parsing", "chunking", "embedding", "indexing"})
 
 
 def _compute_percent(progress: IngestProgress) -> int:
     """进度百分比公式（前端进度条强依赖，勿随意改动）。
 
+    - parsing（解析，含 mineru 远程 OCR 等慢引擎）→ 2
     - chunking（切块）→ 5
     - embedding（向量化）→ 10 + round(80 * processed/total)，clamp 到 [10, 90]；
       total≤0 时兜底 10（避免除零）
@@ -50,6 +51,9 @@ def _compute_percent(progress: IngestProgress) -> int:
     - failed / ""（未开始）→ 保持原值不变（失败时停在卡住的位置，便于 UI 显示断点）
     """
     stage = progress.stage
+    if stage == "parsing":
+        # 解析（含 mineru 远程 OCR 等慢引擎）→ 2，先于切块(5)。
+        return 2
     if stage == "chunking":
         return 5
     if stage == "embedding":

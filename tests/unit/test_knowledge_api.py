@@ -439,19 +439,23 @@ def test_upload_txt_file(client: TestClient):
 
 
 def test_upload_unsupported_format_returns_400(client: TestClient):
-    """上传不支持的格式 → 400（同步校验）。"""
+    """上传不支持的扩展名 → 400（扩展名同步校验，不进后台）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = client.post(
         f"/api/admin/knowledge-bases/{kb_id}/upload",
         params={"source": "public"},
-        files={"file": ("doc.pdf", b"fake pdf", "application/pdf")},
+        files={"file": ("doc.exe", b"binary", "application/octet-stream")},
     )
     assert resp.status_code == 400
 
 
-def test_upload_non_utf8_returns_400(client: TestClient):
-    """上传非 UTF-8 二进制 → 400。"""
+def test_upload_non_utf8_fails_in_background(client: TestClient):
+    """上传非 UTF-8 文本 → 受理 201，解析在后台失败 → status=failed（异步解析契约）。
+
+    解析已异步化：内容级错误（编码/格式）不再立即 4xx，而是后台落 failed 终态，
+    经 /progress 暴露错误信息（参考 WeKnora）。
+    """
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = client.post(
@@ -459,7 +463,112 @@ def test_upload_non_utf8_returns_400(client: TestClient):
         params={"source": "public"},
         files={"file": ("bad.txt", b"\xff\xfe\x00\x01", "text/plain")},
     )
+    assert resp.status_code == 201
+    doc_id = resp.json()["document_id"]
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "failed"
+    assert "UTF-8" in prog["error_message"]
+
+
+def test_upload_invalid_pdf_fails_in_background(client: TestClient):
+    """上传无效 PDF 字节 → 受理 201，后台解析失败 → failed（原同步 4xx 现为异步终态）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/upload",
+        params={"source": "public"},
+        files={"file": ("bad.pdf", b"not a real pdf", "application/pdf")},
+    )
+    assert resp.status_code == 201
+    doc_id = resp.json()["document_id"]
+    prog = _wait_for_ingest(client, kb_id, doc_id)
+    assert prog["status"] == "failed"
+
+
+def test_upload_unavailable_engine_returns_400(client: TestClient):
+    """显式选不可用引擎（markitdown 未装）→ 400 配置错误（廉价预检，不进后台）。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    resp = client.post(
+        f"/api/admin/knowledge-bases/{kb_id}/upload",
+        params={"source": "public", "engine": "markitdown"},
+        files={"file": ("a.txt", b"hello", "text/plain")},
+    )
     assert resp.status_code == 400
+    assert "markitdown" in resp.json()["detail"]
+
+
+def test_concurrent_uploads_parse_in_parallel(client: TestClient, monkeypatch):
+    """多文件并发上传：解析在后台线程池并行，互不阻塞（核心异步契约，参考 WeKnora）。
+
+    断言两件事：(1) 上传提交几乎立即返回（不等慢解析）；(2) 多个解析确有重叠（并行）。
+    """
+    import threading
+    import time as _time
+
+    import bycall.rag.parsers as parsers
+    from bycall.rag.parsers.base import ParseResult
+
+    active = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def slow_parse(content, file_name="", *, engine=None, settings=None):
+        """模拟慢解析（如 mineru），记录并发重叠数。"""
+        with lock:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+        _time.sleep(0.3)
+        with lock:
+            active["n"] -= 1
+        return ParseResult(text=f"{file_name} 解析正文", title=file_name)
+
+    monkeypatch.setattr(parsers, "parse_document", slow_parse)
+
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+
+    t0 = _time.monotonic()
+    doc_ids = []
+    for i in range(3):
+        resp = client.post(
+            f"/api/admin/knowledge-bases/{kb_id}/upload",
+            params={"source": "public"},
+            files={"file": (f"f{i}.txt", b"x", "text/plain")},
+        )
+        assert resp.status_code == 201, resp.text
+        doc_ids.append(resp.json()["document_id"])
+    # 提交立即返回：3 个慢解析若串行需 ~0.9s，异步提交应远小于此。
+    assert _time.monotonic() - t0 < 0.6
+
+    for doc_id in doc_ids:
+        prog = _wait_for_ingest(client, kb_id, doc_id)
+        assert prog["status"] == "completed"
+
+    # 关键：解析确实并行（最大并发 ≥ 2），而非排队串行。
+    assert active["max"] >= 2, f"解析未并行执行，最大并发={active['max']}"
+
+
+def test_kb_parse_engine_map_persists(client: TestClient):
+    """KB 设置保存 parse_engine_map → 回读一致；空 KB 默认 None。"""
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+
+    # 初始无映射
+    kb = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
+    assert kb["parse_engine_map"] in (None, {})
+
+    # 保存 per-type 映射
+    engine_map = {"default": "builtin", "pdf": "mineru", "docx": "markitdown"}
+    resp = client.put(
+        f"/api/admin/knowledge-bases/{kb_id}",
+        json={"parse_engine_map": engine_map},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parse_engine_map"] == engine_map
+
+    # 回读一致
+    kb = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
+    assert kb["parse_engine_map"] == engine_map
 
 
 def test_delete_document_keeps_metadata_when_vector_delete_fails(client: TestClient, monkeypatch):

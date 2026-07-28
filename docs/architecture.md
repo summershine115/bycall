@@ -93,3 +93,16 @@
 
 迁移时新增一个实现类，在 `factory.py` 注册即可，业务代码不变。
 详见 `docs/decisions/0001-vectorstore-abstraction.md`。
+
+### 文档解析引擎可切换
+
+解析引擎是按扩展名路由的解析器（`rag/parsers/registry.py`，每类型一个实现）**之上**
+的策略层，参考 `VectorStore` 的可切换后端设计。引擎抽象在 `rag/parsers/engines.py`：
+
+- `builtin`（默认）：委托给按扩展名路由的本地解析器（MuPDF / python-docx / bs4 / Markdown / Text），零外部依赖。
+- `markitdown`：Microsoft MarkItDown 通用解析器（本地库，`pip install 'bycall[parse]'`），一个引擎覆盖 pdf/docx/pptx/xlsx/html/图片等。
+- `mineru`：MinerU 远程 API（布局识别 + OCR，适合扫描件 / 复杂版式 PDF），对接 `/tasks` 异步任务协议。
+
+路由规则（`parse_document`）：引擎不支持该类型 → 自动退回 `builtin`（小众格式不强制走所选引擎）；显式选中的引擎不可用（依赖未装 / 远程未配置）→ 报错而非静默回退。配置走 `BYCALL_PARSE_*`，上传端点支持 `engine` 参数按文档覆盖，`GET /api/admin/parse-engines` 列出引擎及可用性。
+
+**解析异步化**（参考 WeKnora）：上传只做廉价同步校验（扩展名 / 引擎可用性 / 大小），**解析与入库都在后台线程池并行**——多文件并发上传互不阻塞（慢引擎如 mineru 不会卡住其他文件）。解析阶段计入入库进度（`/progress` 的 `stage=parsing`），解析失败/空内容落 `status=failed`（不再立即 4xx），仅「引擎不可用」这类配置错误在请求线程即时 4xx。详见 `docs/decisions/0002-parse-engine-abstraction.md`。

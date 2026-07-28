@@ -133,8 +133,10 @@ export const admin = {
   // 文档切块列表
   listDocumentChunks: (kbId, docId) =>
     http.get(`/api/admin/knowledge-bases/${kbId}/documents/${docId}/chunks`).then((r) => r.data),
-  // 解析器列表
+  // 解析器列表（按扩展名路由的内置解析器）
   listParsers: () => http.get('/api/admin/parsers').then((r) => r.data),
+  // 解析引擎列表（builtin / markitdown / mineru，含可用性与支持类型）
+  listParseEngines: () => http.get('/api/admin/parse-engines').then((r) => r.data),
   // dev act-as
   actAs: (userId) =>
     http.post('/api/admin/act-as', null, { params: { target_user_id: userId } }),

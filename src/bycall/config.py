@@ -122,6 +122,47 @@ class ObservabilityConfig(BaseSettings):
     structured_logs: bool = False
 
 
+class ParseConfig(BaseSettings):
+    """文档解析引擎配置。前缀 ``BYCALL_PARSE_``。
+
+    解析引擎可切换（参考 ``VectorStoreConfig.backend`` 的可切换设计）：
+    - ``builtin``：按文件扩展名路由的本地解析器（MuPDF/python-docx/bs4/...，零外部依赖）。
+    - ``markitdown``：Microsoft MarkItDown 通用解析器（需 ``pip install markitdown``）。
+    - ``mineru``：MinerU 远程 API（布局识别 + OCR，需自建或接入 MinerU 服务）。
+
+    非默认引擎**不可用**（依赖未装 / 远程未配置）时，``parse_document`` 对**其不支持的类型**
+    自动退回 ``builtin``——保证不回归。仅当引擎声明支持该类型却解析失败时才报错。
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="bycall_parse_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    engine: Literal["builtin", "markitdown", "mineru"] = "builtin"
+    # ---- MarkItDown（本地库）----
+    # 启用第三方插件（pip install 的 markitdown 插件）；默认关闭，只用内置 converter。
+    markitdown_enable_plugins: bool = False
+    # ---- MinerU 远程 API（自建 mineru-api 或 mineru.net 云端）----
+    # 服务基地址，如 ``https://mineru.net`` 或自建 ``http://127.0.0.1:8000``。空 → 引擎不可用。
+    mineru_base_url: str = ""
+    # 鉴权 token（Bearer）。mineru.net 云端必填；多数自建部署可留空。
+    mineru_api_token: SecretStr = SecretStr("")
+    # 解析后端（MinerU --backend）：pipeline / vlm-auto-engine / vlm-http-client /
+    # hybrid-auto-engine / hybrid-http-client。自建服务按其算力选；云端用 hybrid-*。
+    mineru_backend: str = "hybrid-auto-engine"
+    # 解析方法（MinerU --parse_method）：auto / txt / ocr。仅 pipeline/hybrid 生效。
+    mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
+    # OCR 语言组（仅 pipeline/hybrid 生效），如 ch / en / korean / japan。
+    mineru_lang: str = "ch"
+    # 单任务最长等待秒（提交→完成）。远程解析较慢，默认 10 分钟。
+    mineru_timeout: float = 600.0
+    # 轮询任务状态间隔秒。
+    mineru_poll_interval: float = 2.0
+
+
 class AppConfig(BaseSettings):
     """顶层配置。环境变量前缀 ``BYCALL_``（顶层字段如 ``BYCALL_ENV``）。
 
@@ -150,6 +191,7 @@ class AppConfig(BaseSettings):
     # default_factory 让子模型每次按当前环境变量构造，而非 import 时固化。
     llm: LLMConfig = Field(default_factory=LLMConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    parse: ParseConfig = Field(default_factory=ParseConfig)
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     im: IMConfig = Field(default_factory=IMConfig)

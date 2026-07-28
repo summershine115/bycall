@@ -350,6 +350,8 @@ class KnowledgeBaseUpdate(BaseModel):
     enable_parent_child: bool | None = None
     parent_chunk_size: int | None = Field(default=None, ge=512, le=8192)
     child_chunk_size: int | None = Field(default=None, ge=64, le=2048)
+    # per-KB 文件类型→解析引擎映射（WeKnora 风格）；None=不改，{}=清空（回退全局默认）。
+    parse_engine_map: dict[str, str] | None = None
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -364,6 +366,7 @@ class KnowledgeBaseOut(BaseModel):
     enable_parent_child: bool
     parent_chunk_size: int
     child_chunk_size: int
+    parse_engine_map: dict[str, str] | None = None
     total_chars: int
 
     id: int

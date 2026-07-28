@@ -500,6 +500,13 @@ class KnowledgeBase(SQLModel, table=True):
     enable_parent_child: bool = False  # 是否开启父子块切分
     parent_chunk_size: int = 4096  # 父块字符数（父子模式）
     child_chunk_size: int = 384  # 子块字符数（父子模式）
+    # ---- 解析引擎映射（per-KB，WeKnora 风格：每种文件类型可指定不同引擎）----
+    # {文件扩展名: 引擎名}，如 {"pdf": "mineru", "docx": "markitdown", "default": "builtin"}。
+    # 解析时优先级：上传显式 engine > map[ext] > map["default"] > 全局 settings.parse.engine。
+    # 空 / None → 全部用全局默认引擎。
+    parse_engine_map: dict[str, str] | None = Field(
+        default=None, sa_column=Column("parse_engine_map", DictJSONType)
+    )
     # ---- 统计 ----
     total_chars: int = 0  # 文档总字符数
     document_count: int = 0  # 文档数（冗余计数）

@@ -1693,6 +1693,81 @@ def _persist_ingest_failure(session: Session, doc: Document, error: str, doc_id:
     ingest_tracker.fail(doc_id, error)
 
 
+def _run_background_parse_and_ingest(
+    kb_id: int,
+    doc_id: int,
+    title: str | None,
+    source: str,
+    file_name: str,
+    raw: bytes,
+    engine: str | None,
+) -> None:
+    """后台解析 + 入库工作线程：先解析二进制（可能很慢，如 mineru），再复用入库体。
+
+    解析在 collection 入库锁**之外**——多文件并发上传时，各文件的解析互不阻塞
+    （仅最终写库阶段按 collection 串行，守 zvec 写锁）。参考 WeKnora：上传立即受理，
+    解析/入库全程异步，进度经 ``ingest_tracker`` 暴露。
+
+    解析失败 / 空内容 → 写 failed 终态，不进入库阶段。
+    """
+    from bycall.rag.parsers import parse_document
+
+    # ---- 1. 解析（stage=parsing，慢引擎在此耗时）----
+    ingest_tracker.update(doc_id, stage="parsing")
+    try:
+        result = parse_document(raw, file_name=file_name, engine=engine)
+    except ValueError as exc:
+        _persist_parse_failure(doc_id, f"文档解析失败: {exc}")
+        return
+    except Exception as exc:
+        logger.exception("后台解析未捕获异常: kb=%s doc=%s", kb_id, doc_id)
+        _persist_parse_failure(doc_id, f"文档解析未捕获异常: {exc}")
+        return
+
+    content = result.text.strip()
+    if not content:
+        _persist_parse_failure(doc_id, "文档解析后内容为空")
+        return
+
+    # ---- 2. 持久化解析结果（content；请求未给标题时用解析元数据标题兜底）----
+    final_title = title or result.title or file_name
+    try:
+        with session_scope() as session:
+            doc = session.get(Document, doc_id)
+            if doc is None:
+                ingest_tracker.fail(doc_id, "文档已被删除")
+                return
+            doc.content = content
+            if not title and result.title:
+                doc.title = result.title
+            session.add(doc)
+            session.commit()
+    except Exception:
+        logger.exception("持久化解析结果失败: kb=%s doc=%s", kb_id, doc_id)
+        _persist_parse_failure(doc_id, "持久化解析结果失败")
+        return
+
+    # ---- 3. 复用既有入库体（切块→向量化→写库 + 终态 + tracker 兜底）----
+    _run_background_ingest(kb_id, doc_id, final_title, source, content)
+
+
+def _persist_parse_failure(doc_id: int, error: str) -> None:
+    """后台解析失败：开独立 session 写 failed 终态 + 更新 tracker（不卡在 processing）。"""
+    try:
+        with session_scope() as session:
+            doc = session.get(Document, doc_id)
+            if doc is None:
+                ingest_tracker.fail(doc_id, error)
+                return
+            doc.status = "failed"
+            doc.error_message = error
+            session.add(doc)
+            session.commit()
+    except Exception:
+        logger.exception("写入解析失败终态时再次异常: doc=%s", doc_id)
+    ingest_tracker.fail(doc_id, error)
+
+
 def _submit_ingest(kb_id: int, doc_id: int, title: str, source: str, content: str) -> None:
     """把一次入库任务提交到后台线程池（立即返回，不阻塞 HTTP 请求）。
 
@@ -1704,6 +1779,36 @@ def _submit_ingest(kb_id: int, doc_id: int, title: str, source: str, content: st
     ingest_tracker.start(doc_id, title)
     future = _get_ingest_executor().submit(
         _run_background_ingest, kb_id, doc_id, title, source, content
+    )
+    _ingest_futures.append(future)
+
+def _submit_parse_and_ingest(
+    kb_id: int,
+    doc_id: int,
+    title: str | None,
+    source: str,
+    file_name: str,
+    raw: bytes,
+    engine: str | None,
+) -> None:
+    """提交后台解析 + 入库任务（立即返回，不阻塞 HTTP 请求）。
+
+    多文件并发上传 → 多个任务进同一线程池**并行**解析 + 入库，彼此不阻塞
+    （参考 WeKnora）。Future 登记到 ``_ingest_futures``，供 ``_drain_ingest`` 排空。
+    """
+    ingest_tracker.start(doc_id, title or file_name)
+    # 立即置 parsing 阶段：让 /progress 在响应返回那一刻就显示"解析中"，
+    # 而不是 stage="" 被误判为"进度不可用（服务可能重启）"。
+    ingest_tracker.update(doc_id, stage="parsing")
+    future = _get_ingest_executor().submit(
+        _run_background_parse_and_ingest,
+        kb_id,
+        doc_id,
+        title,
+        source,
+        file_name,
+        raw,
+        engine,
     )
     _ingest_futures.append(future)
 
@@ -1881,6 +1986,8 @@ def update_knowledge_base(
         kb.parent_chunk_size = payload.parent_chunk_size
     if payload.child_chunk_size is not None:
         kb.child_chunk_size = payload.child_chunk_size
+    if payload.parse_engine_map is not None:
+        kb.parse_engine_map = payload.parse_engine_map
     session.add(kb)
     session.commit()
     session.refresh(kb)
@@ -2230,14 +2337,22 @@ async def upload_document(
     file: UploadFile,
     source: str = Query(..., description="知识域标签"),
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
+    engine: str | None = Query(
+        default=None,
+        description="解析引擎：builtin / markitdown / mineru（默认用配置 BYCALL_PARSE_ENGINE）",
+    ),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> IngestAccepted:
-    """文件上传入库（到指定 KB）——同步解析 + 异步入库。
+    """文件上传入库（到指定 KB）——上传立即受理，解析与入库全程异步（参考 WeKnora）。
 
-    支持格式：PDF / Word (.docx/.doc) / Markdown / HTML / TXT / CSV / JSON / 代码等。
-    文件读取与解析**同步**执行（解析错误立即返回 4xx，文件内容就在手上），
-    解析出正文后建文档、置 processing、提交后台入库，立即返回 IngestAccepted。
+    支持格式：PDF / Word / Markdown / HTML / TXT / CSV / JSON / 代码等（随解析引擎扩展，
+    选 markitdown/mineru 时额外支持 pptx/xlsx/图片等）。
+    请求线程只做廉价同步校验（扩展名 / 引擎可用性 / 大小），**解析在后台线程**——
+    多文件并发上传互不阻塞（慢引擎如 mineru 不会卡住其他文件）。
+    解析/空内容/解析异常不再立即 4xx，而是在后台落 status=failed，经 /progress 暴露。
+
+    解析引擎可切换（``engine`` 参数覆盖配置默认）；引擎不支持该类型时自动退回 builtin。
     """
     kb = _get_kb_or_404(session, kb_id)
 
@@ -2253,44 +2368,31 @@ async def upload_document(
             detail=f"文件过大（上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
         )
 
-    # 用文档解析器提取文本。
-    from bycall.rag.parsers import get_parser, list_parsers
+    # 廉价同步校验：扩展名 + 引擎可用性（不触发解析）。引擎不可用属配置错误，立即 4xx。
+    # 引擎解析优先级：上传显式 engine > KB 的 parse_engine_map[ext] > map["default"] > 全局默认。
+    from bycall.rag.parsers import get_parse_engine, resolve_engine_name, supported_upload_types
 
-    supported_exts = set()
-    for p in list_parsers():
-        supported_exts.update(p["file_types"])
-    if ext not in supported_exts:
+    if ext not in supported_upload_types():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             detail=f"不支持的文件类型: .{ext}",
         )
 
-    parser = get_parser(ext)
-    if parser is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=f"未找到 .{ext} 的解析器",
-        )
+    effective_engine = resolve_engine_name(ext, engine=engine, engine_map=kb.parse_engine_map or {})
+    if effective_engine != "builtin":
+        eng = get_parse_engine(effective_engine)
+        if not eng.is_available():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"解析引擎 {effective_engine!r} 不可用：{eng.reason_unavailable}",
+            )
 
-    try:
-        result = parser.parse(raw, file_name=file.filename)
-    except ValueError as exc:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
-    content = result.text.strip()
-    if not content:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="文件内容为空")
-
-    doc_title = title or result.title or file.filename.rsplit(".", 1)[0]
-
+    # 建文档（content 暂空——解析在后台完成后再回填），置 processing，立即提交后台解析+入库。
     doc = Document(
         knowledge_base_id=kb_id,
-        title=doc_title,
+        title=title or file.filename.rsplit(".", 1)[0],
         source=source.strip(),
-        content=content,
+        content="",
         file_name=file.filename,
         file_type=ext,
         status="processing",
@@ -2301,8 +2403,11 @@ async def upload_document(
     session.commit()
     session.refresh(doc)
 
-    # 仅入库异步：解析已同步完成（content 在手），后台跑切块→向量化→写库。
-    _submit_ingest(kb_id, doc.id, doc.title, doc.source, content)
+    # 解析 + 入库都在后台：上传立即返回，多文件并发互不阻塞。
+    # 传已解析的引擎名（含 KB 映射），后台 parse_document 收到显式 engine 即直接采用。
+    _submit_parse_and_ingest(
+        kb_id, doc.id, title, doc.source, file.filename, raw, effective_engine
+    )
     return IngestAccepted(document_id=doc.id, status="processing")
 
 
@@ -2772,6 +2877,24 @@ def list_tools(
         ToolOut(name=t.name, description=t.description, parameters=t.parameters, source=t.source)
         for t in get_all_tools()
     ]
+
+
+# ============ 解析引擎（可切换：builtin / markitdown / mineru）============
+
+
+@router.get("/parse-engines", response_model=list[dict])
+def list_parse_engines_endpoint(
+    _admin: None = Depends(_require_admin),
+) -> list[dict]:
+    """列出可选的解析引擎及其可用性、支持的文件类型。
+
+    引擎在按扩展名路由的解析器（``/parsers``）之上：选 markitdown/mineru 时，
+    其声明支持的类型走该引擎，其余类型仍退回 builtin。返回每个引擎的
+    ``is_available``（依赖/远程是否就绪）便于前端提示配置缺失。
+    """
+    from bycall.rag.parsers import list_parse_engines
+
+    return list_parse_engines()
 
 
 # ============ 解析器注册表（文档解析器列表）============
