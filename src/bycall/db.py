@@ -304,34 +304,52 @@ def _seed_parse_settings(session) -> None:
     )
     _seed_setting(
         session,
+        "parse.mineru_mode",
+        _default("MINERU_MODE", p.mineru_mode),
+        "MinerU 部署模式：selfhost（自建 /tasks）/ cloud（mineru.net /api/v4）",
+    )
+    _seed_setting(
+        session,
         "parse.mineru_base_url",
         _default("MINERU_BASE_URL", p.mineru_base_url),
-        "MinerU 服务基地址（自建 mineru-api 或 mineru.net 云端）；空 → 引擎不可用",
+        "MinerU 服务基地址（selfhost：自建根，如 http://127.0.0.1:8000；cloud：mineru.net 根，空→默认 mineru.net）",
     )
     _seed_setting(
         session,
         "parse.mineru_api_token",
         _default("MINERU_API_TOKEN", ""),
-        "MinerU 鉴权 token（Bearer）；mineru.net 云端必填",
+        "MinerU 鉴权 token（Bearer）；selfhost 多数可留空，cloud（mineru.net）必填",
         is_secret=True,
     )
     _seed_setting(
         session,
         "parse.mineru_backend",
         _default("MINERU_BACKEND", p.mineru_backend),
-        "MinerU 解析后端：pipeline / vlm-auto-engine / vlm-http-client / hybrid-auto-engine / hybrid-http-client",
+        "MinerU 解析后端（selfhost 专用）：pipeline / vlm-auto-engine / vlm-http-client / hybrid-auto-engine / hybrid-http-client",
     )
     _seed_setting(
         session,
         "parse.mineru_parse_method",
         _default("MINERU_PARSE_METHOD", p.mineru_parse_method),
-        "MinerU 解析方法：auto / txt / ocr（仅 pipeline/hybrid 生效）",
+        "MinerU 解析方法（selfhost 专用）：auto / txt / ocr（仅 pipeline/hybrid 生效）",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_model_version",
+        _default("MINERU_MODEL_VERSION", p.mineru_model_version),
+        "MinerU 模型版本（cloud 专用）：pipeline / vlm（推荐） / MinerU-HTML",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_is_ocr",
+        _default("MINERU_IS_OCR", p.mineru_is_ocr),
+        "MinerU 是否强制 OCR（cloud 专用，is_ocr）；默认 false 自动识别扫描件",
     )
     _seed_setting(
         session,
         "parse.mineru_lang",
         _default("MINERU_LANG", p.mineru_lang),
-        "MinerU OCR 语言组（仅 pipeline/hybrid 生效）：ch / en / korean / japan",
+        "MinerU OCR 语言组：ch / en / korean / japan（selfhost pipeline/hybrid 与 cloud pipeline/vlm 均生效）",
     )
     _seed_setting(
         session,

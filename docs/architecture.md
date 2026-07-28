@@ -101,7 +101,7 @@
 
 - `builtin`（默认）：委托给按扩展名路由的本地解析器（MuPDF / python-docx / bs4 / Markdown / Text），零外部依赖。
 - `markitdown`：Microsoft MarkItDown 通用解析器（本地库，`pip install 'bycall[parse]'`），一个引擎覆盖 pdf/docx/pptx/xlsx/html/图片等。
-- `mineru`：MinerU 远程 API（布局识别 + OCR，适合扫描件 / 复杂版式 PDF），对接 `/tasks` 异步任务协议。
+- `mineru`：MinerU 远程 API（布局识别 + OCR，适合扫描件 / 复杂版式 PDF）。两种部署由 `mineru_mode` 切换：`selfhost`（自建 mineru-api，`/tasks` multipart 协议）/ `cloud`（mineru.net 精准解析，`/api/v4` 预签名上传 + 轮询协议）。
 
 路由规则（`parse_document`）：引擎不支持该类型 → 自动退回 `builtin`（小众格式不强制走所选引擎）；显式选中的引擎不可用（依赖未装 / 远程未配置）→ 报错而非静默回退。配置走 `BYCALL_PARSE_*`，上传端点支持 `engine` 参数按文档覆盖，`GET /api/admin/parse-engines` 列出引擎及可用性。
 

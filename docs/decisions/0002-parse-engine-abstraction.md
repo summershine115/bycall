@@ -14,7 +14,7 @@ M2 的文档入库已有一套**按文件扩展名路由**的解析器（`rag/pa
 但两类新需求打破了这个模型——它们是**通用解析器**，一个引擎覆盖多种类型：
 
 - **MarkItDown**（Microsoft）：一个库吃下 pdf/docx/pptx/xlsx/html/图片/音频/zip。
-- **MinerU**（opendatalab）：远程布局识别 + OCR，专治扫描件 / 复杂版式 PDF，输出结构化 Markdown。
+- **MinerU**（opendatalab）：远程布局识别 + OCR，专治扫描件 / 复杂版式 PDF，输出结构化 Markdown。支持自建部署（`/tasks`）与 mineru.net 云端（`/api/v4`）两套协议。
 
 强行把它们塞进「按扩展名路由」的注册表（让 .pdf 同时映射多个解析器）会丢掉
 「整份文档走同一引擎」的语义，也无法表达「全局选某个引擎」的意图。
@@ -28,7 +28,7 @@ M2 的文档入库已有一套**按文件扩展名路由**的解析器（`rag/pa
 ParseEngine（策略）
 ├── BuiltinEngine    —— 委托 registry 的按扩展名解析器（默认，零外部依赖）
 ├── MarkItDownEngine —— MarkItDown 本地库（可选依赖）
-└── MinerUEngine     —— MinerU 远程 API（/tasks 异步任务协议）
+└── MinerUEngine     —— MinerU 远程 API（selfhost `/tasks` 或 cloud `/api/v4`，按 mineru_mode 分派）
 ```
 
 引擎接口：`name / description / supported_types / is_available / parse(content, file_name) -> ParseResult`。
@@ -68,6 +68,11 @@ ParseEngine（策略）
 - 引擎输出统一收敛到 `ParseResult`（text + sections + metadata），
   不把引擎特有的中间结构（如 MinerU 的 middle_json）泄漏到下游 chunking/embedding 层。
 - MinerU 客户端（`mineru_client.py`）的 HTTP 层可注入 fake client，保证不连真实服务即可测试。
+- MinerU 双协议（`mineru_mode`）：selfhost 走 `/tasks` multipart；cloud 走 mineru.net
+  `/api/v4` 预签名上传（**PUT 不带 Authorization / Content-Type**，OSS 签名要求）→ 轮询
+  batch → 取 `full_zip_url`。cloud 单文件 `/api/v4/extract/task` 只收 URL、不支持直传，
+  故本地字节流固定走 batch 流。状态字段两套：selfhost `status`∈{completed,failed}、
+  cloud `state`∈{done,failed}；cloud 响应统一 `{code,msg,data}` 信封，`code!=0` 即失败。
 
 ## 相关
 

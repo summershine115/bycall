@@ -194,3 +194,43 @@ def test_mineru_token_secret_masked(client):
         "/api/admin/settings", json={"settings": {"parse.mineru_api_token": ""}}
     )
     assert any("parse.mineru_api_token" in s for s in resp.json()["skipped"])
+
+
+
+def test_mineru_cloud_settings_seeded(client):
+    """新 key（mode / model_version / is_ocr）首次启动即 seed，默认值正确。"""
+    settings = {s["key"]: s for s in client.get("/api/admin/settings").json()}
+    assert settings["parse.mineru_mode"]["value"] == "selfhost"
+    assert settings["parse.mineru_model_version"]["value"] == "vlm"
+    assert settings["parse.mineru_is_ocr"]["value"] == "false"
+    assert settings["parse.mineru_is_ocr"]["is_secret"] is False
+
+
+def test_cloud_mode_available_with_token(client):
+    """切 cloud + 配 token → mineru 引擎可用（可用性只看 token，不看 base_url）。"""
+    client.put(
+        "/api/admin/settings",
+        json={"settings": {"parse.mineru_mode": "cloud",
+                           "parse.mineru_api_token": "tok-abcdefgh"}},
+    )
+    engines = {e["name"]: e for e in client.get("/api/admin/parse-engines").json()}
+    assert engines["mineru"]["is_available"] is True
+    assert "token" in engines["mineru"]["description"]
+
+
+def test_selfhost_mode_unavailable_without_base_url(client):
+    """selfhost + 无 base_url → 不可用，原因指向 base_url（与 cloud 的 token 判据区分）。"""
+    engines = {e["name"]: e for e in client.get("/api/admin/parse-engines").json()}
+    assert engines["mineru"]["is_available"] is False
+    assert "BASE_URL" in engines["mineru"]["reason_unavailable"]
+
+
+def test_invalid_mineru_mode_and_model_rejected(client):
+    """非法 mode / model_version / is_ocr → 4xx 拒绝（保持原值）。"""
+    for key, bad in (
+        ("parse.mineru_mode", "onprem"),
+        ("parse.mineru_model_version", "gpt-4"),
+        ("parse.mineru_is_ocr", "maybe"),
+    ):
+        resp = client.put("/api/admin/settings", json={"settings": {key: bad}})
+        assert resp.status_code == 400, f"{key}={bad} 应被拒绝"

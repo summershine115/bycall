@@ -110,41 +110,76 @@
           <div class="bc-panel parse-subpanel">
             <h4 class="parse-subpanel__title">MinerU 远程 API</h4>
             <el-form label-position="top">
+              <el-form-item label="部署模式">
+                <el-select v-model="form['parse.mineru_mode']" style="width: 100%">
+                  <el-option label="自建（mineru-api /tasks 协议）" value="selfhost" />
+                  <el-option label="云端（mineru.net /api/v4 协议）" value="cloud" />
+                </el-select>
+                <div class="bc-hint">
+                  自建：本地/内网部署的 MinerU 服务；云端：mineru.net 精准解析 API（两套协议不同）
+                </div>
+              </el-form-item>
               <el-form-item label="服务基地址（base_url）">
                 <el-input
                   v-model="form['parse.mineru_base_url']"
-                  placeholder="如 https://mineru.net 或自建 http://127.0.0.1:8000；空 → 引擎不可用"
+                  :placeholder="
+                    mineruIsCloud
+                      ? '如 https://mineru.net（空 → 默认 mineru.net）'
+                      : '如 http://127.0.0.1:8000；空 → 引擎不可用'
+                  "
                 />
               </el-form-item>
               <el-form-item label="鉴权 token（Bearer）">
                 <el-input
                   v-model="form['parse.mineru_api_token']"
-                  :placeholder="masks['parse.mineru_api_token'] || 'mineru.net 云端必填；自建可留空'"
+                  :placeholder="masks['parse.mineru_api_token'] || (mineruIsCloud ? '云端必填' : '自建多数可留空')"
                   show-password
                 />
                 <div v-if="masks['parse.mineru_api_token']" class="bc-hint">
                   当前已设置：{{ masks['parse.mineru_api_token'] }} —— 不修改则留空保存
                 </div>
               </el-form-item>
-              <div class="parse-row">
-                <el-form-item label="解析后端">
-                  <el-select v-model="form['parse.mineru_backend']" style="width: 100%">
-                    <el-option label="hybrid-auto-engine" value="hybrid-auto-engine" />
-                    <el-option label="hybrid-http-client" value="hybrid-http-client" />
-                    <el-option label="pipeline" value="pipeline" />
-                    <el-option label="vlm-auto-engine" value="vlm-auto-engine" />
-                    <el-option label="vlm-http-client" value="vlm-http-client" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="解析方法">
-                  <el-select v-model="form['parse.mineru_parse_method']" style="width: 100%">
-                    <el-option label="auto" value="auto" />
-                    <el-option label="txt" value="txt" />
-                    <el-option label="ocr" value="ocr" />
-                  </el-select>
-                  <div class="bc-hint">仅 pipeline / hybrid 后端生效</div>
-                </el-form-item>
-              </div>
+
+              <!-- selfhost 专用参数 -->
+              <template v-if="!mineruIsCloud">
+                <div class="parse-row">
+                  <el-form-item label="解析后端（--backend）">
+                    <el-select v-model="form['parse.mineru_backend']" style="width: 100%">
+                      <el-option label="hybrid-auto-engine" value="hybrid-auto-engine" />
+                      <el-option label="hybrid-http-client" value="hybrid-http-client" />
+                      <el-option label="pipeline" value="pipeline" />
+                      <el-option label="vlm-auto-engine" value="vlm-auto-engine" />
+                      <el-option label="vlm-http-client" value="vlm-http-client" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="解析方法（--parse_method）">
+                    <el-select v-model="form['parse.mineru_parse_method']" style="width: 100%">
+                      <el-option label="auto" value="auto" />
+                      <el-option label="txt" value="txt" />
+                      <el-option label="ocr" value="ocr" />
+                    </el-select>
+                    <div class="bc-hint">仅 pipeline / hybrid 后端生效</div>
+                  </el-form-item>
+                </div>
+              </template>
+
+              <!-- cloud 专用参数（mineru.net 精准解析） -->
+              <template v-if="mineruIsCloud">
+                <div class="parse-row">
+                  <el-form-item label="模型版本（model_version）">
+                    <el-select v-model="form['parse.mineru_model_version']" style="width: 100%">
+                      <el-option label="vlm（推荐）" value="vlm" />
+                      <el-option label="pipeline" value="pipeline" />
+                      <el-option label="MinerU-HTML（HTML 专用）" value="MinerU-HTML" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="强制 OCR（is_ocr）">
+                    <el-switch v-model="mineruIsOcr" active-text="强制" inactive-text="自动" />
+                    <div class="bc-hint">默认自动识别扫描件；强制 = 对数字文档也跑 OCR</div>
+                  </el-form-item>
+                </div>
+              </template>
+
               <div class="parse-row">
                 <el-form-item label="OCR 语言组">
                   <el-input v-model="form['parse.mineru_lang']" placeholder="ch / en / korean / japan" />
@@ -185,7 +220,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
@@ -201,6 +236,8 @@ const masks = reactive({})
 const imEnable = ref(false)
 const engines = ref([])
 const markitdownPlugins = ref(false)
+const mineruIsOcr = ref(false)
+const mineruIsCloud = computed(() => form['parse.mineru_mode'] === 'cloud')
 
 async function load() {
   loading.value = true
@@ -219,6 +256,10 @@ async function load() {
     }
     imEnable.value = form['im.enable'] === 'true'
     markitdownPlugins.value = form['parse.markitdown_enable_plugins'] === 'true'
+    // MinerU 模式/OCR 派生状态；旧库无 key 时给默认值（selfhost / 不强制 OCR）。
+    if (!form['parse.mineru_mode']) form['parse.mineru_mode'] = 'selfhost'
+    if (!form['parse.mineru_model_version']) form['parse.mineru_model_version'] = 'vlm'
+    mineruIsOcr.value = form['parse.mineru_is_ocr'] === 'true'
     engines.value = await admin.listParseEngines()
   } finally {
     loading.value = false
@@ -230,6 +271,7 @@ async function onSave() {
   try {
     form['im.enable'] = imEnable.value ? 'true' : 'false'
     form['parse.markitdown_enable_plugins'] = markitdownPlugins.value ? 'true' : 'false'
+    form['parse.mineru_is_ocr'] = mineruIsOcr.value ? 'true' : 'false'
     const result = await admin.updateSettings(form)
     const imChanged = result.updated.some((k) => k.startsWith('im.'))
     if (imChanged) {
