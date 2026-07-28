@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 import pytest
-from sqlmodel import create_engine
+from sqlmodel import create_engine, select
 
+import bycall.governance.capability as cap_module
 from bycall.config import get_settings
 from bycall.governance.capability import (
     CapabilitySet,
     build_knowledge_scope_text,
+    clear_capability_cache,
     compute_capability_set,
     get_active_system_prompt,
 )
@@ -411,3 +413,161 @@ def test_normal_capability_scope_text_lists_role_tags(db_session):
     cap = compute_capability_set(db_session, user)
     assert "sales" in cap.knowledge_scope_text
     assert "public" in cap.knowledge_scope_text
+
+
+# ============ 能力集缓存（M5 性能调优）============
+
+
+def test_cache_hit_skips_db_queries(db_session, monkeypatch):
+    """命中跳过全部 DB 查询——spy 底层计算函数，连续 3 次只算 1 次。"""
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="eng",
+            config=RoleConfig(allowed_tools=["a"], knowledge_scope_tags=["eng"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "wendy", role="eng")
+
+    calls = {"n": 0}
+    orig = cap_module._compute_capability_set_uncached
+
+    def spy(session, user):
+        calls["n"] += 1
+        return orig(session, user)
+
+    monkeypatch.setattr(cap_module, "_compute_capability_set_uncached", spy)
+
+    compute_capability_set(db_session, user)  # miss → 算 1 次
+    compute_capability_set(db_session, user)  # hit → 不算
+    compute_capability_set(db_session, user)  # hit → 不算
+    assert calls["n"] == 1
+
+
+def test_cache_hit_returns_independent_copy(db_session):
+    """命中返回 deepcopy 副本：改第一个 cap 不污染缓存，后续取仍是干净的。
+
+    这是治理系统的硬约束——一次请求对返回能力集的改动，绝不能泄漏到下一次请求
+    （否则 A 改宽自己的 allowed_tools，B 拿到的就是被污染的越权集合）。
+    """
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="eng",
+            config=RoleConfig(allowed_tools=["a"], knowledge_scope_tags=["eng"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "xander", role="eng")
+
+    cap1 = compute_capability_set(db_session, user)  # miss → 缓存
+    cap2 = compute_capability_set(db_session, user)  # hit
+    cap1.allowed_tools.append("INJECTED")
+    cap1.knowledge_scope_tags.append("INJECTED")
+
+    assert cap2.allowed_tools == ["a"]  # cap2 未受 cap1 改动影响
+    assert cap2.knowledge_scope_tags == ["eng"]
+    cap3 = compute_capability_set(db_session, user)  # 缓存内 master 未被污染
+    assert cap3.allowed_tools == ["a"]
+    assert cap3.knowledge_scope_tags == ["eng"]
+
+
+def test_cache_invalidated_on_relevant_commit(db_session):
+    """admin 改 Role.config 提交后，缓存立即失效——下次重算反映新配置。
+
+    正确性核心：admin 收窄权限（如删工具）必须立即生效，不能让已缓存的能力集
+    继续放行被收回的工具。after_commit 据相关表脏实例清空整张缓存。
+    """
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="eng",
+            config=RoleConfig(allowed_tools=["a"], knowledge_scope_tags=["eng"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "yvonne", role="eng")
+    cap1 = compute_capability_set(db_session, user)
+    assert cap1.allowed_tools == ["a"]
+    assert user.id in cap_module._CAP_CACHE
+
+    # 改 Role.config 并提交（模拟 admin 写路径：控制面端点 commit）
+    role = db_session.exec(select(Role).where(Role.name == "eng")).first()
+    role.config = RoleConfig(allowed_tools=["a", "b"], knowledge_scope_tags=["eng"], level=1)
+    db_session.add(role)
+    db_session.commit()  # 触发 after_commit → 清缓存
+
+    assert user.id not in cap_module._CAP_CACHE  # 缓存已清
+    cap2 = compute_capability_set(db_session, user)
+    assert cap2.allowed_tools == ["a", "b"]  # 反映新配置（被收回/新增的工具）
+
+
+def test_cache_not_invalidated_on_rollback(db_session):
+    """flush 后回滚不清缓存——改动未落库，缓存仍有效（flush→commit 标记被丢弃）。"""
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="eng",
+            config=RoleConfig(allowed_tools=["a"], knowledge_scope_tags=["eng"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "zane", role="eng")
+    compute_capability_set(db_session, user)
+    assert user.id in cap_module._CAP_CACHE
+
+    role = db_session.exec(select(Role).where(Role.name == "eng")).first()
+    role.config = RoleConfig(allowed_tools=["forbidden"], knowledge_scope_tags=["eng"], level=1)
+    db_session.flush()  # after_flush 置标记
+    db_session.rollback()  # after_rollback 丢弃标记
+
+    assert user.id in cap_module._CAP_CACHE  # 缓存仍在
+
+
+def test_unrelated_commit_keeps_cache(db_session):
+    """无关表（如 AuditLog）提交不清缓存——失效只针对能力集输入表。"""
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="eng",
+            config=RoleConfig(allowed_tools=["a"], knowledge_scope_tags=["eng"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "uma", role="eng")
+    db_session.commit()  # 先把 Role+User 提交干净（此事务含相关表，会清空缓存——但此刻缓存本就空）
+    # 缓存填充：此时 session 无待提交的相关表变更
+    compute_capability_set(db_session, user)
+    assert user.id in cap_module._CAP_CACHE
+
+    # 新事务只写 AuditLog（非能力集输入表）并提交
+    from bycall.governance.models import AuditLog
+
+    db_session.add(AuditLog(user_name="probe", action="chat", decision="allowed"))
+    db_session.commit()  # 仅 AuditLog 脏 → after_flush 未置相关标记 → 不清缓存
+
+    assert user.id in cap_module._CAP_CACHE  # 缓存仍在
+
+
+def test_permission_error_not_cached(db_session):
+    """禁用用户的 PermissionError 不缓存——重新启用后立即生效，不留陈旧拒绝。"""
+    clear_capability_cache()
+    db_session.add(
+        Role(
+            name="sales",
+            config=RoleConfig(allowed_tools=["kb_search"], knowledge_scope_tags=["sales"], level=1),
+        )
+    )
+    db_session.flush()
+    user = _make_user(db_session, "vera", role="sales", is_active=False)
+    with pytest.raises(PermissionError, match="用户已被禁用"):
+        compute_capability_set(db_session, user)
+    assert user.id not in cap_module._CAP_CACHE  # 拒绝结果未缓存
+
+    # 重新启用 → 立即可算（未被陈旧拒绝阻塞）
+    user.is_active = True
+    db_session.flush()
+    cap = compute_capability_set(db_session, user)
+    assert cap.role == "sales"
+    assert cap.allowed_tools == ["kb_search"]

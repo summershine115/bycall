@@ -38,6 +38,15 @@ RAG_RETRIEVED_CHUNKS = Histogram(
     "RAG 检索召回 chunk 数分布（0 = ACL 全过滤或无命中）",
     buckets=(0, 1, 3, 5, 10, 20, 50, 100),
 )
+# ============ 能力集缓存（M5 性能调优）============
+
+# compute_capability_set 每条消息都会跑（5+ 次 DB 查询），M5 加了 user_id 级缓存。
+# hit/miss 比例让 on-call 验证缓存确实生效（miss 占比高 = 失效过于频繁或未命中）。
+CAPABILITY_CACHE = Counter(
+    "bycall_capability_cache_total",
+    "能力集缓存命中/未命中计数（验证缓存生效、定位失效频率）",
+    ["result"],  # result: hit/miss（低基数）
+)
 
 
 def status_class(status: int) -> str:

@@ -25,6 +25,10 @@ def _reset_settings():
     from bycall.governance.ratelimit import reset_limiter
 
     reset_limiter()
+    # 同步清空能力集缓存（M5 性能调优：user.id 跨用例复用，不清会串味）。
+    from bycall.governance.capability import clear_capability_cache
+
+    clear_capability_cache()
 
 
 @pytest.fixture

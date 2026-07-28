@@ -9,16 +9,42 @@
   策略（admin 全放、普通用户按 Role.config 收窄、禁用用户拒绝）全部固化在这里，
   不下放到提示词，也不让 LLM 参与判定。
 - admin 是内置特殊角色（不建 Role 表记录），引擎识别后给通配 ``['*']`` 与最高职级。
+
+缓存（M5 性能调优）：``compute_capability_set`` 每条消息都会跑（5+ 次 DB 查询），
+而其输入（User/Role/SystemPrompt/Skill/KnowledgeBase）在 admin 改动前是稳定的。
+故按 ``user.id`` 缓存计算结果，命中即跳过全部 DB 查询——这是 product-design.md §7
+「会话级缓存（身份绑定时算一次能力集）」默认值的落地。
+
+正确性（治理系统的硬约束——缓存陈旧 = 权限泄漏 = 安全洞）：
+- **副本语义**：命中/写入均返回 ``deepcopy``，调用方改动不回写缓存（保值对象契约）。
+- **只缓存成功**：``PermissionError``（禁用/角色未定义）不缓存——用户被重新启用 /
+  补建角色后下次即生效，不留陈旧拒绝。
+- **commit 即失效**：``after_flush`` 探测相关表脏实例 → 标记本事务；
+  ``after_commit`` 据标记清空整张缓存（admin 改 Role/Prompt/Skill/KB/User 后立即生效）；
+  ``after_rollback`` 丢弃标记（未落库的改动不影响缓存）。单点注册，自动覆盖全部
+  admin 写端点，无需逐个 hook（漏一个 = 陈旧权限 = 安全洞，故用 ORM 事件兜底）。
+局限：
+- 直连 DB 绕过 ORM 的写入不触发失效——本项目所有写路径均走 ORM，可接受。
+- 进程内字典，**多 worker 部署下进程间不共享**：admin 写只清处理该请求的 worker
+  的缓存，其余 worker 仍陈旧至各自首次相关提交。单 worker（当前部署形态）无此问题；
+  迁移多 worker 时需改共享失效信号（如 DB generation 或 Redis pub/sub）。
+  注：用户禁用的主防线在 ``gateway/identity`` 的 ``select_by_im``（每条消息实时读 DB），
+  不依赖此缓存——故多 worker 下禁用仍即时生效，仅角色/提示词等配置变更可能跨 worker 滞后。
+- GIL 下读-算-写非原子，最坏并发重复算一次（结果等价，无损坏）；同用户消息通常串行，实争用罕见。
 """
 
 from __future__ import annotations
 
+import copy
+import itertools
 import logging
 from dataclasses import dataclass, field
 
+from sqlalchemy import event
 from sqlmodel import Session, select
 
 from bycall.governance.models import KnowledgeBase, Role, Skill, SystemPrompt, User
+from bycall.observability.metrics import CAPABILITY_CACHE
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +182,70 @@ def _format_kb_lines(kbs: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+# ============ 能力集缓存（M5 性能调优）============
+# user.id → CapabilitySet（master，永不直接返回；命中/写入均 deepcopy 副本）。
+_CAP_CACHE: dict[int | None, CapabilitySet] = {}
+
+# 能力集输入表——这些表的写提交即令缓存失效（输入变了，结果必变）。
+_CAP_RELEVANT_TYPES: tuple[type, ...] = (User, Role, SystemPrompt, Skill, KnowledgeBase)
+# 挂在 session.info 上的事务内标记：flush 发现相关脏实例即置位，commit 据它清缓存。
+_CAP_INVAL_KEY = "bycall_cap_invalidate"
+
+
+def clear_capability_cache() -> None:
+    """清空能力集缓存。
+
+    供测试隔离（conftest 每用例调用）与需要强制重算的运维路径使用。生产路径下，
+    admin 写提交由 ORM 事件自动触发清空，正常无需手动调。
+    """
+    _CAP_CACHE.clear()
+
+
 def compute_capability_set(session: Session, user: User) -> CapabilitySet:
+    """从用户记录计算当前能力集（带 ``user.id`` 级缓存）。
+
+    缓存语义见模块 docstring。命中或首次计算均返回 ``deepcopy``——调用方拿到独立
+    副本，改动不回写缓存（保值对象契约）。``PermissionError``（禁用 / 角色未定义）
+    **不缓存**：这些是"当前不该有"的拒绝，用户状态变更后下次即重算，不留陈旧拒绝。
+    """
+    cached = _CAP_CACHE.get(user.id)
+    if cached is not None:
+        CAPABILITY_CACHE.labels(result="hit").inc()
+        return copy.deepcopy(cached)
+
+    CAPABILITY_CACHE.labels(result="miss").inc()
+    cap = _compute_capability_set_uncached(session, user)
+    _CAP_CACHE[user.id] = cap
+    return copy.deepcopy(cap)
+
+
+@event.listens_for(Session, "after_flush")
+def _cap_mark_invalidation(session: Session, _flush_context) -> None:
+    """flush 后扫脏实例：本事务若改了能力集相关表，置标记等 commit 时清缓存。
+
+    用 ``after_flush`` 而非 ``after_commit`` 是因为 commit 后 session 的 new/dirty/deleted
+    已失效，无从判断改了什么——这里捕获，``after_commit`` 消费。
+    """
+    for obj in itertools.chain(session.new, session.dirty, session.deleted):
+        if isinstance(obj, _CAP_RELEVANT_TYPES):
+            session.info[_CAP_INVAL_KEY] = True
+            break
+
+
+@event.listens_for(Session, "after_commit")
+def _cap_invalidate_on_commit(session: Session) -> None:
+    """commit 成功才清缓存——与 DB 真值一致；未提交/回滚的改动不触发。"""
+    if session.info.pop(_CAP_INVAL_KEY, False):
+        clear_capability_cache()
+
+
+@event.listens_for(Session, "after_rollback")
+def _cap_discard_flag_on_rollback(session: Session) -> None:
+    """回滚则丢弃标记——改动未落库，缓存仍有效，无需失效。"""
+    session.info.pop(_CAP_INVAL_KEY, None)
+
+
+def _compute_capability_set_uncached(session: Session, user: User) -> CapabilitySet:
     """从用户记录计算当前能力集。
 
     - 普通用户：取 ``user.role`` 对应的 ``Role.config``（allowed_tools /
