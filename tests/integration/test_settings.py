@@ -119,3 +119,78 @@ def test_settings_require_admin(client):
     bare = TestClient(client.app)
     resp = bare.get("/api/admin/settings")
     assert resp.status_code == 401
+
+
+# ============ 解析引擎配置（与 IM 同机制：控制台可改、即时生效）============
+
+
+def test_parse_settings_seeded_and_listed(client):
+    """init_db 灌入 parse.* 默认 key；mineru token 按 secret 脱敏回显。"""
+    resp = client.get("/api/admin/settings")
+    settings = {s["key"]: s for s in resp.json()}
+    assert settings["parse.engine"]["value"] == "builtin"
+    assert settings["parse.mineru_api_token"]["is_secret"] is True
+
+
+def test_update_parse_engine_takes_effect(client):
+    """控制台改 parse.engine → 引擎目录默认标记即时切换（DB 优先，无需重启）。"""
+    resp = client.put("/api/admin/settings", json={"settings": {"parse.engine": "mineru"}})
+    assert resp.status_code == 200
+    assert "parse.engine" in resp.json()["updated"]
+    engines = {e["name"]: e for e in client.get("/api/admin/parse-engines").json()}
+    assert engines["mineru"]["is_default"] is True
+    assert engines["builtin"]["is_default"] is False
+
+
+def test_update_mineru_base_url_enables_engine(client):
+    """配 mineru_base_url → mineru 引擎变可用（可用性实时反映配置）。"""
+    client.put(
+        "/api/admin/settings",
+        json={"settings": {"parse.mineru_base_url": "http://mineru.local:8000"}},
+    )
+    engines = {e["name"]: e for e in client.get("/api/admin/parse-engines").json()}
+    assert engines["mineru"]["is_available"] is True
+
+
+def test_invalid_parse_engine_rejected(client):
+    """非法引擎名 → 4xx 拒绝（不入库，保持原值 builtin）。"""
+    resp = client.put("/api/admin/settings", json={"settings": {"parse.engine": "turbo"}})
+    assert resp.status_code == 400
+    engine = next(
+        s for s in client.get("/api/admin/settings").json() if s["key"] == "parse.engine"
+    )
+    assert engine["value"] == "builtin"
+
+
+def test_invalid_parse_number_rejected(client):
+    """timeout 非数字 / 负数 → 4xx 拒绝。"""
+    for bad in ("abc", "-5", "0"):
+        resp = client.put(
+            "/api/admin/settings", json={"settings": {"parse.mineru_timeout": bad}}
+        )
+        assert resp.status_code == 400
+
+
+def test_invalid_parse_method_rejected(client):
+    """非法 parse_method → 4xx 拒绝。"""
+    resp = client.put(
+        "/api/admin/settings", json={"settings": {"parse.mineru_parse_method": "fancy"}}
+    )
+    assert resp.status_code == 400
+
+
+def test_mineru_token_secret_masked(client):
+    """mineru token 按 secret 处理：回显脱敏、空串提交不清除。"""
+    client.put(
+        "/api/admin/settings",
+        json={"settings": {"parse.mineru_api_token": "tok-1234567890"}},
+    )
+    resp = client.get("/api/admin/settings")
+    token = next(s for s in resp.json() if s["key"] == "parse.mineru_api_token")
+    assert "tok-1234567890" not in token["value"]
+    assert token["is_set"] is True
+    # 空串 → 跳过（不清除已配 token），与 IM secret 一致
+    resp = client.put(
+        "/api/admin/settings", json={"settings": {"parse.mineru_api_token": ""}}
+    )
+    assert any("parse.mineru_api_token" in s for s in resp.json()["skipped"])

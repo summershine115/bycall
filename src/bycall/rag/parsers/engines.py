@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import logging
 from abc import ABC, abstractmethod
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from bycall.rag.parsers.base import ParseResult
@@ -389,8 +390,69 @@ def _ext_of(file_name: str) -> str:
     return file_name.rsplit(".", 1)[-1].lower()
 
 
-def _get_settings() -> AppConfig:
-    """延迟取配置（避免 import 时固化 + 测试 cache_clear 生效）。"""
-    from bycall.config import get_settings
+def _get_settings() -> AppConfig | SimpleNamespace:
+    """取解析配置：DB（SystemSetting，控制台可改）> .env / 环境变量 > 代码默认。
 
-    return get_settings()
+    显式传入 ``settings=`` 的调用方（测试注入、已持有 AppConfig 的端点）不走此路径。
+    DB 无对应 key 时逐字段回退到 ``AppConfig``（env/.env/默认），与 IM 设置
+    （``settings_store`` 同一机制）一致：控制台保存即时生效，无需重启。
+    """
+    from pydantic import SecretStr
+
+    from bycall.config import get_settings
+    from bycall.governance.settings_store import (
+        get_setting_bool,
+        get_setting_float,
+        get_setting_value,
+    )
+
+    cfg = get_settings()
+    p = cfg.parse
+
+    def _enum(key: str, default: str, allowed: tuple[str, ...]) -> str:
+        val = get_setting_value(key, default=default, env_var=f"BYCALL_PARSE_{key.upper()}")
+        return val if val in allowed else default  # 非法值（历史脏数据）回退默认，不抛错
+
+    return SimpleNamespace(
+        parse=SimpleNamespace(
+            engine=_enum("parse.engine", p.engine, ("builtin", "markitdown", "mineru")),
+            markitdown_enable_plugins=get_setting_bool(
+                "parse.markitdown_enable_plugins",
+                default=p.markitdown_enable_plugins,
+                env_var="BYCALL_PARSE_MARKITDOWN_ENABLE_PLUGINS",
+            ),
+            mineru_base_url=get_setting_value(
+                "parse.mineru_base_url",
+                default=p.mineru_base_url,
+                env_var="BYCALL_PARSE_MINERU_BASE_URL",
+            ),
+            mineru_api_token=SecretStr(
+                get_setting_value(
+                    "parse.mineru_api_token",
+                    default=p.mineru_api_token.get_secret_value(),
+                    env_var="BYCALL_PARSE_MINERU_API_TOKEN",
+                )
+            ),
+            mineru_backend=get_setting_value(
+                "parse.mineru_backend",
+                default=p.mineru_backend,
+                env_var="BYCALL_PARSE_MINERU_BACKEND",
+            ),
+            mineru_parse_method=_enum(
+                "parse.mineru_parse_method", p.mineru_parse_method, ("auto", "txt", "ocr")
+            ),
+            mineru_lang=get_setting_value(
+                "parse.mineru_lang", default=p.mineru_lang, env_var="BYCALL_PARSE_MINERU_LANG"
+            ),
+            mineru_timeout=get_setting_float(
+                "parse.mineru_timeout",
+                default=p.mineru_timeout,
+                env_var="BYCALL_PARSE_MINERU_TIMEOUT",
+            ),
+            mineru_poll_interval=get_setting_float(
+                "parse.mineru_poll_interval",
+                default=p.mineru_poll_interval,
+                env_var="BYCALL_PARSE_MINERU_POLL_INTERVAL",
+            ),
+        )
+    )

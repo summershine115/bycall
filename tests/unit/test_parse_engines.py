@@ -30,6 +30,30 @@ from bycall.rag.parsers.mineru_client import (
     _extract_markdown_from_zip,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    """解析配置走 DB 优先（SystemSetting）——用临时 SQLite 隔离本机开发库，
+
+    并灌默认数据，保证目录 / 路由用例不受 data/bycall.db 的真实设置影响。
+    """
+    from sqlmodel import create_engine
+
+    import bycall.db as db_mod
+    from bycall.config import get_settings
+    from bycall.db import init_db, set_engine
+
+    monkeypatch.setenv("BYCALL_POSTGRES_DSN", f"sqlite:///{tmp_path}/parse.db")
+    get_settings.cache_clear()
+    old_engine = db_mod._engine
+    set_engine(
+        create_engine(f"sqlite:///{tmp_path}/parse.db", connect_args={"check_same_thread": False})
+    )
+    init_db()
+    yield
+    set_engine(old_engine)
+    get_settings.cache_clear()
+
 # ============ 1. BuiltinEngine ============
 
 
@@ -359,3 +383,81 @@ class TestParseConfig:
         assert cfg.engine == "mineru"
         assert cfg.mineru_base_url == "https://mineru.example"
         assert cfg.mineru_lang == "en"
+
+
+# ============ 7. DB 优先的运行时配置（SystemSetting，控制台可改）============
+
+
+class TestDbFirstParseConfig:
+    """解析引擎配置优先级：DB（SystemSetting）> .env 环境变量 > 代码默认。"""
+
+    def test_seed_creates_parse_settings(self):
+        """init_db 灌入全部 parse.* 默认 key（控制台可见可改）。"""
+        from bycall.db import session_scope
+        from bycall.governance.models import SystemSetting
+
+        with session_scope() as s:
+            keys = {r.key for r in s.exec(SystemSetting.select_all()).all()}
+        expected = {
+            "parse.engine",
+            "parse.markitdown_enable_plugins",
+            "parse.mineru_base_url",
+            "parse.mineru_api_token",
+            "parse.mineru_backend",
+            "parse.mineru_parse_method",
+            "parse.mineru_lang",
+            "parse.mineru_timeout",
+            "parse.mineru_poll_interval",
+        }
+        assert expected <= keys
+
+    def test_db_engine_overrides_default(self):
+        """DB 里 parse.engine=markitdown → 目录默认标记即时跟着变。"""
+        from bycall.db import session_scope
+        from bycall.governance.settings_store import set_setting_value
+
+        with session_scope() as s:
+            set_setting_value(s, "parse.engine", "markitdown")
+        engines = {e["name"]: e for e in list_parse_engines()}
+        assert engines["markitdown"]["is_default"] is True
+        assert engines["builtin"]["is_default"] is False
+
+    def test_db_mineru_base_url_makes_engine_available(self):
+        """DB 配了 mineru_base_url → mineru 引擎变可用（无需改 .env / 重启）。"""
+        from bycall.db import session_scope
+        from bycall.governance.settings_store import set_setting_value
+
+        with session_scope() as s:
+            set_setting_value(s, "parse.mineru_base_url", "http://mineru.test")
+        engines = {e["name"]: e for e in list_parse_engines()}
+        assert engines["mineru"]["is_available"] is True
+
+    def test_invalid_db_engine_falls_back_to_default(self):
+        """DB 脏数据（非法引擎名）→ 回退代码默认，不抛错。"""
+        from bycall.db import session_scope
+        from bycall.governance.settings_store import set_setting_value
+
+        with session_scope() as s:
+            set_setting_value(s, "parse.engine", "bogus")
+        engines = {e["name"]: e for e in list_parse_engines()}
+        assert engines["builtin"]["is_default"] is True
+
+    def test_env_fallback_when_db_empty(self, monkeypatch):
+        """DB 值为空串 → 回退环境变量（存量 .env 部署不被空 DB 值覆盖）。"""
+        from bycall.db import session_scope
+        from bycall.governance.settings_store import set_setting_value
+
+        with session_scope() as s:
+            set_setting_value(s, "parse.mineru_base_url", "")  # 空串 = 未设
+        monkeypatch.setenv("BYCALL_PARSE_MINERU_BASE_URL", "http://env.mineru")
+        engines = {e["name"]: e for e in list_parse_engines()}
+        assert engines["mineru"]["is_available"] is True
+
+    def test_resolve_engine_name_uses_db_default(self):
+        """resolve_engine_name 无显式参数时取 DB 默认引擎。"""
+        from bycall.db import session_scope
+        from bycall.governance.settings_store import set_setting_value
+
+        with session_scope() as s:
+            set_setting_value(s, "parse.engine", "mineru")
+        assert resolve_engine_name("pdf") == "mineru"

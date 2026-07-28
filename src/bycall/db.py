@@ -257,6 +257,9 @@ def _seed_defaults() -> None:
         _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
         _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")
         _seed_setting(session, "im.wecom_bot_secret", "", "企微智能机器人 Secret", is_secret=True)
+        # 解析引擎配置与 IM 凭证同机制：控制台可编辑、保存即时生效
+        # （DB > .env 环境变量 > 代码默认）。已部署环境从 .env 回填默认值。
+        _seed_parse_settings(session)
 
 
 def _seed_setting(
@@ -268,3 +271,77 @@ def _seed_setting(
 
     if session.exec(SystemSetting.select_by_key(key)).first() is None:
         set_setting_value(session, key, value, is_secret=is_secret, description=description)
+
+
+def _seed_parse_settings(session) -> None:
+    """灌解析引擎默认设置（幂等）。
+
+    首次部署取代码默认；已有 .env 配置的存量部署取环境变量值回填（避免控制台
+    显示空值导致运维困惑），之后以 DB 为第一真相源。
+    """
+    import os
+
+    p = get_settings().parse
+
+    def _default(key_suffix: str, code_default: object) -> str:
+        """环境变量有值 → 回填；否则代码默认（bool 统一小写，前端按 'true'/'false' 匹配）。"""
+        env = os.environ.get(f"BYCALL_PARSE_{key_suffix.upper()}")
+        if env:
+            return env
+        return str(code_default).lower() if isinstance(code_default, bool) else str(code_default)
+
+    _seed_setting(
+        session,
+        "parse.engine",
+        _default("ENGINE", p.engine),
+        "默认解析引擎：builtin / markitdown / mineru",
+    )
+    _seed_setting(
+        session,
+        "parse.markitdown_enable_plugins",
+        _default("MARKITDOWN_ENABLE_PLUGINS", p.markitdown_enable_plugins),
+        "MarkItDown 是否启用第三方插件",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_base_url",
+        _default("MINERU_BASE_URL", p.mineru_base_url),
+        "MinerU 服务基地址（自建 mineru-api 或 mineru.net 云端）；空 → 引擎不可用",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_api_token",
+        _default("MINERU_API_TOKEN", ""),
+        "MinerU 鉴权 token（Bearer）；mineru.net 云端必填",
+        is_secret=True,
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_backend",
+        _default("MINERU_BACKEND", p.mineru_backend),
+        "MinerU 解析后端：pipeline / vlm-auto-engine / vlm-http-client / hybrid-auto-engine / hybrid-http-client",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_parse_method",
+        _default("MINERU_PARSE_METHOD", p.mineru_parse_method),
+        "MinerU 解析方法：auto / txt / ocr（仅 pipeline/hybrid 生效）",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_lang",
+        _default("MINERU_LANG", p.mineru_lang),
+        "MinerU OCR 语言组（仅 pipeline/hybrid 生效）：ch / en / korean / japan",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_timeout",
+        _default("MINERU_TIMEOUT", p.mineru_timeout),
+        "MinerU 单任务最长等待秒（远程解析较慢）",
+    )
+    _seed_setting(
+        session,
+        "parse.mineru_poll_interval",
+        _default("MINERU_POLL_INTERVAL", p.mineru_poll_interval),
+        "MinerU 轮询任务状态间隔秒",
+    )

@@ -2,7 +2,7 @@
   <div class="bc-page">
     <PageHeader
       title="运行时设置"
-      description="IM 渠道（企业微信）凭证与连接管理；保存后可热重连，无需重启服务。"
+      description="IM 渠道凭证与文档解析引擎配置；保存即时生效，无需重启服务。"
     >
       <el-button :loading="reloading" :icon="Refresh" @click="onReconnect">立即重连</el-button>
       <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
@@ -48,6 +48,134 @@
         </div>
       </div>
 
+      <!-- 解析引擎配置（与模型管理同思路：可选引擎 + 参数，DB 优先于 .env） -->
+      <div class="bc-panel parse-panel">
+        <div class="parse-panel__head">
+          <h3>解析引擎</h3>
+          <p class="bc-muted bc-text-sm">
+            知识库文档上传时使用的解析引擎。非默认引擎不支持的文件类型自动退回
+            builtin；per-KB 的引擎映射在知识库设置里配置。
+          </p>
+        </div>
+
+        <el-form label-position="top">
+          <el-form-item label="默认解析引擎">
+            <el-radio-group v-model="form['parse.engine']" class="engine-radios">
+              <label
+                v-for="eng in engines"
+                :key="eng.name"
+                class="engine-radio"
+                :class="{
+                  'is-active': form['parse.engine'] === eng.name,
+                  'is-unavailable': !eng.is_available,
+                }"
+              >
+                <el-radio :value="eng.name">
+                  <span class="engine-radio__main">
+                    <span class="engine-radio__name">{{ eng.name }}</span>
+                    <el-tag v-if="eng.is_default" size="small" type="success" effect="plain">
+                      当前生效
+                    </el-tag>
+                    <StatusBadge
+                      :type="eng.is_available ? 'ok' : 'warn'"
+                      :text="eng.is_available ? '可用' : '不可用'"
+                    />
+                  </span>
+                </el-radio>
+                <div class="engine-radio__desc bc-muted bc-text-sm">{{ eng.description }}</div>
+                <div
+                  v-if="!eng.is_available && eng.reason_unavailable"
+                  class="engine-radio__reason bc-text-xs"
+                >
+                  {{ eng.reason_unavailable }}
+                </div>
+              </label>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
+
+        <div class="parse-cols">
+          <!-- MarkItDown 参数 -->
+          <div class="bc-panel parse-subpanel">
+            <h4 class="parse-subpanel__title">MarkItDown 选项</h4>
+            <el-form label-position="top">
+              <el-form-item label="启用第三方插件">
+                <el-switch v-model="markitdownPlugins" active-text="启用" inactive-text="关闭" />
+                <div class="bc-hint">默认只使用内置 converter；开启后加载 pip 安装的 markitdown 插件</div>
+              </el-form-item>
+            </el-form>
+          </div>
+
+          <!-- MinerU 参数 -->
+          <div class="bc-panel parse-subpanel">
+            <h4 class="parse-subpanel__title">MinerU 远程 API</h4>
+            <el-form label-position="top">
+              <el-form-item label="服务基地址（base_url）">
+                <el-input
+                  v-model="form['parse.mineru_base_url']"
+                  placeholder="如 https://mineru.net 或自建 http://127.0.0.1:8000；空 → 引擎不可用"
+                />
+              </el-form-item>
+              <el-form-item label="鉴权 token（Bearer）">
+                <el-input
+                  v-model="form['parse.mineru_api_token']"
+                  :placeholder="masks['parse.mineru_api_token'] || 'mineru.net 云端必填；自建可留空'"
+                  show-password
+                />
+                <div v-if="masks['parse.mineru_api_token']" class="bc-hint">
+                  当前已设置：{{ masks['parse.mineru_api_token'] }} —— 不修改则留空保存
+                </div>
+              </el-form-item>
+              <div class="parse-row">
+                <el-form-item label="解析后端">
+                  <el-select v-model="form['parse.mineru_backend']" style="width: 100%">
+                    <el-option label="hybrid-auto-engine" value="hybrid-auto-engine" />
+                    <el-option label="hybrid-http-client" value="hybrid-http-client" />
+                    <el-option label="pipeline" value="pipeline" />
+                    <el-option label="vlm-auto-engine" value="vlm-auto-engine" />
+                    <el-option label="vlm-http-client" value="vlm-http-client" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="解析方法">
+                  <el-select v-model="form['parse.mineru_parse_method']" style="width: 100%">
+                    <el-option label="auto" value="auto" />
+                    <el-option label="txt" value="txt" />
+                    <el-option label="ocr" value="ocr" />
+                  </el-select>
+                  <div class="bc-hint">仅 pipeline / hybrid 后端生效</div>
+                </el-form-item>
+              </div>
+              <div class="parse-row">
+                <el-form-item label="OCR 语言组">
+                  <el-input v-model="form['parse.mineru_lang']" placeholder="ch / en / korean / japan" />
+                </el-form-item>
+                <el-form-item label="单任务超时（秒）">
+                  <el-input-number
+                    :model-value="Number(form['parse.mineru_timeout']) || 600"
+                    :min="1"
+                    :step="60"
+                    controls-position="right"
+                    style="width: 100%"
+                    @update:model-value="(v) => (form['parse.mineru_timeout'] = String(v))"
+                  />
+                </el-form-item>
+              </div>
+              <el-form-item label="轮询间隔（秒）">
+                <el-input-number
+                  :model-value="Number(form['parse.mineru_poll_interval']) || 2"
+                  :min="0.1"
+                  :step="0.5"
+                  :precision="1"
+                  controls-position="right"
+                  style="width: 180px"
+                  @update:model-value="(v) => (form['parse.mineru_poll_interval'] = String(v))"
+                />
+              </el-form-item>
+            </el-form>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-actions">
         <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
         <el-button @click="load">重置</el-button>
@@ -71,6 +199,8 @@ const reloading = ref(false)
 const form = reactive({})
 const masks = reactive({})
 const imEnable = ref(false)
+const engines = ref([])
+const markitdownPlugins = ref(false)
 
 async function load() {
   loading.value = true
@@ -88,6 +218,8 @@ async function load() {
       }
     }
     imEnable.value = form['im.enable'] === 'true'
+    markitdownPlugins.value = form['parse.markitdown_enable_plugins'] === 'true'
+    engines.value = await admin.listParseEngines()
   } finally {
     loading.value = false
   }
@@ -97,6 +229,7 @@ async function onSave() {
   saving.value = true
   try {
     form['im.enable'] = imEnable.value ? 'true' : 'false'
+    form['parse.markitdown_enable_plugins'] = markitdownPlugins.value ? 'true' : 'false'
     const result = await admin.updateSettings(form)
     const imChanged = result.updated.some((k) => k.startsWith('im.'))
     if (imChanged) {
@@ -165,6 +298,93 @@ onMounted(load)
 }
 @media (max-width: 1280px) {
   .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+/* ---- 解析引擎面板 ---- */
+.parse-panel {
+  margin-top: var(--bc-space-4);
+  padding: var(--bc-space-5) var(--bc-space-6);
+}
+.parse-panel__head {
+  margin-bottom: var(--bc-space-5);
+}
+.parse-panel__head p {
+  margin: var(--bc-space-2) 0 0;
+  line-height: var(--bc-leading-relaxed);
+}
+.engine-radios {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--bc-space-3);
+  width: 100%;
+}
+.engine-radio {
+  display: block;
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-md);
+  cursor: pointer;
+  transition:
+    border-color var(--bc-duration-fast) var(--bc-ease-out),
+    background var(--bc-duration-fast) var(--bc-ease-out);
+}
+.engine-radio:hover {
+  border-color: var(--bc-border-strong);
+}
+.engine-radio.is-active {
+  border-color: var(--bc-primary-6);
+  background: var(--bc-primary-1);
+}
+.engine-radio.is-unavailable {
+  opacity: 0.75;
+}
+.engine-radio__main {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+}
+.engine-radio__name {
+  font-weight: var(--bc-weight-semibold);
+  font-family: var(--bc-font-mono);
+}
+.engine-radio__desc {
+  margin-top: var(--bc-space-2);
+  padding-left: var(--bc-space-6);
+  line-height: var(--bc-leading-normal);
+}
+.engine-radio__reason {
+  margin-top: var(--bc-space-1);
+  padding-left: var(--bc-space-6);
+  color: var(--bc-warning-text);
+}
+.parse-cols {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: var(--bc-space-4);
+  align-items: start;
+}
+.parse-subpanel {
+  padding: var(--bc-space-4) var(--bc-space-5);
+  background: var(--bc-bg-sunken);
+}
+.parse-subpanel__title {
+  margin: 0 0 var(--bc-space-4);
+  font-size: var(--bc-text-md);
+}
+.parse-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--bc-space-4);
+}
+@media (max-width: 1280px) {
+  .engine-radios {
+    grid-template-columns: 1fr;
+  }
+  .parse-cols {
+    grid-template-columns: 1fr;
+  }
+  .parse-row {
     grid-template-columns: 1fr;
   }
 }
