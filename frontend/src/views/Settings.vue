@@ -221,7 +221,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import PageHeader from '../components/PageHeader.vue'
@@ -238,6 +238,9 @@ const engines = ref([])
 const markitdownPlugins = ref(false)
 const mineruIsOcr = ref(false)
 const mineruIsCloud = computed(() => form['parse.mineru_mode'] === 'cloud')
+// 影响长连接的 IM 字段：任一变化才需要重连（避免未改凭证也每次弹重连）。
+const IM_KEYS = ['im.enable', 'im.wecom_bot_id', 'im.wecom_bot_secret']
+const imSnapshot = reactive({})
 
 async function load() {
   loading.value = true
@@ -260,6 +263,8 @@ async function load() {
     if (!form['parse.mineru_mode']) form['parse.mineru_mode'] = 'selfhost'
     if (!form['parse.mineru_model_version']) form['parse.mineru_model_version'] = 'vlm'
     mineruIsOcr.value = form['parse.mineru_is_ocr'] === 'true'
+    // 快照 IM 连接字段：secret 未改时 form 里是空串，与下次空串相等 → 判为未变。
+    IM_KEYS.forEach((k) => { imSnapshot[k] = form[k] ?? '' })
     engines.value = await admin.listParseEngines()
   } finally {
     loading.value = false
@@ -273,18 +278,14 @@ async function onSave() {
     form['parse.markitdown_enable_plugins'] = markitdownPlugins.value ? 'true' : 'false'
     form['parse.mineru_is_ocr'] = mineruIsOcr.value ? 'true' : 'false'
     const result = await admin.updateSettings(form)
-    const imChanged = result.updated.some((k) => k.startsWith('im.'))
+    // 仅当 IM 连接字段真变化（对比加载快照）才自动重连，不再每次弹窗询问。
+    const imChanged = IM_KEYS.some((k) => (form[k] ?? '') !== (imSnapshot[k] ?? ''))
     if (imChanged) {
-      try {
-        await ElMessageBox.confirm('IM 凭证已更新，是否立即重连？', 'IM 渠道', {
-          confirmButtonText: '立即重连',
-          cancelButtonText: '稍后',
-          type: 'success',
-        })
-        const r = await admin.reloadIm()
-        ElMessage.success(r.message || 'IM 渠道已重连')
-      } catch {
-        ElMessage.info('可稍后点「立即重连」')
+      const r = await admin.reloadIm()
+      if (r.ok) {
+        ElMessage.success(r.message || 'IM 凭证已更新，已自动重连')
+      } else {
+        ElMessage.warning(r.message || 'IM 重连未成功，请检查凭证或点「立即重连」')
       }
     } else {
       ElMessage.success('已保存')
