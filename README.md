@@ -4,7 +4,9 @@
 >
 > 路线 B（分层混搭自研）：LangGraph 编排 + LangBot IM 层 + zvec 向量库 + PostgreSQL 记忆/元数据 + MCP 网关。
 
-> 🚧 **当前里程碑：M4 已完成**（治理脊柱 + 单/多渠道 IM + 混合检索 RAG + LangGraph 编排 + SKILL + MCP 工具网关 + HITL 审批），**M5 生产化待启动**。
+> **当前版本：v0.2.0 / M6 已完成** —— 已具备治理脊柱、多用户会话、混合检索、
+> LangGraph + MCP/HITL，以及企微主动推送、多模态附件、来源卡片、模板卡片、可靠重连和
+> 连接可观测。版本新增功能、修复项和升级说明见 [`CHANGELOG.md`](CHANGELOG.md)。
 >
 > 完整设计见 [`docs/product-design.md`](docs/product-design.md)（产品形态/治理架构/信任模型），技术分层与架构红线见 [`docs/architecture.md`](docs/architecture.md)。
 
@@ -62,7 +64,8 @@ make docker-up
 - [x] **M2** 提示词版本化 + 混合检索增强 —— 提示词/知识库 ACL 管理 + rerank 多服务商 + KB 级角色 ACL
 - [x] **M3** Agent 化 —— LangGraph 编排 + 多用户会话（§2.4）+ 分层记忆 + SKILL 系统 + 工具按权限过滤
 - [x] **M4** MCP 工具网关 + HITL 审批 —— MCP 注册/发现 + capability token + 破坏性操作人审闭环
-- [ ] **M5** 生产化 —— 可观测（OTel/Langfuse）/ 合规审计 dashboard / 高可用 / 迁移准备
+- [~] **M5** 生产化 —— OTel/Prometheus/结构化日志等核心可观测能力已落地；合规报表与迁移准备继续演进
+- [x] **M6** 企微渠道增强 —— 主动推送、可靠重连、真实连接状态、多模态附件、引用卡片和非破坏性模板卡片交互
 
 ## 目录结构
 
