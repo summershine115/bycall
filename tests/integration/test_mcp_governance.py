@@ -145,6 +145,7 @@ def test_capability_token_flows_to_mcp_server_via_meta():
 
     def factory():
         return create_connected_server_and_client_session(srv)
+
     client = MCPClient(
         MCPServerConfig(name="token_test", transport="stdio"),
         session_cm_factory=factory,

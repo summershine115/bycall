@@ -130,9 +130,7 @@ class IngestPipeline:
                 try:
                     got = self._embed_model.embed([texts[i] for i in need_idx])
                     if len(got) != len(need_idx):
-                        errors.append(
-                            f"embedding 数量不匹配: batch={len(need_idx)} got={len(got)}"
-                        )
+                        errors.append(f"embedding 数量不匹配: batch={len(need_idx)} got={len(got)}")
                         got = [[0.0] * self._embed_model.dimension for _ in need_idx]
                     for i, vec in zip(need_idx, got, strict=False):
                         batch_vecs[i] = vec

@@ -1825,6 +1825,7 @@ def _submit_ingest(kb_id: int, doc_id: int, title: str, source: str, content: st
     )
     _ingest_futures.append(future)
 
+
 def _submit_parse_and_ingest(
     kb_id: int,
     doc_id: int,
@@ -2448,9 +2449,7 @@ async def upload_document(
 
     # 解析 + 入库都在后台：上传立即返回，多文件并发互不阻塞。
     # 传已解析的引擎名（含 KB 映射），后台 parse_document 收到显式 engine 即直接采用。
-    _submit_parse_and_ingest(
-        kb_id, doc.id, title, doc.source, file.filename, raw, effective_engine
-    )
+    _submit_parse_and_ingest(kb_id, doc.id, title, doc.source, file.filename, raw, effective_engine)
     return IngestAccepted(document_id=doc.id, status="processing")
 
 
@@ -3173,6 +3172,7 @@ def test_mcp_server(
         )
     finally:
         client.close()
+
 
 # ============ 审批队列（M4 Slice C HITL 完整闭环）============
 

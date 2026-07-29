@@ -495,12 +495,16 @@ class ChunkPreviewRequest(BaseModel):
 class ChunkPreviewItem(BaseModel):
     """单条切块预览。"""
 
-    id: str = Field(default="", description="切块 id（父子模式下作为层级锚点，前端据此建立 parent→child 树）")
+    id: str = Field(
+        default="", description="切块 id（父子模式下作为层级锚点，前端据此建立 parent→child 树）"
+    )
     chunk_index: int
     chunk_type: str = Field(default="child", description="child | parent")
     char_count: int
     text: str
-    parent_id: str | None = Field(default=None, description="父块 id：child 指向其 parent，parent 自身为 None")
+    parent_id: str | None = Field(
+        default=None, description="父块 id：child 指向其 parent，parent 自身为 None"
+    )
 
 
 class ChunkPreviewResult(BaseModel):

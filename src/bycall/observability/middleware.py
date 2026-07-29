@@ -93,9 +93,7 @@ class AccessLogMiddleware:
             logger.warning("request error %s %s %.1fms", method, path, elapsed_ms)
             raise
         elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.info(
-            "request %s %s %d %.1fms", method, path, status_holder["code"], elapsed_ms
-        )
+        logger.info("request %s %s %d %.1fms", method, path, status_holder["code"], elapsed_ms)
 
 
 class MetricsMiddleware:

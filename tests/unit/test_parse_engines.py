@@ -54,6 +54,7 @@ def _isolated_db(tmp_path, monkeypatch):
     set_engine(old_engine)
     get_settings.cache_clear()
 
+
 # ============ 1. BuiltinEngine ============
 
 
@@ -199,9 +200,7 @@ def _make_result_zip(*, full_md: str = "", extra: dict[str, str] | None = None) 
 class TestMinerUClient:
     def test_submit_poll_fetch_markdown(self):
         http = _FakeMinerUHttp()
-        client = MinerUClient(
-            MinerUConfig(base_url="http://m", api_token="tok"), http_client=http
-        )
+        client = MinerUClient(MinerUConfig(base_url="http://m", api_token="tok"), http_client=http)
         md = client.parse_to_markdown(b"pdf-bytes", "scan.pdf")
         assert md.startswith("# 扫描结果")
         # 三阶段都打过。
@@ -220,9 +219,7 @@ class TestMinerUClient:
 
     def test_failed_status_raises(self):
         http = _FakeMinerUHttp(fail_status=True)
-        client = MinerUClient(
-            MinerUConfig(base_url="http://m"), http_client=http
-        )
+        client = MinerUClient(MinerUConfig(base_url="http://m"), http_client=http)
         with pytest.raises(MinerUError, match="失败"):
             client.parse_to_markdown(b"x", "a.pdf")
 
@@ -279,8 +276,14 @@ class _FakeMinerUCloudHttp:
     ``running_once=True``：首次轮询返回 running、第二次 done（验证轮询循环）。
     """
 
-    def __init__(self, *, markdown="# 云端结果\n\n正文", fail_state=False, running_once=False,
-                 reject_code=None):
+    def __init__(
+        self,
+        *,
+        markdown="# 云端结果\n\n正文",
+        fail_state=False,
+        running_once=False,
+        reject_code=None,
+    ):
         self.markdown = markdown
         self.fail_state = fail_state
         self.running_once = running_once
@@ -331,7 +334,11 @@ class _FakeMinerUCloudHttp:
                     "code": 0,
                     "data": {
                         "extract_result": [
-                            {"file_name": "scan.pdf", "state": "done", "full_zip_url": "http://cdn/r.zip"}
+                            {
+                                "file_name": "scan.pdf",
+                                "state": "done",
+                                "full_zip_url": "http://cdn/r.zip",
+                            }
                         ]
                     },
                 },
@@ -361,8 +368,9 @@ class TestMinerUCloudClient:
     def test_polling_loop_handles_running(self):
         http = _FakeMinerUCloudHttp(running_once=True)
         client = MinerUClient(
-            MinerUConfig(base_url="https://mineru.net", api_token="tok", mode="cloud",
-                         poll_interval=0),
+            MinerUConfig(
+                base_url="https://mineru.net", api_token="tok", mode="cloud", poll_interval=0
+            ),
             http_client=http,
         )
         md = client.parse_to_markdown(b"x", "scan.pdf")
@@ -424,7 +432,9 @@ class TestMinerUEngineCloud:
 
     def test_cloud_parse_with_fake_client(self):
         eng = MinerUEngine(
-            base_url="https://mineru.net", api_token="tok", mode="cloud",
+            base_url="https://mineru.net",
+            api_token="tok",
+            mode="cloud",
             client=_FakeMinerUCloudHttp(),
         )
         result = eng.parse(b"pdf-bytes", file_name="scan.pdf")

@@ -323,19 +323,27 @@ async def run_tool_loop_stream(
 
             # 最终答案回合：round_text 已逐 token yield；审计日志从完整消息序列重建
             # （复用 _collect_tool_calls：name/args/result 三元组，result 截断 + 未执行兜底）。
-            yield None, True, GraphResult(
-                answer=round_text,
-                tool_calls_made=_collect_tool_calls(current_messages),
+            yield (
+                None,
+                True,
+                GraphResult(
+                    answer=round_text,
+                    tool_calls_made=_collect_tool_calls(current_messages),
+                ),
             )
             return
 
         # 循环结束 = 触及迭代上限（LLM 在 max_iterations 轮里始终要求调工具）。
         logger.warning("流式工具回路触及迭代上限 %d，强制终止", max_iterations)
         yield _LIMIT_MESSAGE, False, None
-        yield None, True, GraphResult(
-            answer=_LIMIT_MESSAGE,
-            tool_calls_made=_collect_tool_calls(current_messages),
-            hit_iteration_limit=True,
+        yield (
+            None,
+            True,
+            GraphResult(
+                answer=_LIMIT_MESSAGE,
+                tool_calls_made=_collect_tool_calls(current_messages),
+                hit_iteration_limit=True,
+            ),
         )
 
     return _stream()

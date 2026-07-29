@@ -136,7 +136,12 @@ class _SelfHostProtocol:
         files = {"files": (file_name, io.BytesIO(content), mime)}
 
         resp = _post_multipart(
-            self._http, url, data=form, files=files, headers=self._headers(), timeout=self._c.timeout
+            self._http,
+            url,
+            data=form,
+            files=files,
+            headers=self._headers(),
+            timeout=self._c.timeout,
         )
         if resp.status_code != 202:
             raise MinerUError(f"提交 MinerU 任务失败: {resp.status_code} {_detail(resp)}")
@@ -228,7 +233,10 @@ class _CloudProtocol:
             "enable_table": True,
         }
         resp = _post_json(
-            self._http, url, json=payload, headers=self._auth_headers(json_body=True),
+            self._http,
+            url,
+            json=payload,
+            headers=self._auth_headers(json_body=True),
             timeout=self._c.timeout,
         )
         if resp.status_code != 200:

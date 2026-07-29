@@ -37,9 +37,7 @@ def engine(tmp_path, monkeypatch):
     from bycall.db import init_db, set_engine
 
     set_engine(
-        create_engine(
-            f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False}
-        )
+        create_engine(f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False})
     )
     init_db()
 
@@ -201,6 +199,7 @@ class TestExecuteApprovedTool:
 
     def test_execute_success(self, engine):
         """审批通过后执行工具 → (True, result)。admin 用户有通配白名单。"""
+
         def _delete(**kwargs):
             return f"deleted:{kwargs.get('id')}"
 
@@ -247,7 +246,12 @@ class TestExecuteApprovedTool:
             )
         )
         with session_scope() as s:
-            s.add(Role(name="limited", config=RoleConfig(allowed_tools=[], knowledge_scope_tags=["public"])))
+            s.add(
+                Role(
+                    name="limited",
+                    config=RoleConfig(allowed_tools=[], knowledge_scope_tags=["public"]),
+                )
+            )
         uid = _create_user("dave", role="limited")
         rid = _create_approval(uid, "restricted_op")
 
@@ -258,6 +262,7 @@ class TestExecuteApprovedTool:
 
     def test_execute_user_disabled(self, engine):
         """用户已被禁用 → (False, "已禁用")。"""
+
         def _noop(**kwargs):
             return "done"
 

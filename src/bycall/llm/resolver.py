@@ -84,7 +84,6 @@ class _MeteredRerankModel(RerankModel):
             LLM_CALL_DURATION.labels(kind="rerank").observe(time.perf_counter() - start)
 
 
-
 def resolve_chat_model(
     session: Session,  # 保留入参便于未来按 session/provider 分发
     model: Model,

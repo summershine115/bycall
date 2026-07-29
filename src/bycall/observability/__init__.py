@@ -43,6 +43,7 @@ __all__ = [
     "traced",
 ]
 
+
 def setup_observability(
     *,
     enabled: bool,

@@ -156,18 +156,14 @@ def test_invalid_parse_engine_rejected(client):
     """非法引擎名 → 4xx 拒绝（不入库，保持原值 builtin）。"""
     resp = client.put("/api/admin/settings", json={"settings": {"parse.engine": "turbo"}})
     assert resp.status_code == 400
-    engine = next(
-        s for s in client.get("/api/admin/settings").json() if s["key"] == "parse.engine"
-    )
+    engine = next(s for s in client.get("/api/admin/settings").json() if s["key"] == "parse.engine")
     assert engine["value"] == "builtin"
 
 
 def test_invalid_parse_number_rejected(client):
     """timeout 非数字 / 负数 → 4xx 拒绝。"""
     for bad in ("abc", "-5", "0"):
-        resp = client.put(
-            "/api/admin/settings", json={"settings": {"parse.mineru_timeout": bad}}
-        )
+        resp = client.put("/api/admin/settings", json={"settings": {"parse.mineru_timeout": bad}})
         assert resp.status_code == 400
 
 
@@ -190,11 +186,8 @@ def test_mineru_token_secret_masked(client):
     assert "tok-1234567890" not in token["value"]
     assert token["is_set"] is True
     # 空串 → 跳过（不清除已配 token），与 IM secret 一致
-    resp = client.put(
-        "/api/admin/settings", json={"settings": {"parse.mineru_api_token": ""}}
-    )
+    resp = client.put("/api/admin/settings", json={"settings": {"parse.mineru_api_token": ""}})
     assert any("parse.mineru_api_token" in s for s in resp.json()["skipped"])
-
 
 
 def test_mineru_cloud_settings_seeded(client):
@@ -210,8 +203,7 @@ def test_cloud_mode_available_with_token(client):
     """切 cloud + 配 token → mineru 引擎可用（可用性只看 token，不看 base_url）。"""
     client.put(
         "/api/admin/settings",
-        json={"settings": {"parse.mineru_mode": "cloud",
-                           "parse.mineru_api_token": "tok-abcdefgh"}},
+        json={"settings": {"parse.mineru_mode": "cloud", "parse.mineru_api_token": "tok-abcdefgh"}},
     )
     engines = {e["name"]: e for e in client.get("/api/admin/parse-engines").json()}
     assert engines["mineru"]["is_available"] is True

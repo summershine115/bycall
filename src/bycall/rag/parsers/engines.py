@@ -123,11 +123,34 @@ class BuiltinEngine(ParseEngine):
 
 # MarkItDown 内置 converter 覆盖的常见文档类型（保守枚举，避免对冷门格式误声明）。
 _MARKITDOWN_TYPES = [
-    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls",
-    "html", "htm", "csv", "json", "xml", "txt", "text",
-    "md", "markdown", "rst",
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif",
-    "mp3", "wav", "m4a",
+    "pdf",
+    "docx",
+    "doc",
+    "pptx",
+    "ppt",
+    "xlsx",
+    "xls",
+    "html",
+    "htm",
+    "csv",
+    "json",
+    "xml",
+    "txt",
+    "text",
+    "md",
+    "markdown",
+    "rst",
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "webp",
+    "tiff",
+    "tif",
+    "mp3",
+    "wav",
+    "m4a",
     "zip",
 ]
 
@@ -194,9 +217,21 @@ _MINERU_TYPES = [
     # pdf
     "pdf",
     # 图片
-    "png", "jpg", "jpeg", "bmp", "tiff", "tif", "gif", "webp",
+    "png",
+    "jpg",
+    "jpeg",
+    "bmp",
+    "tiff",
+    "tif",
+    "gif",
+    "webp",
     # office（需服务端装 LibreOffice 才能转；声明支持，失败由解析报错暴露）
-    "docx", "doc", "pptx", "ppt", "xlsx", "xls",
+    "docx",
+    "doc",
+    "pptx",
+    "ppt",
+    "xlsx",
+    "xls",
 ]
 
 
@@ -208,11 +243,21 @@ class MinerUEngine(ParseEngine):
     可用性：selfhost 需配 ``base_url``；cloud 需配 ``api_token``（base_url 空默认 mineru.net）。
     """
 
-    def __init__(self, *, base_url: str, api_token: str = "", mode: str = "selfhost",
-                 backend: str = "hybrid-auto-engine", parse_method: str = "auto",
-                 model_version: str = "vlm", is_ocr: bool = False,
-                 lang: str = "ch", timeout: float = 600.0,
-                 poll_interval: float = 2.0, client=None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_token: str = "",
+        mode: str = "selfhost",
+        backend: str = "hybrid-auto-engine",
+        parse_method: str = "auto",
+        model_version: str = "vlm",
+        is_ocr: bool = False,
+        lang: str = "ch",
+        timeout: float = 600.0,
+        poll_interval: float = 2.0,
+        client=None,
+    ) -> None:
         from bycall.rag.parsers.mineru_client import MinerUClient, MinerUConfig
 
         self._mode = mode
@@ -367,9 +412,7 @@ def parse_document(
     """
     settings = settings or _get_settings()
     ext = _ext_of(file_name)
-    requested = resolve_engine_name(
-        ext, engine=engine, engine_map=engine_map, settings=settings
-    )
+    requested = resolve_engine_name(ext, engine=engine, engine_map=engine_map, settings=settings)
 
     # builtin 直接走（永远可用）。
     if requested == "builtin":
@@ -378,9 +421,7 @@ def parse_document(
     eng = get_parse_engine(requested, settings=settings)
     # 显式选中非 builtin 引擎却不可用 → 报错（暴露配置问题，不静默回退）。
     if not eng.is_available():
-        raise ValueError(
-            f"解析引擎 {requested!r} 不可用：{eng.reason_unavailable or '未知原因'}"
-        )
+        raise ValueError(f"解析引擎 {requested!r} 不可用：{eng.reason_unavailable or '未知原因'}")
     # 引擎不支持该类型 → 退回 builtin（小众类型不强制走所选引擎）。
     if not eng.supports(ext):
         logger.debug("引擎 %s 不支持 .%s，退回 builtin", requested, ext)
@@ -439,9 +480,7 @@ def _get_settings() -> AppConfig | SimpleNamespace:
                 default=p.markitdown_enable_plugins,
                 env_var="BYCALL_PARSE_MARKITDOWN_ENABLE_PLUGINS",
             ),
-            mineru_mode=_enum(
-                "parse.mineru_mode", p.mineru_mode, ("selfhost", "cloud")
-            ),
+            mineru_mode=_enum("parse.mineru_mode", p.mineru_mode, ("selfhost", "cloud")),
             mineru_base_url=get_setting_value(
                 "parse.mineru_base_url",
                 default=p.mineru_base_url,
