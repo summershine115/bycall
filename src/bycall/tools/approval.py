@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from bycall.db import session_scope
+from bycall.gateway.manager import get_channel_manager
 
 if TYPE_CHECKING:
     from bycall.tools.base import ToolSpec
@@ -63,6 +64,7 @@ class ApprovalContext:
     user_name: str
     conversation_id: int | None
     channel: str
+    im_user_id: str = ""
 
 
 def set_approval_context(ctx: ApprovalContext | None) -> contextvars.Token:
@@ -80,9 +82,7 @@ def get_approval_context() -> ApprovalContext | None:
     return _current_approval_ctx.get(None)
 
 
-def create_approval_request(
-    ctx: ApprovalContext, tool_name: str, args: dict[str, Any]
-) -> int:
+def create_approval_request(ctx: ApprovalContext, tool_name: str, args: dict[str, Any]) -> int:
     """创建一条 pending 审批请求，返回其 id。
 
     用独立 ``session_scope``（与 runner 的 session 隔离），立即提交——admin 队列需立即可见。
@@ -96,6 +96,7 @@ def create_approval_request(
             user_name=ctx.user_name,
             conversation_id=ctx.conversation_id,
             channel=ctx.channel,
+            im_user_id=ctx.im_user_id,
             tool_name=tool_name,
             tool_args_json=args_json,
             status="pending",
@@ -203,12 +204,93 @@ def _summarize_args(args: dict[str, Any], max_len: int = 200) -> str:
     return s[:max_len] + ("…" if len(s) > max_len else "")
 
 
+# M6 主动推送结果正文的截断长度（企微单条 markdown 不宜过长）。
+_PUSH_RESULT_TRUNCATE = 800
+
+
+def push_approval_result(req, result_text: str) -> None:
+    """提交审批结果后，向当前仍获授权的企微身份尽力推送。
+
+    通知是已提交状态的附加效果，不能影响审批事务。发送前重新验证用户仍启用且企微绑定
+    未变化，避免审批等待期间身份转移后把敏感结果推给错误账号。
+    """
+    if getattr(req, "channel", "") != "wecom":
+        logger.debug(
+            "审批 #%s 推送跳过：非企微渠道 channel=%s", req.id, getattr(req, "channel", "")
+        )
+        return
+
+    im_user_id = _resolve_current_im_user_id(req)
+    if not im_user_id:
+        return
+
+    body = {
+        "msgtype": "markdown",
+        "markdown": {"content": _build_approval_push_markdown(req, result_text)},
+    }
+    try:
+        ok = get_channel_manager().send_proactive(im_user_id, body)
+    except Exception:
+        logger.exception("审批 #%s 主动推送异常（已吞掉，不影响审批结果）", req.id)
+        return
+    if not ok:
+        logger.warning("审批 #%s 主动推送未送达（渠道未运行/未连接）", req.id)
+
+
+def _resolve_current_im_user_id(req) -> str:
+    """返回当前仍属于请求用户的有效企微身份；授权变化时返回空串。"""
+    from sqlmodel import select
+
+    from bycall.governance.models import IMBinding, User
+
+    try:
+        with session_scope() as session:
+            user = session.get(User, req.user_id)
+            if user is None or not user.is_active:
+                logger.debug("审批 #%s 推送跳过：用户不存在或已禁用", req.id)
+                return ""
+            binding = session.exec(
+                select(IMBinding).where(
+                    IMBinding.channel == "wecom",
+                    IMBinding.user_id == req.user_id,
+                )
+            ).first()
+            current_id = getattr(binding, "im_user_id", "") or ""
+    except Exception:
+        logger.exception("反查当前企微身份异常: user_id=%s", req.user_id)
+        return ""
+
+    captured_id = getattr(req, "im_user_id", "") or ""
+    if not current_id:
+        logger.debug("审批 #%s 推送跳过：当前无企微绑定", req.id)
+        return ""
+    if captured_id and captured_id != current_id:
+        logger.warning("审批 #%s 推送跳过：发起身份与当前绑定不一致", req.id)
+        return ""
+    return current_id
+
+
+def _build_approval_push_markdown(req, result_text: str) -> str:
+    """构造审批结果推送的企微 markdown 正文。"""
+    text = result_text or ""
+    snippet = text[:_PUSH_RESULT_TRUNCATE]
+    suffix = "…" if len(text) > _PUSH_RESULT_TRUNCATE else ""
+    req_id = getattr(req, "id", "?")
+    tool_name = getattr(req, "tool_name", "?")
+    return (
+        f"✅ **审批 #{req_id} 已通过并执行**\n\n"
+        f"**工具**：{tool_name}\n\n"
+        f"**执行结果**：\n{snippet}{suffix}"
+    )
+
+
 __all__ = [
     "ApprovalContext",
     "create_approval_request",
     "execute_approved_tool",
     "get_approval_context",
     "make_approval_gated_func",
+    "push_approval_result",
     "reset_approval_context",
     "set_approval_context",
 ]

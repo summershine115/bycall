@@ -485,8 +485,11 @@ def test_upload_invalid_pdf_fails_in_background(client: TestClient):
     assert prog["status"] == "failed"
 
 
-def test_upload_unavailable_engine_returns_400(client: TestClient):
+def test_upload_unavailable_engine_returns_400(client: TestClient, monkeypatch):
     """显式选不可用引擎（markitdown 未装）→ 400 配置错误（廉价预检，不进后台）。"""
+    from bycall.rag.parsers.engines import MarkItDownEngine
+
+    monkeypatch.setattr(MarkItDownEngine, "is_available", lambda self: False)
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
     resp = client.post(

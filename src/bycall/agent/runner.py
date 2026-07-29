@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -65,10 +65,10 @@ class AgentResult:
     user_name: str
     role: str
     tool_calls: list[dict]  # 本次触发的工具调用记录（name, args），审计透明化
+    citations: list[dict] = field(default_factory=list)  # M6：RAG 引用元数据（来源卡片用）
 
 
 @traced("bycall.run_agent")
-
 def run_agent(
     *,
     session: Session,
@@ -77,6 +77,7 @@ def run_agent(
     llm: BaseChatModel,
     channel: str = "api",
     conversation_id: int | None = None,
+    im_user_id: str = "",
 ) -> AgentResult:
     """执行一次完整的治理链路对话。
 
@@ -184,6 +185,7 @@ def run_agent(
             user_name=user.name,
             conversation_id=conversation_id,
             channel=channel,
+            im_user_id=im_user_id,
         )
     )
     try:
@@ -258,6 +260,7 @@ def run_agent(
         retrieved=len(retrieved),
         user=user,
         tool_calls=graph_result.tool_calls_made,
+        citations=_build_citations(retrieved),
     )
 
 
@@ -269,6 +272,7 @@ def _result(
     retrieved: int,
     user: User,
     tool_calls: list[dict] | None = None,
+    citations: list[dict] | None = None,
 ) -> AgentResult:
     return AgentResult(
         answer=answer,
@@ -278,6 +282,7 @@ def _result(
         user_name=user.name,
         role=user.role,
         tool_calls=tool_calls or [],
+        citations=citations or [],
     )
 
 
@@ -365,6 +370,28 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
     return results
 
 
+def _build_citations(retrieved: list) -> list[dict]:
+    """从检索结果构造引用元数据（M6 来源卡片用）。
+
+    每条暴露 title/source/url/snippet，最终卡片形状（去重/截断/跳过无标题）由
+    ``im_handler._build_msg_item`` 裁剪——runner 只做机械映射，不丢任何来源。
+    ``SearchResult.fields`` 实际回显字段由向量库 output_fields 决定（至少含 source），
+    这里一律用 ``.get`` 容错缺失。
+    """
+    out: list[dict] = []
+    for r in retrieved:
+        fields = getattr(r, "fields", None) or {}
+        out.append(
+            {
+                "title": str(fields.get("title") or ""),
+                "source": str(fields.get("source") or ""),
+                "url": str(fields.get("url") or ""),
+                "snippet": str(getattr(r, "text", "") or ""),
+            }
+        )
+    return out
+
+
 async def run_agent_stream(
     *,
     session: Session,
@@ -373,6 +400,7 @@ async def run_agent_stream(
     llm: BaseChatModel,
     channel: str = "api",
     conversation_id: int | None = None,
+    im_user_id: str = "",
 ):
     """流式执行治理链路——逐 token yield 答案。
 
@@ -480,6 +508,7 @@ async def run_agent_stream(
             user_name=user.name,
             conversation_id=conversation_id,
             channel=channel,
+            im_user_id=im_user_id,
         )
     )
     full_answer = ""
@@ -569,6 +598,7 @@ async def run_agent_stream(
         retrieved=len(retrieved),
         user=user,
         tool_calls=graph_result.tool_calls_made,
+        citations=_build_citations(retrieved),
     )
     yield "", True, result
 

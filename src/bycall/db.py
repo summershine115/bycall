@@ -122,6 +122,17 @@ def _ensure_schema_compatibility() -> None:
                 for name, ddl in missing:
                     connection.execute(text(f'ALTER TABLE knowledgebase ADD COLUMN "{name}" {ddl}'))
 
+    # approvalrequest: 补 im_user_id 列（M6 审批结果主动推送目标）
+    if "approvalrequest" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("approvalrequest")}
+        if "im_user_id" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE approvalrequest ADD COLUMN \"im_user_id\" VARCHAR NOT NULL DEFAULT ''"
+                    )
+                )
+
 
 def _migrate_plaintext_secrets() -> None:
     """把升级前的明文模型/系统密钥原地迁移为 enc:v1 密文。"""
@@ -257,6 +268,14 @@ def _seed_defaults() -> None:
         _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
         _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")
         _seed_setting(session, "im.wecom_bot_secret", "", "企微智能机器人 Secret", is_secret=True)
+        # M6：企微长连接可靠性参数（非敏感）。默认无限重连，避免渠道连续失败 10 次后静默死亡。
+        _seed_setting(
+            session, "im.wecom_max_reconnect_attempts", "-1", "最大重连次数（-1=无限重连）"
+        )
+        _seed_setting(
+            session, "im.wecom_reconnect_interval_ms", "1000", "重连基础延迟（毫秒，指数退避）"
+        )
+        _seed_setting(session, "im.wecom_heartbeat_interval_ms", "30000", "心跳间隔（毫秒）")
         # 解析引擎配置与 IM 凭证同机制：控制台可编辑、保存即时生效
         # （DB > .env 环境变量 > 代码默认）。已部署环境从 .env 回填默认值。
         _seed_parse_settings(session)

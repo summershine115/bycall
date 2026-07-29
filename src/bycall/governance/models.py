@@ -398,6 +398,7 @@ class ApprovalRequest(SQLModel, table=True):
     user_name: str = ""
     conversation_id: int | None = Field(default=None, index=True)
     channel: str = ""
+    im_user_id: str = ""  # M6：发起请求时的 IM userid（审批通过后主动推送结果用）
     tool_name: str = Field(index=True)
     tool_args_json: str = "{}"
     status: str = Field(default="pending", index=True)

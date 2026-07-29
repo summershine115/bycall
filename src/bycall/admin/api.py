@@ -3278,7 +3278,7 @@ def approve_approval(
         )
 
     # 执行工具（在独立 session + 独立 capability 上下文中）。
-    from bycall.tools.approval import execute_approved_tool
+    from bycall.tools.approval import execute_approved_tool, push_approval_result
 
     ok, result_text = execute_approved_tool(req)
 
@@ -3305,6 +3305,9 @@ def approve_approval(
     _audit_admin(session, request, "approve_tool", f"ApprovalRequest(#{req.id}, {req.tool_name})")
     session.commit()
     session.refresh(req)
+    # M6：只有审批状态、结果和会话历史成功提交后才通知；失败不回滚已提交事务。
+    if ok:
+        push_approval_result(req, result_text)
     return _approval_to_out(req)
 
 

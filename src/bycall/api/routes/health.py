@@ -25,13 +25,26 @@ def health() -> dict[str, str]:
 
 @router.get("/ready")
 def ready() -> dict[str, object]:
-    """就绪探针：返回版本 + 后端选型摘要（不暴露 key/DSN 等敏感字段）。"""
+    """就绪探针：返回版本 + 后端选型摘要 + IM 渠道真实连接状态（不暴露 key/DSN 等敏感字段）。
+
+    M6：追加 ``im`` 块反映企微长连接的 ``is_connected``（信息性，渠道未连不让 /ready 失败——
+    HTTP/治理面仍可服务，仅 IM 暂不可用）。
+    """
+    from bycall.gateway.manager import get_channel_manager
+
     settings = get_settings()
+    im_status = get_channel_manager().status()
     return {
         "status": "ok",
         "version": __version__,
         "env": settings.env,
         "llm_provider": settings.llm.provider,
         "vector_store_backend": settings.vector_store.backend,
+        # M6：IM 渠道连接状态（信息性，不阻断就绪判定）。
+        "im": {
+            "running": im_status["running"],
+            "is_connected": im_status["is_connected"],
+            "channel": im_status["channel"],
+        },
         # M1+ 在此追加依赖探测结果：db_ok / redis_ok / vector_store_ok
     }
