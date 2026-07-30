@@ -39,6 +39,16 @@ def db_session(tmp_path, monkeypatch):
         yield s
 
 
+class _FakeWsManager:
+    """模拟 aibot WsConnectionManager：捕获直连发送的帧（send_stream/send_text 走此路径）。"""
+
+    def __init__(self) -> None:
+        self.sent_frames: list = []
+
+    async def send(self, frame) -> None:
+        self.sent_frames.append(frame)
+
+
 class _FakeWSClient:
     """模拟 aibot.WSClient：捕获注册的回调 + 记录 reply/download/send 调用。"""
 
@@ -46,6 +56,7 @@ class _FakeWSClient:
         self.options = options
         self.handlers: dict[str, list] = {}
         self._connected = False
+        self._ws_manager = _FakeWsManager()  # 直连发送（send_stream/send_text）捕获帧
         self.reply_calls: list = []  # reply_stream
         self.card_calls: list = []  # reply_template_card
         self.download_calls: list = []  # download_file
@@ -397,7 +408,7 @@ async def test_download_failure_still_delivers_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_stream_passes_msg_item(monkeypatch):
-    """send_stream(..., msg_item=...) → reply_stream(..., msg_item=...) 透传。"""
+    """send_stream 直连发送 stream 帧：content/finish/msg_item 透传到帧 body.stream。"""
     _patch_wsclient(monkeypatch)
     from aibot import generate_req_id
 
@@ -411,12 +422,16 @@ async def test_send_stream_passes_msg_item(monkeypatch):
     await sender.send_stream("部分内容", "sid-1", finish=False)
     await sender.send_stream("最终内容", "sid-1", finish=True, msg_item=[{"title": "来源"}])
 
-    assert ch._client.reply_calls[0][2] == "部分内容"
-    assert ch._client.reply_calls[0][3] is False
-    assert ch._client.reply_calls[0][4] is None
-    assert ch._client.reply_calls[1][2] == "最终内容"
-    assert ch._client.reply_calls[1][3] is True
-    assert ch._client.reply_calls[1][4] == [{"title": "来源"}]
+    frames = ch._client._ws_manager.sent_frames
+    # 帧结构：cmd=req, headers.req_id 透传，body.stream 含 id/finish/content。
+    assert frames[0]["cmd"] == "aibot_respond_msg"
+    assert frames[0]["headers"]["req_id"] == "r1"
+    assert frames[0]["body"]["stream"]["content"] == "部分内容"
+    assert frames[0]["body"]["stream"]["finish"] is False
+    assert "msg_item" not in frames[0]["body"]["stream"]  # 仅 finish 帧带 msg_item
+    assert frames[1]["body"]["stream"]["content"] == "最终内容"
+    assert frames[1]["body"]["stream"]["finish"] is True
+    assert frames[1]["body"]["stream"]["msg_item"] == [{"title": "来源"}]
     ch.stop()
 
 
@@ -432,8 +447,40 @@ async def test_send_text_has_no_msg_item(monkeypatch):
     await ch.start(_noop_on_message)
     sender = ch._build_sender({"headers": {"req_id": "r1"}}, generate_req_id)
     await sender.send_text("hi")
-    assert ch._client.reply_calls[0][3] is True  # finish
-    assert ch._client.reply_calls[0][4] is None  # 无 msg_item
+    frame = ch._client._ws_manager.sent_frames[0]
+    assert frame["body"]["stream"]["finish"] is True  # send_text 是单条 finish 帧
+    assert "msg_item" not in frame["body"]["stream"]  # 不带 msg_item（citation 只走 send_stream）
+    ch.stop()
+
+
+@pytest.mark.asyncio
+async def test_send_stream_bypasses_per_frame_ack_wait(monkeypatch):
+    """回归：stream 帧直连 WS 发送、不等企微逐帧 ack。
+
+    企微对 stream 帧 ack 延迟（往往随下一条消息的流量才回），SDK ``reply_stream`` 每帧
+    ``await ack`` 会把流式循环卡死——表现为回复卡住、用户发下一条消息时卡住的内容才冲出来。
+    send_stream 必须绕开 reply_stream、经 ``ws_manager.send`` 直发。本测试验证 send_stream
+    不触碰 reply_stream（reply_calls 为空），帧全部经 ws_manager 直发。
+    """
+    _patch_wsclient(monkeypatch)
+    from aibot import generate_req_id
+
+    from bycall.gateway.wecom import WecomChannel
+
+    ch = WecomChannel("b", "s")
+    await ch.start(_noop_on_message)
+    sender = ch._build_sender({"headers": {"req_id": "r1"}}, generate_req_id)
+
+    await sender.send_stream("tok1", "sid", finish=False)
+    await sender.send_stream("tok2", "sid", finish=False)
+    await sender.send_stream("完整答案", "sid", finish=True)
+
+    # 直连发送：帧进 ws_manager，不走 reply_stream（否则会被逐帧 ack 卡死）。
+    assert ch._client.reply_calls == [], "send_stream 不应走 reply_stream（会逐帧等 ack 卡死）"
+    frames = ch._client._ws_manager.sent_frames
+    assert len(frames) == 3
+    assert frames[2]["body"]["stream"]["content"] == "完整答案"
+    assert frames[2]["body"]["stream"]["finish"] is True
     ch.stop()
 
 

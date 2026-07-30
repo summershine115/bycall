@@ -483,17 +483,44 @@ class WecomChannel(Channel):
           ``msg_item`` 仅在 ``finish=True`` 时由 SDK 附到最终帧（图文 citation 来源卡片）。
         - ``send_card``：模板卡片（非破坏性澄清，独立于流式文本）。
         """
+        from aibot.types import WsCmd
+
         client = self._client
         assert client is not None  # start() 后才会有 sender
+        ws_manager = client._ws_manager
+        req_id = frame.get("headers", {}).get("req_id", "")
+
+        async def _send_stream_frame(
+            stream_id: str, content: str, finish: bool, msg_item: list | None = None
+        ) -> None:
+            """直连 WebSocket 发送 stream 帧，不等企微 ack。
+
+            企微对 stream 帧的 ack 延迟（往往随下一条消息的流量才回），而 SDK 的
+            ``reply_stream`` → ``send_reply`` 每帧都同步 ``await ack``（无 ack 阻塞 5s、
+            延迟 ack 则阻塞到投递），会把流式循环卡死——表现为回复卡住、用户发下一条消息
+            时卡住的内容才冲出来。stream 帧在等 ack 之前就已发出，企微按 replace 语义即时
+            渲染，丢单帧由下一帧覆盖、无需逐帧确认。故绕开 SDK 的 ack 等待，直接经
+            ``ws_manager.send`` 发出（与 SDK ``send_reply`` 内部发帧同一路径，仅去掉 ack 等待）。
+            """
+            stream_body: dict[str, Any] = {"id": stream_id, "finish": finish, "content": content}
+            if finish and msg_item:
+                stream_body["msg_item"] = msg_item
+            await ws_manager.send(
+                {
+                    "cmd": WsCmd.RESPONSE,
+                    "headers": {"req_id": req_id},
+                    "body": {"msgtype": "stream", "stream": stream_body},
+                }
+            )
 
         async def send_text(content: str) -> None:
             stream_id = generate_req_id("stream")
-            await client.reply_stream(frame, stream_id, content, finish=True)
+            await _send_stream_frame(stream_id, content, finish=True)
 
         async def send_stream(
             content: str, stream_id: str, finish: bool, msg_item: list | None = None
         ) -> None:
-            await client.reply_stream(frame, stream_id, content, finish=finish, msg_item=msg_item)
+            await _send_stream_frame(stream_id, content, finish=finish, msg_item=msg_item)
 
         async def send_card(card: dict) -> None:
             await client.reply_template_card(frame, card)
