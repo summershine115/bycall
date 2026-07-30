@@ -2,7 +2,8 @@
 
 > 状态：草案（待 review） · 2026-07-10
 > 范围：定义 Bycall 作为「企业级数字员工」的产品形态、治理架构、信任模型，并据此调整路线图。
-> 关联：`docs/architecture.md`（技术分层）、`docs/decisions/0001-vectorstore-abstraction.md`、`HANDOVER.md`
+> 关联：`docs/architecture.md`（技术分层）、`docs/product-strategy.md`（后续方向与行业优先级）、
+> `docs/decisions/0001-vectorstore-abstraction.md`、`HANDOVER.md`
 
 ---
 

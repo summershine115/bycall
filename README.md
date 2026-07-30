@@ -8,7 +8,9 @@
 > LangGraph + MCP/HITL，以及企微主动推送、多模态附件、来源卡片、模板卡片、可靠重连和
 > 连接可观测。版本新增功能、修复项和升级说明见 [`CHANGELOG.md`](CHANGELOG.md)。
 >
-> 完整设计见 [`docs/product-design.md`](docs/product-design.md)（产品形态/治理架构/信任模型），技术分层与架构红线见 [`docs/architecture.md`](docs/architecture.md)。
+> 完整设计见 [`docs/product-design.md`](docs/product-design.md)（产品形态/治理架构/信任模型），
+> 后续方向与行业优先级见 [`docs/product-strategy.md`](docs/product-strategy.md)，技术分层与
+> 架构红线见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
