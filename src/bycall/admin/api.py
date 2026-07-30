@@ -728,98 +728,6 @@ def list_skills(
     return list(session.exec(Skill.select_all()).all())
 
 
-@router.get("/skills/{name}", response_model=SkillOut)
-def get_skill(
-    name: str,
-    session: Session = Depends(get_session),
-    _admin: None = Depends(_require_admin),
-) -> Skill:
-    """Skill 详情。不存在 → 404。"""
-    skill = session.exec(Skill.select_by_name(name)).first()
-    if skill is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
-    return skill
-
-
-@router.put("/skills/{name}", response_model=SkillOut)
-def update_skill(
-    name: str,
-    payload: SkillUpdate,
-    request: Request,
-    session: Session = Depends(get_session),
-    _admin: None = Depends(_require_admin),
-) -> Skill:
-    """更新 Skill（PATCH 语义：只改传入字段）。可迭代文档，无需发新版本。不存在 → 404。
-
-    改 content / is_enabled 后，下次对话即时生效（DB 即真值，capability 引擎实时读）。
-    """
-    skill = session.exec(Skill.select_by_name(name)).first()
-    if skill is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
-
-    before_snapshot = json.dumps(skill.model_dump(), default=str)
-    if payload.description is not None:
-        skill.description = payload.description
-    if payload.content is not None:
-        skill.content = payload.content
-    if payload.is_enabled is not None:
-        skill.is_enabled = payload.is_enabled
-    if payload.disclosure is not None:
-        skill.disclosure = payload.disclosure
-    session.add(skill)
-    session.commit()
-    session.refresh(skill)
-    _audit_admin(
-        session,
-        request,
-        "update_skill",
-        f"Skill({skill.name})",
-        before=json.loads(before_snapshot),
-        after=skill,
-    )
-    session.commit()
-    return skill
-
-
-@router.delete("/skills/{name}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_skill(
-    name: str,
-    request: Request,
-    session: Session = Depends(get_session),
-    _admin: None = Depends(_require_admin),
-) -> None:
-    """删除 Skill。不存在 → 404。若被角色引用 → 409（避免悬空引用）。
-
-    引用检查：扫所有 Role 的 ``RoleConfig.skills``，若含该 name 则拒绝删除
-    （admin 需先从角色配置里移除引用）。capability 引擎对不存在的 skill name 会
-    静默忽略，但显式拒绝删除能让 admin 意识到影响范围。
-    """
-    skill = session.exec(Skill.select_by_name(name)).first()
-    if skill is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
-
-    # 校验无角色引用（与 delete_role 校验活跃用户的范式一致）。
-    referencing_roles = [
-        r.name for r in session.exec(select(Role)).all() if name in (r.config.skills or [])
-    ]
-    if referencing_roles:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Skill '{name}' 仍被角色 {referencing_roles} 引用，"
-                "请先从这些角色的 skills 配置里移除"
-            ),
-        )
-    # 删除前抓纯 dict 快照（detached-safe：delete+commit 后对象进 detached 态，
-    # 显式抓 dict 比 model_dump 恰好能读更稳，与 update_* 审计范式一致）。
-    before_snapshot = skill.model_dump()
-    session.delete(skill)
-    session.commit()
-    _audit_admin(session, request, "delete_skill", f"Skill({name})", before=before_snapshot)
-
-
-
-
 # ============ Skill 导入导出 ============
 
 
@@ -928,6 +836,101 @@ def import_skills(
     )
     session.commit()
     return result
+
+
+
+@router.get("/skills/{name}", response_model=SkillOut)
+def get_skill(
+    name: str,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Skill:
+    """Skill 详情。不存在 → 404。"""
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+    return skill
+
+
+@router.put("/skills/{name}", response_model=SkillOut)
+def update_skill(
+    name: str,
+    payload: SkillUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Skill:
+    """更新 Skill（PATCH 语义：只改传入字段）。可迭代文档，无需发新版本。不存在 → 404。
+
+    改 content / is_enabled 后，下次对话即时生效（DB 即真值，capability 引擎实时读）。
+    """
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+
+    before_snapshot = json.dumps(skill.model_dump(), default=str)
+    if payload.description is not None:
+        skill.description = payload.description
+    if payload.content is not None:
+        skill.content = payload.content
+    if payload.is_enabled is not None:
+        skill.is_enabled = payload.is_enabled
+    if payload.disclosure is not None:
+        skill.disclosure = payload.disclosure
+    session.add(skill)
+    session.commit()
+    session.refresh(skill)
+    _audit_admin(
+        session,
+        request,
+        "update_skill",
+        f"Skill({skill.name})",
+        before=json.loads(before_snapshot),
+        after=skill,
+    )
+    session.commit()
+    return skill
+
+
+@router.delete("/skills/{name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_skill(
+    name: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除 Skill。不存在 → 404。若被角色引用 → 409（避免悬空引用）。
+
+    引用检查：扫所有 Role 的 ``RoleConfig.skills``，若含该 name 则拒绝删除
+    （admin 需先从角色配置里移除引用）。capability 引擎对不存在的 skill name 会
+    静默忽略，但显式拒绝删除能让 admin 意识到影响范围。
+    """
+    skill = session.exec(Skill.select_by_name(name)).first()
+    if skill is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+
+    # 校验无角色引用（与 delete_role 校验活跃用户的范式一致）。
+    referencing_roles = [
+        r.name for r in session.exec(select(Role)).all() if name in (r.config.skills or [])
+    ]
+    if referencing_roles:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Skill '{name}' 仍被角色 {referencing_roles} 引用，"
+                "请先从这些角色的 skills 配置里移除"
+            ),
+        )
+    # 删除前抓纯 dict 快照（detached-safe：delete+commit 后对象进 detached 态，
+    # 显式抓 dict 比 model_dump 恰好能读更稳，与 update_* 审计范式一致）。
+    before_snapshot = skill.model_dump()
+    session.delete(skill)
+    session.commit()
+    _audit_admin(session, request, "delete_skill", f"Skill({name})", before=before_snapshot)
+
+
+
+
 # ============ 审计 ============
 
 
