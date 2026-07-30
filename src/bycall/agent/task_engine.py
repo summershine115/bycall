@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from sqlmodel import Session
 
 from bycall.agent.events import TaskEvent, TaskEventBus, default_bus
-from bycall.governance.models import Run, Step, User
+from bycall.governance.models import Run, Step, Task, User
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +158,159 @@ def _finish(session: Session, step: Step, run: Run, *, step_status: str, t0: flo
     session.add(step)
     session.commit()
     session.refresh(run)
+
+
+# ============ 任务状态机（spec §3.2）============
+
+
+_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "draft": {"planning", "cancelled"},
+    "planning": {"running", "failed", "cancelled"},
+    "running": {"paused", "completed", "failed", "cancelled"},
+    "paused": {"running", "cancelled"},
+    "completed": set(),  # 终态
+    "failed": set(),  # 终态
+    "cancelled": set(),  # 终态
+}
+"""Task 合法状态流转（spec §3.2）。终态不可转。"""
+
+
+def transition_task_status(session: Session, task: Task, new_status: str) -> None:
+    """校验并应用 Task 状态流转；非法流转抛 ``ValueError``。
+
+    状态机见 spec §3.2。幂等流转（如已 running 再转 running）也视为非法——
+    调用方应先判当前状态，避免重复触发副作用。
+    """
+    allowed = _ALLOWED_TRANSITIONS.get(task.status, set())
+    if new_status not in allowed:
+        raise ValueError(
+            f"非法任务状态流转：{task.status} → {new_status}"
+            f"（允许：{sorted(allowed) or '终态不可转'}）"
+        )
+    task.status = new_status
+    session.add(task)
+    session.commit()
+
+
+def create_steps_from_plan(session: Session, task: Task, plan: list[dict]) -> list[Step]:
+    """从计划列表创建 Step 记录（plan 是 LLM 拆解产物，S1a 由调用方提供）。
+
+    plan 形如 ``[{"goal": "查故障", "kind": "tool_loop"}, ...]``。``idempotency_key``
+    用 ``task-{id}-step-{index}``，resume 时据此去重。
+
+    幂等：task 已有 Steps（resume）则直接返回，不重复创建。
+    """
+    existing = list(session.exec(Step.select_by_task(task.id)))
+    if existing:
+        return existing
+
+    steps: list[Step] = []
+    for i, item in enumerate(plan):
+        step = Step(
+            task_id=task.id,
+            step_index=i,
+            kind=item.get("kind", "tool_loop"),
+            spec_json=json.dumps({"goal": item.get("goal", "")}, ensure_ascii=False),
+            idempotency_key=f"task-{task.id}-step-{i}",
+        )
+        session.add(step)
+        steps.append(step)
+    session.commit()
+    for s in steps:
+        session.refresh(s)
+    return steps
+
+
+def _step_goal(step: Step) -> str:
+    """从 step.spec_json 提取目标（``{"goal": "..."}`` 或纯文本兜底）。"""
+    try:
+        spec = json.loads(step.spec_json)
+        if isinstance(spec, dict) and "goal" in spec:
+            return str(spec["goal"])
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return step.spec_json
+
+
+# ============ 任务编排引擎 ============
+
+
+def run_task(
+    *,
+    session: Session,
+    task: Task,
+    chat_model,
+    plan: list[dict] | None = None,
+    bus: TaskEventBus = default_bus,
+) -> Task:
+    """编排执行一个 Task：状态机驱动，逐步执行 Steps（支持 resume）。
+
+    - ``draft``：完整流程——发 task_created / plan_produced，按 plan 创建 Steps，
+      planning→running→逐步执行。
+    - ``paused`` / ``running``：resume——加载已有 Steps，``done`` 跳过（幂等），
+      从第一个未完成处继续。
+    - 终态（completed/failed/cancelled）：抛 ``ValueError``。
+
+    逐步执行：``tool_loop`` 调 Step 执行器（失败 → task failed）；``approval_wait`` /
+    ``clarify`` → ``paused`` 挂起；全 done → ``completed``。
+
+    ``plan`` 仅首次（draft 且无 Steps）生效；resume 传 None。
+    """
+    if task.status == "draft":
+        bus.publish(TaskEvent(type="task_created", task_id=task.id, payload={"goal": task.goal}))
+        transition_task_status(session, task, "planning")
+        steps = list(session.exec(Step.select_by_task(task.id)))
+        if not steps and plan:
+            steps = create_steps_from_plan(session, task, plan)
+        bus.publish(
+            TaskEvent(
+                type="plan_produced",
+                task_id=task.id,
+                payload={"steps": len(steps), "kinds": [s.kind for s in steps]},
+            )
+        )
+        transition_task_status(session, task, "running")
+    elif task.status == "paused":
+        transition_task_status(session, task, "running")
+        steps = list(session.exec(Step.select_by_task(task.id)))
+    elif task.status == "running":
+        steps = list(session.exec(Step.select_by_task(task.id)))
+    else:
+        raise ValueError(f"任务不可执行（当前状态 {task.status}）")
+
+    user = session.get(User, task.user_id)
+
+    for step in steps:
+        if step.status == "done":
+            continue  # 幂等：跳过已完成
+
+        if step.kind == "tool_loop":
+            execute_tool_loop_step(
+                session=session,
+                user=user,
+                step=step,
+                goal=_step_goal(step),
+                chat_model=chat_model,
+                bus=bus,
+            )
+            if step.status == "failed":
+                transition_task_status(session, task, "failed")
+                return task
+        elif step.kind in ("approval_wait", "clarify"):
+            # HITL：挂起等审批 / 用户澄清；外部响应后改 step.done 再 resume。
+            transition_task_status(session, task, "paused")
+            event_type = "approval_requested" if step.kind == "approval_wait" else "task_paused"
+            bus.publish(
+                TaskEvent(
+                    type=event_type,
+                    task_id=task.id,
+                    step_id=step.id,
+                    payload={"reason": step.kind},
+                )
+            )
+            return task
+        # deterministic：S1a 留后置（当前 plan 不产此类）
+
+    transition_task_status(session, task, "completed")
+    bus.publish(TaskEvent(type="task_done", task_id=task.id, payload={"status": "completed"}))
+    return task
