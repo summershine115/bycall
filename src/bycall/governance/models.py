@@ -14,6 +14,7 @@
 - Document（知识库文档，属于某个 KB，source = ACL 标签）
 - Conversation + Message（会话状态层，按 (user_id, channel) 隔离，参考 Hermes SessionStore）
 - UserMemory（用户级长期记忆，跨会话持久，admin 管控）
+- Task/Step/Run（持久化多步任务：run_agent 工具回路作 Step 内核，状态机驱动，可暂停/恢复）
 
 ⚠️ 设计约定：
 - ``admin`` 是内置特殊角色名（不建 Role 表记录），policy 引擎识别后给全部权限。
@@ -784,3 +785,133 @@ class SystemSetting(SQLModel, table=True):
         from sqlmodel import select
 
         return select(SystemSetting).order_by(SystemSetting.key)
+
+
+# ============ Task/Step/Run：持久化多步任务（S1a 执行核心）============
+
+
+class Task(SQLModel, table=True):
+    """持久化多步任务——用户目标拆成 Step 序列逐步执行（含 HITL 暂停）。
+
+    run_agent 的工具回路（run_tool_loop）成为 **Step 的执行内核**（不重写）：Task 在外层
+    编排状态机，每步执行前重算能力集（复用 execute_approved_tool 的已验证模式）。状态显式
+    持久化，paused（等审批/等输入）可跨进程恢复。详见 ADR-0005 + spec agent-framework-upgrade。
+
+    与 Conversation 的关系（S1a）：1:1，Task 关联当前 conversation_id；跨会话续跑留后置。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)  # User.id
+    conversation_id: int | None = Field(default=None, index=True)  # Conversation.id（S1a 1:1）
+    channel: str = ""  # im / api（结果推送 + 审计归因）
+    trigger: str = Field(
+        default="conversation", index=True
+    )  # conversation / cron / event（来源入口）
+    schedule_id: int | None = Field(
+        default=None, index=True
+    )  # 关联 TaskSchedule（cron/event 触发时填）
+    goal: str  # 用户目标（自然语言）
+    plan_json: str = "[]"  # LLM 产出的 Step 序列（建议性，执行前代码层校验）
+    status: str = Field(
+        default="draft", index=True
+    )  # draft/planning/running/paused/completed/failed/cancelled
+    capability_snapshot_json: str = "{}"  # 创建时能力集快照（每步重算后更新）
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_user(user_id: int):
+        """按 user_id 列任务（创建时间倒序，最新在前）。"""
+        from sqlmodel import select
+
+        return select(Task).where(Task.user_id == user_id).order_by(Task.created_at.desc())
+
+    @staticmethod
+    def select_by_status(status: str):
+        """按状态列任务（创建时间倒序）。"""
+        from sqlmodel import select
+
+        return select(Task).where(Task.status == status).order_by(Task.created_at.desc())
+
+    @staticmethod
+    def select_by_conversation(conversation_id: int):
+        """按会话查任务（S1a 1:1，取最新一条）。"""
+        from sqlmodel import select
+
+        return (
+            select(Task)
+            .where(Task.conversation_id == conversation_id)
+            .order_by(Task.created_at.desc())
+        )
+
+
+class Step(SQLModel, table=True):
+    """Task 的单步——状态机的最小执行单元。
+
+    kind 决定执行方式：
+    - ``tool_loop`` → 调 run_tool_loop（工具回路内核，复用 graph.py，不重写）
+    - ``approval_wait`` → 等审批（转 ApprovalRequest）
+    - ``clarify`` → 等用户澄清（pause 后由下一条消息恢复）
+    - ``deterministic`` → 确定性代码（如发推送，无 LLM）
+
+    ``spec_json`` 存该步参数（工具名/确定性行为/审批要求）。``idempotency_key`` 防恢复时
+    重复执行（同 key 的 done Step 不重跑）。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True)  # Task.id
+    step_index: int  # 序号（0-based，执行顺序）
+    kind: str = Field(
+        default="tool_loop", index=True
+    )  # tool_loop/deterministic/approval_wait/clarify
+    spec_json: str = "{}"  # 该步参数（工具名/确定性行为/审批要求）
+    idempotency_key: str = Field(default="", index=True)  # 幂等防重复
+    status: str = Field(default="pending", index=True)  # pending/running/done/failed/skipped
+    retry_count: int = 0
+    max_retries: int = 0
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_task(task_id: int):
+        """按 task_id 列全部 Step（step_index 正序，执行顺序）。"""
+        from sqlmodel import select
+
+        return select(Step).where(Step.task_id == task_id).order_by(Step.step_index)
+
+
+class Run(SQLModel, table=True):
+    """Step 的一次执行尝试——Step 可重试，每次尝试落一条 Run。
+
+    最后一次成功的 Run 决定 Step 的产出。``tool_calls_json`` 复用
+    ``GraphResult.tool_calls_made``（脱敏后的工具调用记录），与审计字段对齐。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    step_id: int = Field(index=True)  # Step.id
+    input_json: str = "{}"  # 执行输入快照
+    output_json: str = "{}"  # 执行输出快照
+    started_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    finished_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
+    duration_ms: int = 0  # 耗时（finished - started，毫秒）
+    status: str = Field(default="ok", index=True)  # ok / error / timeout
+    tool_calls_json: str = "[]"  # 该次尝试的工具调用（脱敏，复用 GraphResult）
+
+    @staticmethod
+    def select_by_step(step_id: int):
+        """按 step_id 列全部 Run（started_at 正序）。"""
+        from sqlmodel import select
+
+        return select(Run).where(Run.step_id == step_id).order_by(Run.started_at)
