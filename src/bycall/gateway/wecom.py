@@ -30,7 +30,9 @@ frame 字段位置（经源码 + 官方文档核实，见 ``_parse_text_frame``�
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -524,8 +526,37 @@ class WecomChannel(Channel):
         await self._client.send_message(chatid, body)
 
     def stop(self) -> None:
-        """断开 WebSocket 连接。"""
+        """同步断开（保留给事件循环线程内的直接调用，如单测）。
+
+        注意：SDK 的 ``disconnect()`` 内部用 ``asyncio.ensure_future`` 安排真正的 WS
+        关闭，**必须在事件循环所在线程调用**。跨线程（如 admin/FastAPI 工作线程）
+        断开必须走 :meth:`stop_async`，由 manager 经 ``run_coroutine_threadsafe`` marshal
+        到 IM 事件循环线程执行——否则在工作线程里抛 ``no current event loop``，WS 永不关闭，
+        旧连接残留导致企微单连接策略下重连后收不到消息（用户表现为「切换渠道后不回复」）。
+        """
         if self._client is not None:
             self._client.disconnect()
             self._client = None
             logger.info("wecom 渠道已断开")
+
+    async def stop_async(self) -> None:
+        """在 IM 事件循环线程里断开连接，并等待 WS 真正关闭。
+
+        必须由 manager 经 ``run_coroutine_threadsafe`` 在 IM 事件循环线程执行：
+        ``disconnect()`` 只是把 ``_async_disconnect`` 调度到 loop（此时 loop 正在运行，
+        ``ensure_future`` 才能正确解析），真正的 ``ws.close()`` 异步完成。这里轮询
+        ``is_connected`` 等到 socket 关闭（SDK close_timeout=5s），保证 manager 停 loop 前
+        旧连接已彻底断开，不残留僵尸连接与重连后的新连接争抢企微单连接。
+        """
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            logger.debug("wecom disconnect 调度异常", exc_info=True)
+        deadline = time.monotonic() + 6.0
+        while getattr(client, "is_connected", False) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        logger.info("wecom 渠道已断开")

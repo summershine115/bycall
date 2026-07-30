@@ -453,3 +453,84 @@ async def test_send_card_calls_reply_template_card(monkeypatch):
     await sender.send_card(card)
     assert ch._client.card_calls == [(frame, card)]
     ch.stop()
+
+
+# ============ 6. 热重载跨线程断开（回归：切换 IM 渠道后不回复）============
+
+
+def test_stop_locked_disconnects_on_loop_thread_cross_thread():
+    """_stop_locked 必须在 IM 事件循环线程断开连接，绝不在工作线程调同步 stop()。
+
+    回归「切换 IM 渠道后 Agent 不回复」：admin/FastAPI 工作线程无运行中的事件循环，
+    若跨线程直接调 SDK disconnect（内部 asyncio.ensure_future）会抛 no current event loop，
+    WS 永不关闭 → 企微单连接策略下重连后的新连接收不到消息。修复后 manager 经
+    run_coroutine_threadsafe 把断开 marshal 到 IM 事件循环线程执行并等真正关闭。
+    """
+    import asyncio
+    import threading
+    import time
+
+    from bycall.gateway.manager import ChannelManager
+
+    ran_on = []  # stop_async 实际执行的线程名
+    stop_offloop = []  # 若同步 stop 被跨线程调用则记录（应保持空）
+
+    class FakeChannel:
+        """模拟 SDK 行为：同步 stop 在无运行 loop 的线程里抛错（ensure_future 语义）。"""
+
+        def __init__(self) -> None:
+            self._connected = True
+
+        async def start(self, on_message) -> None:
+            return  # SDK connect() 建连后返回，靠后台任务维持长连接
+
+        def stop(self) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                stop_offloop.append(threading.current_thread().name)
+                raise RuntimeError("There is no current event loop in thread") from None
+            self._connected = False
+
+        async def stop_async(self) -> None:
+            ran_on.append(threading.current_thread().name)
+            self._connected = False
+
+        @property
+        def is_connected(self) -> bool:
+            return self._connected
+
+        @property
+        def last_error(self) -> str:
+            return ""
+
+    mgr = ChannelManager()
+    ch = FakeChannel()
+    mgr._channel = ch
+    mgr._start_thread(ch)  # 在独立 daemon 线程起 IM 事件循环
+    mgr._started = True
+
+    deadline = time.monotonic() + 2.0
+    while mgr._loop is None or not mgr._loop.is_running():
+        assert time.monotonic() < deadline, "IM 事件循环未启动"
+        time.sleep(0.01)
+
+    # 从无事件循环的工作线程调 _stop_locked（模拟 admin/FastAPI 同步路由线程）
+    err: list = []
+
+    def caller() -> None:
+        try:
+            mgr._stop_locked()
+        except Exception as e:
+            err.append(e)
+
+    t = threading.Thread(target=caller, name="admin-worker")
+    t.start()
+    t.join(timeout=15)
+
+    assert not err, f"_stop_locked 抛异常: {err}"
+    assert ran_on, "stop_async 未在 IM 事件循环线程执行（连接未真正关闭）"
+    assert ran_on[0] == "bycall-im", f"断开未在 IM loop 线程执行: {ran_on}"
+    assert not stop_offloop, "跨线程调用了同步 stop()（会触发 SDK no-current-loop bug）"
+    assert ch.is_connected is False
+    assert mgr._loop is None

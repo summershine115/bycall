@@ -234,20 +234,31 @@ class ChannelManager:
         logger.info("IM 渠道线程已启动 (bot_id=%s)", bot_id_hint)
 
     def _stop_locked(self) -> None:
-        """停止当前渠道（调用方持锁）。"""
-        # 1. 断开渠道连接（channel.stop 是同步的，SDK 内部 disconnect）
-        if self._channel is not None:
-            try:
-                self._channel.stop()
-            except Exception:
-                logger.exception("IM 渠道 stop 异常")
-            self._channel = None
-        # 2. 停事件循环
-        if self._loop is not None and self._loop.is_running():
-            import contextlib
+        """停止当前渠道（调用方持锁）。
 
+        关键：必须在 IM 事件循环线程断开连接。本方法在 admin/FastAPI 工作线程被调用
+        （无运行中的事件循环），而 SDK 的 ``disconnect()`` 内部用 ``asyncio.ensure_future``
+        安排真正的 WS 关闭——在工作线程里会抛 ``no current event loop`` 且 WS 永不关闭。
+        旧连接残留后，企微 openws 的单连接策略会让重连后的新连接收不到消息（用户表现为
+        「切换 IM 渠道后 Agent 不回复」）。故经 ``run_coroutine_threadsafe`` 把断开 marshal
+        到 IM 事件循环线程执行并同步等待真正关闭，再停 loop——保证旧连接彻底断开后再起新连接。
+        """
+        import contextlib
+
+        channel = self._channel
+        loop = self._loop
+        # 1. 在 IM 事件循环线程断开连接（stop_async 内部调 SDK disconnect，此时 loop 在运行）。
+        if channel is not None and loop is not None and loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(channel.stop_async(), loop)
+                fut.result(timeout=10)
+            except Exception:
+                logger.exception("IM 渠道断开异常（stop_async）")
+        self._channel = None
+        # 2. 停事件循环（此时连接已真正关闭，无僵尸连接残留）。
+        if loop is not None and loop.is_running():
             with contextlib.suppress(Exception):
-                self._loop.call_soon_threadsafe(self._loop.stop)
+                loop.call_soon_threadsafe(loop.stop)
         self._loop = None
         self._thread = None
         # 复位生命周期状态（停止后连接不可用）。

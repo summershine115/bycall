@@ -104,6 +104,16 @@ class Channel(ABC):
     def stop(self) -> None:
         """停止渠道连接。"""
 
+    async def stop_async(self) -> None:
+        """异步断开连接（在 IM 事件循环线程内执行）。
+
+        默认实现直接调同步 :meth:`stop`——当本方法由 manager 经
+        ``run_coroutine_threadsafe`` marshal 到事件循环线程执行时，已有运行中的 loop，
+        同步 ``stop()`` 内部对事件循环的依赖（如 ``asyncio.ensure_future``）才能正常工作。
+        子类若需要在 loop 线程内等待真正的异步关闭完成，应覆盖此方法。
+        """
+        self.stop()
+
     @property
     @abstractmethod
     def is_connected(self) -> bool:
