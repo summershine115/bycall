@@ -131,6 +131,8 @@ const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = 
     content: row.content,
     is_enabled: row.is_enabled,
     disclosure: row.disclosure || 'always',
+    _original_name: row.name,
+  }),
 })
 
 // 选中项计数与 names
