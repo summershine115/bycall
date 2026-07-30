@@ -5,7 +5,9 @@
       description="Skill 是 admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt。"
     >
       <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
-      <el-button @click="onExport" :loading="exporting">导出</el-button>
+      <el-button @click="onExportClick" :loading="exporting">
+        {{ selectedCount > 0 ? `导出选中 (${selectedCount})` : '导出全部' }}
+      </el-button>
       <el-button @click="onImportClick" :loading="importing">
         <input ref="importInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
         导入
@@ -13,6 +15,16 @@
     </PageHeader>
 
     <ContentLoader v-if="loading" :rows="4" />
+
+    <!-- 批量操作栏 -->
+    <div
+      v-if="!loading && selectedCount > 0"
+      class="bc-batch-bar"
+    >
+      <span class="bc-batch-info">已选 {{ selectedCount }} 项</span>
+      <el-button size="small" type="danger" plain @click="onBatchDelete">批量删除</el-button>
+      <el-button size="small" @click="onExportClick">导出选中</el-button>
+    </div>
 
     <div v-else class="bc-panel">
       <EmptyState
@@ -24,7 +36,8 @@
         <el-button type="primary" :icon="Plus" @click="openCreate">新建第一个技能</el-button>
       </EmptyState>
 
-      <el-table v-else :data="skills">
+      <el-table v-else ref="tableRef" :data="skills" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="50" />
         <el-table-column label="技能名" width="180">
           <template #default="{ row }">
             <span class="bc-strong mono">{{ row.name }}</span>
@@ -94,7 +107,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
@@ -106,6 +119,8 @@ import EmptyState from '../components/EmptyState.vue'
 
 const skills = ref([])
 const importInput = ref(null)
+const tableRef = ref(null)
+const selectedRows = ref([])
 const exporting = ref(false)
 const importing = ref(false)
 const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
@@ -116,15 +131,18 @@ const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = 
     content: row.content,
     is_enabled: row.is_enabled,
     disclosure: row.disclosure || 'always',
-    _original_name: row.name,
-  }),
 })
 
-// 导出
-async function onExport() {
+// 选中项计数与 names
+const selectedCount = computed(() => selectedRows.value.length)
+const selectedNames = computed(() => selectedRows.value.map((r) => r.name))
+
+// 导出（全部或选中）
+async function onExportClick() {
   exporting.value = true
   try {
-    const blob = await admin.exportSkills()
+    const names = selectedCount.value > 0 ? selectedNames.value : undefined
+    const blob = await admin.exportSkills(names)
     // 触发浏览器下载
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -132,12 +150,33 @@ async function onExport() {
     a.download = 'skills-export.zip'
     a.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    ElMessage.success(names ? `已导出 ${names.length} 个技能` : '导出成功')
   } catch {
     // 错误已由拦截器处理
   } finally {
     exporting.value = false
   }
+}
+
+// 表格多选变化
+function onSelectionChange(rows) {
+  selectedRows.value = rows
+}
+
+// 批量删除
+async function onBatchDelete() {
+  const names = selectedNames.value
+  await ElMessageBox.confirm(
+    `确定批量删除 ${names.length} 个技能？（${names.join('、')}）`,
+    '批量删除确认',
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+  )
+  for (const name of names) {
+    await admin.deleteSkill(name)
+  }
+  ElMessage.success(`已删除 ${names.length} 个技能`)
+  selectedRows.value = []
+  await load()
 }
 
 // 导入：触发文件选择
@@ -171,6 +210,7 @@ async function load() {
   loading.value = true
   try {
     skills.value = await admin.listSkills()
+    selectedRows.value = []
   } finally {
     loading.value = false
   }
@@ -237,3 +277,21 @@ async function onDelete(row) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.bc-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background: var(--el-color-primary-light-9);
+  border-radius: 6px;
+  font-size: 14px;
+}
+.bc-batch-info {
+  flex: 1;
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+</style>
