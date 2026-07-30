@@ -95,6 +95,18 @@ def run_agent(
     - ``conversation_id`` 传入时启用多轮：加载历史 + summary → 拼 messages → 存消息 → 压缩。
     - ``conversation_id`` 为 None 时退化为单轮（兼容 M1 无状态行为）。
     """
+    # 任务触发判定（S1a T5）：显式「启动任务：…」→ 走任务引擎；否则原路径（零回归）。
+    task_goal = _match_task_trigger(question)
+    if task_goal is not None:
+        return _run_as_task(
+            session=session,
+            user=user,
+            question=question,
+            goal=task_goal,
+            llm=llm,
+            channel=channel,
+            conversation_id=conversation_id,
+        )
     # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
     try:
         with _tracer.start_as_current_span("capability") as _span:
@@ -607,6 +619,93 @@ async def run_agent_stream(
         citations=_build_citations(retrieved),
     )
     yield "", True, result
+
+
+# ============ 任务触发（S1a T5：对话入口识别多步任务目标）============
+
+
+_TASK_TRIGGER_PREFIXES = ("启动任务：", "启动任务:", "任务：", "任务:", "task:", "Task:")
+
+
+def _match_task_trigger(question: str) -> str | None:
+    """识别显式任务触发指令，返回提取的 goal（无匹配返回 None）。
+
+    S1a：仅显式前缀触发（「启动任务：查故障」），降低误判。LLM 自动判定多步目标
+    留后置（spec §3.5）。
+    """
+    for prefix in _TASK_TRIGGER_PREFIXES:
+        if question.startswith(prefix):
+            goal = question[len(prefix) :].strip()
+            return goal or None
+    return None
+
+
+def _run_as_task(
+    *,
+    session: Session,
+    user: User,
+    question: str,
+    goal: str,
+    llm: BaseChatModel,
+    channel: str,
+    conversation_id: int | None,
+) -> AgentResult:
+    """对话触发的任务执行路径（S1a）。
+
+    显式「启动任务：{goal}」触发：创建 Task + 单步 plan → run_task 编排执行 →
+    取执行结果作 AgentResult.answer。S1a 简化：plan 用单步（goal 作唯一 Step），
+    LLM 拆多步 plan 留后置；任务模式不跑对话层 RAG（知识靠工具）。
+    """
+    from bycall.agent.task_engine import run_task
+    from bycall.governance.models import Task
+
+    task = Task(
+        user_id=user.id,  # type: ignore[arg-type]
+        conversation_id=conversation_id,
+        channel=channel,
+        trigger="conversation",
+        goal=goal,
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+
+    # S1a：单步任务（goal 作唯一 Step）；LLM 拆多步 plan 留后置。
+    plan: list[dict] = [{"goal": goal, "kind": "tool_loop"}]
+    run_task(session=session, task=task, chat_model=llm, plan=plan)
+
+    answer = _task_answer(session, task)
+    _audit(
+        session,
+        user,
+        channel,
+        question,
+        "task",
+        f"task={task.id},status={task.status}",
+        answer[:500],
+    )
+    return _result(answer=answer, decision="task", scope=[], retrieved=0, user=user)
+
+
+def _task_answer(session: Session, task) -> str:
+    """从 task 执行结果提取回复（最后 Run 的 answer；无则按状态给消息）。"""
+    from bycall.governance.models import Run, Step
+
+    steps = list(session.exec(Step.select_by_task(task.id)))
+    for step in reversed(steps):
+        runs = list(session.exec(Run.select_by_step(step.id)))
+        if runs:
+            try:
+                out = json.loads(runs[-1].output_json)
+                if isinstance(out, dict) and out.get("answer"):
+                    return str(out["answer"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return {
+        "completed": "任务已完成。",
+        "paused": "任务已暂停（等待审批或澄清）。",
+        "failed": "任务执行失败。",
+    }.get(task.status, f"任务状态：{task.status}")
 
 
 __all__ = ["AgentResult", "run_agent", "run_agent_stream"]
