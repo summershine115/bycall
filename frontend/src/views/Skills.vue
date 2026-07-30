@@ -26,7 +26,7 @@
       <el-button size="small" @click="onExportClick">导出选中</el-button>
     </div>
 
-    <div v-else class="bc-panel">
+    <div v-if="!loading" class="bc-panel">
       <EmptyState
         v-if="!skills.length"
         icon="MagicStick"
