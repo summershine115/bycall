@@ -337,7 +337,7 @@ class TestRunTask:
                     plan=[{"goal": "发推送", "kind": "deterministic"}],
                 )
             assert task.status == "failed"
-            step = list(s.exec(Step.select_by_task(tid)))[0]
+            step = next(iter(s.exec(Step.select_by_task(tid))))
             assert step.status == "failed"
 
     def test_terminal_task_not_runnable(self, engine):
