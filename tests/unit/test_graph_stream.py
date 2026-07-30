@@ -20,7 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from langchain_core.tools import StructuredTool
 
-from bycall.agent.graph import GraphResult, run_tool_loop_stream
+from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop_stream
 
 
 def _make_tool(name: str, reply: str = "tool_result") -> StructuredTool:
@@ -81,6 +81,8 @@ async def _collect(stream):
     async for text, is_final, gr in stream:
         if is_final:
             final = gr
+        elif text is TOOL_ROUND_FLUSH:
+            chunks.clear()  # 工具回合前导语丢弃
         elif text:
             chunks.append(text)
     return chunks, final
@@ -202,6 +204,43 @@ async def test_stream_tool_round_text_not_yielded():
     # 工具仍被执行。
     assert len(final.tool_calls_made) == 1
     assert final.tool_calls_made[0]["result"] == "12:00"
+
+
+@pytest.mark.asyncio
+async def test_stream_text_before_tool_call_still_executes_tool():
+    """模型先输出前导文本再发 tool_call 时，工具仍执行、后续答案正常 yield。
+
+    回归「企微端回复卡在前导语、后半段不显示」：旧实现按首 chunk 判回合类型——
+    首 chunk 是文本 → 误判为答案回合，把前导语（如「当前 UTC 时间是：」）当最终答案
+    yield 并 return，工具调用被丢弃、后续真实答案永不生成。修复后以「组装后是否含
+    tool_calls」为权威判定，前导语经 TOOL_ROUND_FLUSH 丢弃。
+    """
+    tool = _make_tool("get_time", reply="12:00")
+    # 工具回合：先一段前导文本，再 tool_call_chunk（模拟模型边说边决定调工具）。
+    rounds = [
+        [*_text_chunks("当前 UTC 时间是："), _tc_chunk("get_time", call_id="c1")],
+        _text_chunks("当前 UTC 时间是：12:00"),
+    ]
+    mock, calls = _make_stream_mock_llm(rounds)
+
+    stream = await run_tool_loop_stream(
+        chat_model=mock,
+        tools=[tool],
+        messages=[HumanMessage(content="几点了？")],
+    )
+    chunks, final = await _collect(stream)
+
+    yielded = "".join(chunks)
+    # 最终答案是第二轮的真实答案；前导语已被 TOOL_ROUND_FLUSH 丢弃，不重复/不污染。
+    assert yielded == "当前 UTC 时间是：12:00"
+    assert final is not None
+    assert final.answer == "当前 UTC 时间是：12:00"
+    # 工具被执行（旧 bug 会跳过工具直接 return 前导语）。
+    assert len(final.tool_calls_made) == 1
+    assert final.tool_calls_made[0]["name"] == "get_time"
+    assert final.tool_calls_made[0]["result"] == "12:00"
+    # 跑了两轮（工具回合 + 答案回合），非一轮提前终止。
+    assert calls["n"] == 2
 
 
 # ============ 多工具调用 ============

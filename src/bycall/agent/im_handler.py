@@ -15,6 +15,7 @@ import time
 import uuid
 from typing import Any
 
+from bycall.agent.graph import TOOL_ROUND_FLUSH
 from bycall.db import session_scope
 from bycall.gateway.base import InboundMessage, ReplySender
 from bycall.gateway.identity import resolve_user_by_im
@@ -189,6 +190,12 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
                         out = _append_citation_markdown(out, msg_item)
                     await sender.send_text(out)
                 break
+            elif chunk_text is TOOL_ROUND_FLUSH:
+                # 工具回合前导文本（如「当前 UTC 时间是：」）已流式显示，现丢弃——
+                # 清空累积全文，下一回合的真实答案帧会以 replace 语义覆盖前导语。
+                # 不发空帧（企微空内容 finish/refresh 会清空显示 → 空白气泡）。
+                full_text = ""
+                continue
             elif chunk_text:
                 # 首个真实 chunk 重置 full_text（覆盖"正在思考…"占位），后续累加。
                 if first_chunk:

@@ -32,7 +32,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlmodel import Session
 
-from bycall.agent.graph import GraphResult, run_tool_loop, run_tool_loop_stream
+from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
 from bycall.agent.session_store import (
     build_conversation_messages,
     compress_history,
@@ -525,6 +525,12 @@ async def run_agent_stream(
                 if is_final:
                     graph_result = gr
                     break
+                if chunk_text is TOOL_ROUND_FLUSH:
+                    # 工具回合前导文本（如「当前 UTC 时间是：」）已流式外送，现丢弃——
+                    # 不计入最终答案，并透传给 im_handler 同步清空企微 replace 累积文本。
+                    full_answer = ""
+                    yield chunk_text, False, None
+                    continue
                 if chunk_text:
                     full_answer += chunk_text
                     yield chunk_text, False, None

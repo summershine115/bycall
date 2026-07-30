@@ -51,6 +51,25 @@ _LIMIT_MESSAGE = "已达到工具调用次数上限，无法继续处理。请�
 _RESULT_TRUNCATE = 1000
 
 
+class _ToolRoundFlush:
+    """流式工具回路「丢弃已外送的前导文本」信号（单例，按标识比较）。
+
+    当一个回合最终含 ``tool_calls``（工具回合），但其前导文本（如「当前 UTC 时间是：」）
+    已被流式 yield 给上层时，紧随其后 yield 本哨兵：上层（runner 的 ``full_answer`` /
+    im_handler 的 ``full_text``）收到后清空已累积的文本——前导语不应计入最终答案，
+    也不应在企微 replace 流里残留（下一回合的答案帧会覆盖显示）。
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<TOOL_ROUND_FLUSH>"
+
+
+# 单例哨兵：消费者用 ``chunk_text is TOOL_ROUND_FLUSH`` 判别（先于 ``if chunk_text:``）。
+TOOL_ROUND_FLUSH = _ToolRoundFlush()
+
+
 @dataclass
 class GraphResult:
     """graph 执行结果。
@@ -229,22 +248,28 @@ async def run_tool_loop_stream(
 
     手动 astream 工具回路（不再用 ``graph.invoke`` + 重跑 ``astream``），保证：
     - 最终答案只 astream 一次（无浪费的二次 LLM 调用、无两次生成答案不一致）。
-    - 工具调用回合也走流式（边流边判断回合类型），但文本被抑制、不外送——避免污染
-      ``run_agent_stream`` 累积进 DB/审计的 ``full_answer``。
+    - 工具调用回合也走流式（边流边判断回合类型）；工具回合的文本一律不计入最终答案。
     - 最后 yield 一个 ``(None, True, GraphResult)`` 标记结束并携带审计数据。
 
-    回合类型判定（OpenAI 兼容流式约定）：用第一个有意义的 chunk。
-    - 带 ``tool_call_chunks``（content 空）→ 工具回合：累加 chunk、执行工具、不 yield 文本。
-    - 带 content（无 tool_call_chunks）→ 最终答案回合：逐 token yield。
+    回合类型判定（权威）：一回合 astream 完成后，``acc.tool_calls`` 非空即工具回合——
+    执行工具、继续回路；为空即最终答案回合——逐 token 已外送的文本即最终答案。
+    不依赖「文本/工具谁先到」，从而正确处理「模型先吐前导文本（如『当前 UTC 时间是：』）
+    再发 tool_call」的情形（旧实现按首 chunk 误判为答案回合，丢弃了工具调用与后续答案）。
+
+    流式期间对 tool_call 到达之前的文本先乐观外送（保留低延迟体验）；若本回合最终是
+    工具回合且已外送过前导文本，紧随其后 yield ``TOOL_ROUND_FLUSH`` 让上层丢弃前导语
+    （不计入 ``full_answer``，也不在企微 replace 流残留；下一回合答案帧会覆盖显示）。
+    tool_call 到达之后的文本是工具回合杂音，一律不外送。
 
     AIMessageChunk 累加（``acc = acc + chunk``）：``acc.tool_calls`` 给出组装好的完整
-    tool_calls，``acc.content`` 给完整 content。工具执行复用 ``ToolNode``（与同步
-    ``run_tool_loop`` 一致），审计记录复用 ``_collect_tool_calls``（含 result 截断、
-    「请求未执行」兜底）。
+    tool_calls，``acc.content`` 给完整 content。工具执行手动 ``tool.invoke`` 构造
+    ToolMessage（脱离 graph 执行上下文时 ToolNode 要求 LangGraph config），审计记录
+    复用 ``_collect_tool_calls``（含 result 截断、「请求未执行」兜底）。
 
     Yields:
-        ``(chunk_text: str | None, is_final: bool, result: GraphResult | None)``
+        ``(chunk_text: str | None | _ToolRoundFlush, is_final: bool, result: GraphResult | None)``
         - 正常 token: ``("hello", False, None)``
+        - 丢弃工具回合前导文本: ``(TOOL_ROUND_FLUSH, False, None)``
         - 流结束: ``(None, True, GraphResult(...))``
     """
 
@@ -266,32 +291,35 @@ async def run_tool_loop_stream(
         current_messages: list[BaseMessage] = list(messages)
 
         for _iteration in range(max_iterations):
-            # 每轮 astream：边流边累加 chunk、判断回合类型。
+            # 每轮 astream：边流边累加 chunk。回合类型以「组装后是否含 tool_calls」为
+            # 权威判定（见下方），流式期间先乐观外送文本以保留低延迟体验。
             acc: AIMessageChunk | None = None
             round_text = ""
-            # None=未定, "tool"=工具回合, "answer"=最终答案回合。
-            round_kind: str | None = None
+            saw_tool_call = False  # 本回合是否出现过 tool_call_chunks
+            preamble_yielded = False  # 是否已向前端流式外送过文本（工具回合需丢弃）
 
             async for chunk in model_with_tools.astream(current_messages):
                 acc = chunk if acc is None else acc + chunk
                 content = _content_to_text(getattr(chunk, "content", None))
-                has_tc = bool(getattr(chunk, "tool_call_chunks", None))
-                # 用第一个有意义的 chunk 判定回合类型（tool_call_chunks 优先）。
-                if round_kind is None and (has_tc or content):
-                    round_kind = "tool" if has_tc else "answer"
-                # 仅最终答案回合的文本外送（工具回合文本会污染 runner 累积的 answer）。
-                if round_kind == "answer" and content:
+                if getattr(chunk, "tool_call_chunks", None):
+                    saw_tool_call = True
+                # 出现 tool_call 之前的文本：可能是最终答案，先流式外送（低延迟）。
+                # 一旦出现 tool_call，本回合定性为工具回合，其后的文本是杂音，不外送。
+                if content and not saw_tool_call:
                     round_text += content
+                    preamble_yielded = True
                     yield content, False, None
 
             assembled_tool_calls = (acc.tool_calls if acc else []) or []
-            # round_kind 判定为 answer 时即便偶发携带 tool_calls 也视作最终答案；
-            # 仅当判定为工具回合、或完全未定型却仍累出 tool_calls 时才走工具分支。
-            is_tool_round = round_kind == "tool" or (
-                round_kind is None and bool(assembled_tool_calls)
-            )
-
-            if is_tool_round:
+            # 权威判定：组装后的消息含 tool_calls 即工具回合——不依赖「文本/工具谁先到」。
+            # 修复「模型先输出前导文本（如『当前 UTC 时间是：』）再发 tool_call」时，旧逻辑
+            # 用首 chunk 误判为答案回合，直接把前导语当最终答案 yield 并 return，工具调用被
+            # 丢弃、后续真实答案永不生成（企微端表现为回复卡在前导语、后半段不显示）。
+            if assembled_tool_calls:
+                # 工具回合：若前导文本已被流式外送，通知上层丢弃（不计入最终答案 /
+                # 不在企微 replace 流里残留；下一回合的答案帧会覆盖显示）。
+                if preamble_yielded:
+                    yield TOOL_ROUND_FLUSH, False, None
                 # 工具回合：把组装好的 AIMessage（含 tool_calls）追加进上下文，
                 # 然后逐个执行 tool_call。此处不能复用 ToolNode——它脱离 graph
                 # 执行上下文时要求 LangGraph config（standalone invoke 会报缺
@@ -349,4 +377,4 @@ async def run_tool_loop_stream(
     return _stream()
 
 
-__all__ = ["GraphResult", "run_tool_loop", "run_tool_loop_stream"]
+__all__ = ["TOOL_ROUND_FLUSH", "GraphResult", "run_tool_loop", "run_tool_loop_stream"]
