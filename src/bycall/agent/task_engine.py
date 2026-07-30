@@ -314,3 +314,31 @@ def run_task(
     transition_task_status(session, task, "completed")
     bus.publish(TaskEvent(type="task_done", task_id=task.id, payload={"status": "completed"}))
     return task
+
+
+def resume_pending_tasks(
+    *,
+    session: Session,
+    chat_model,
+    bus: TaskEventBus = default_bus,
+) -> list[Task]:
+    """恢复所有 paused / running 的未完成 Task（进程重启 / IM 断线后续跑）。
+
+    扫描 ``status IN (paused, running)`` 的 Task，逐个调 ``run_task`` resume。
+    ``run_task`` 内部幂等（done Step 跳过），故 running（中断）也能安全续跑。
+
+    用于应用启动 / 渠道重连后扫库恢复未完成任务（spec §3.4）。单个 Task 续跑失败
+    不影响其他（记日志，继续）。
+    """
+    pending: list[Task] = []
+    for status in ("paused", "running"):
+        pending.extend(session.exec(Task.select_by_status(status)))
+
+    resumed: list[Task] = []
+    for task in pending:
+        try:
+            run_task(session=session, task=task, chat_model=chat_model, bus=bus)
+            resumed.append(task)
+        except Exception as e:
+            logger.error("Task #%s 续跑失败: %s", task.id, e)
+    return resumed
