@@ -92,7 +92,10 @@ def execute_tool_loop_step(
     task = session.get(Task, step.task_id)
     if task is None:
         raise ValueError(f"Step #{step.id} 关联的 Task #{step.task_id} 不存在")
-    task.capability_snapshot_json = json.dumps(asdict(cap), ensure_ascii=False)
+    snapshot = asdict(cap)
+    for field in ("system_prompt", "skill_markdown", "knowledge_scope_text"):
+        snapshot.pop(field)
+    task.capability_snapshot_json = json.dumps(snapshot, ensure_ascii=False)
     session.add(task)
     session.commit()
 
@@ -182,6 +185,8 @@ _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 """Task 合法状态流转（spec §3.2）。终态不可转。"""
 
+_SUPPORTED_STEP_KINDS = {"tool_loop", "approval_wait", "clarify"}
+
 
 def _fail_task(session: Session, task: Task, message: str) -> None:
     """把可执行性错误持久化为 failed，再把原因交给调用方处理。"""
@@ -195,19 +200,15 @@ def _require_steps(session: Session, task: Task, steps: list[Step]) -> None:
         _fail_task(session, task, f"任务 #{task.id} 没有可执行步骤")
 
 
-def _persist_plan(session: Session, task: Task, plan: list[dict]) -> None:
-    """保存创建 Steps 时实际采用的计划，供恢复与审计追溯。"""
-    task.plan_json = json.dumps(plan, ensure_ascii=False)
-    session.add(task)
+def _validate_step_kinds(session: Session, task: Task, steps: list[Step]) -> None:
+    """执行前校验整份计划，避免前置步骤产生副作用后才发现后置 kind 不支持。"""
+    unsupported = next((step for step in steps if step.kind not in _SUPPORTED_STEP_KINDS), None)
+    if unsupported is None:
+        return
+    unsupported.status = "failed"
+    session.add(unsupported)
     session.commit()
-
-
-def _fail_unsupported_step(session: Session, task: Task, step: Step) -> None:
-    """未实现的 Step 必须失败，不能静默越过后把 Task 标成 completed。"""
-    step.status = "failed"
-    session.add(step)
-    session.commit()
-    _fail_task(session, task, f"不支持的 Step kind: {step.kind}")
+    _fail_task(session, task, f"不支持的 Step kind: {unsupported.kind}")
 
 
 
@@ -229,12 +230,9 @@ def transition_task_status(session: Session, task: Task, new_status: str) -> Non
 
 
 def create_steps_from_plan(session: Session, task: Task, plan: list[dict]) -> list[Step]:
-    """从计划列表创建 Step 记录（plan 是 LLM 拆解产物，S1a 由调用方提供）。
+    """从计划创建 Step，并与 ``task.plan_json`` 在同一事务持久化。
 
-    plan 形如 ``[{"goal": "查故障", "kind": "tool_loop"}, ...]``。``idempotency_key``
-    用 ``task-{id}-step-{index}``，resume 时据此去重。
-
-    幂等：task 已有 Steps（resume）则直接返回，不重复创建。
+    幂等：Task 已有 Steps（resume）则直接返回，不重复创建。
     """
     existing = list(session.exec(Step.select_by_task(task.id)))
     if existing:
@@ -251,9 +249,11 @@ def create_steps_from_plan(session: Session, task: Task, plan: list[dict]) -> li
         )
         session.add(step)
         steps.append(step)
+    task.plan_json = json.dumps(plan, ensure_ascii=False)
+    session.add(task)
     session.commit()
-    for s in steps:
-        session.refresh(s)
+    for step in steps:
+        session.refresh(step)
     return steps
 
 
@@ -300,7 +300,6 @@ def run_task(
             if not plan:
                 _fail_task(session, task, f"任务 #{task.id} 没有可执行步骤")
             steps = create_steps_from_plan(session, task, plan)
-            _persist_plan(session, task, plan)
         _require_steps(session, task, steps)
         bus.publish(
             TaskEvent(
@@ -319,6 +318,7 @@ def run_task(
         raise ValueError(f"任务不可执行（当前状态 {task.status}）")
 
     _require_steps(session, task, steps)
+    _validate_step_kinds(session, task, steps)
 
     user = session.get(User, task.user_id)
 
@@ -352,8 +352,8 @@ def run_task(
                 )
             )
             return task
-        else:
-            _fail_unsupported_step(session, task, step)
+        else:  # pragma: no cover - 整份计划已在循环前校验
+            raise AssertionError(f"未校验的 Step kind: {step.kind}")
 
     transition_task_status(session, task, "completed")
     bus.publish(TaskEvent(type="task_done", task_id=task.id, payload={"status": "completed"}))

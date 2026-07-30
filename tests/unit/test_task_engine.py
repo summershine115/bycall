@@ -288,6 +288,10 @@ class TestRunTask:
             assert snapshot["user_id"] == uid
             assert snapshot["role"] == "admin"
             assert snapshot["allowed_tools"] == ["*"]
+            assert "system_prompt" not in snapshot
+            assert "skill_markdown" not in snapshot
+            assert "knowledge_scope_text" not in snapshot
+
 
     def test_empty_plan_fails_instead_of_completing(self, engine):
         """draft task 没有可执行计划时必须失败，不能零步完成。"""
@@ -319,11 +323,11 @@ class TestRunTask:
                 run_task(session=s, task=task, chat_model=_FakeChatModel())
             assert task.status == "failed"
 
-    def test_unsupported_step_kind_fails_task(self, engine):
-        """未实现的 step kind 必须显式失败，不能静默跳过后完成。"""
+    def test_unsupported_step_kind_is_rejected_before_side_effects(self, engine):
+        """整份 plan 先校验；后置非法步骤不能让前置工具步骤先执行。"""
         from bycall.agent.task_engine import run_task
         from bycall.db import session_scope
-        from bycall.governance.models import Step, Task
+        from bycall.governance.models import Run, Step, Task
 
         uid = _user()
         tid = _task(uid)
@@ -334,11 +338,15 @@ class TestRunTask:
                     session=s,
                     task=task,
                     chat_model=_FakeChatModel(),
-                    plan=[{"goal": "发推送", "kind": "deterministic"}],
+                    plan=[
+                        {"goal": "先执行", "kind": "tool_loop"},
+                        {"goal": "发推送", "kind": "deterministic"},
+                    ],
                 )
             assert task.status == "failed"
-            step = next(iter(s.exec(Step.select_by_task(tid))))
-            assert step.status == "failed"
+            steps = list(s.exec(Step.select_by_task(tid)))
+            assert [step.status for step in steps] == ["pending", "failed"]
+            assert list(s.exec(Run.select_by_step(steps[0].id))) == []
 
     def test_terminal_task_not_runnable(self, engine):
         """终态 task 再调 run_task 抛 ValueError。"""
