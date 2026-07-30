@@ -227,7 +227,7 @@ class TestSkillAudit:
         )
 
         # 查审计日志（entity 存 question 字段，格式 Skill(audited)）
-        logs = client.get("/api/admin/audit").json()
+        logs = client.get("/api/admin/audit").json()["items"]
         skill_logs = [log for log in logs if log.get("action") == "create_skill"]
         assert any("audited" in log.get("question", "") for log in skill_logs)
 
@@ -239,6 +239,6 @@ class TestSkillAudit:
         )
         client.put("/api/admin/skills/upd-audit", json={"content": "新"})
 
-        logs = client.get("/api/admin/audit").json()
+        logs = client.get("/api/admin/audit").json()["items"]
         update_logs = [log for log in logs if log.get("action") == "update_skill"]
         assert len(update_logs) >= 1

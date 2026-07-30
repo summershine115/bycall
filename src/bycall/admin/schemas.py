@@ -216,6 +216,13 @@ class AuditOut(BaseModel):
     after: str = ""
     created_at: datetime
 
+class AuditPage(BaseModel):
+    """审计日志分页响应。"""
+
+    items: list[AuditOut]
+    total: int
+    page: int
+    page_size: int
 
 # ============ 运行时设置（LLM/IM 凭证）============
 

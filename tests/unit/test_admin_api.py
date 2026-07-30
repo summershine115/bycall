@@ -16,11 +16,12 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import create_engine
+from sqlmodel import Session, create_engine
 
 from bycall.admin.api import router
 from bycall.config import get_settings
 from bycall.db import init_db, set_engine
+from bycall.governance.models import AuditLog
 
 
 @pytest.fixture
@@ -248,20 +249,73 @@ def test_list_prompts_descending_by_version(client: TestClient):
 # ============ 审计 ============
 
 
-def test_list_audit_returns_list(client: TestClient):
-    """GET /audit 返回列表（可能空，或含 seed/操作过程产生的记录）。"""
+def test_list_audit_returns_page(client: TestClient):
+    """GET /audit 返回分页对象及元数据。"""
     resp = client.get("/api/admin/audit")
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    body = resp.json()
+    assert set(body) == {"items", "total", "page", "page_size"}
+    assert isinstance(body["items"], list)
+    assert body["page"] == 1
+    assert body["page_size"] == 20
+    assert body["total"] >= len(body["items"])
 
 
-def test_list_audit_respects_limit(client: TestClient):
-    """limit 参数被尊重（<=500，>=1）。"""
-    # 超出上限 → 422（pydantic 校验失败由 FastAPI 返回）
-    resp_bad = client.get("/api/admin/audit", params={"limit": 501})
-    assert resp_bad.status_code == 422
+def test_list_audit_paginates_and_filters_by_user(client: TestClient):
+    """分页返回正确页数，并可在查询阶段按用户筛选。"""
+    from datetime import UTC, datetime, timedelta
 
-    resp_ok = client.get("/api/admin/audit", params={"limit": 5})
-    assert resp_ok.status_code == 200
-    body = resp_ok.json()
-    assert len(body) <= 5
+    settings = get_settings()
+    engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
+    with Session(engine) as session:
+        for index, user_id in enumerate((11, 12, 11)):
+            session.add(
+                AuditLog(
+                    user_id=user_id,
+                    user_name=f"user-{user_id}",
+                    channel="api",
+                    action="chat",
+                    question=str(index),
+                    created_at=datetime.now(UTC) - timedelta(minutes=index),
+                )
+            )
+        session.commit()
+
+    filtered = client.get("/api/admin/audit", params={"page": 1, "page_size": 1, "user_id": 11})
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total"] == 2
+    assert body["page"] == 1
+    assert body["page_size"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["user_id"] == 11
+
+    second_page = client.get(
+        "/api/admin/audit", params={"page": 2, "page_size": 1, "user_id": 11}
+    )
+    assert second_page.json()["items"][0]["user_id"] == 11
+
+
+def test_list_audit_filters_by_decision_and_supports_legacy_limit(client: TestClient):
+    """决策筛选影响 items/total，旧 limit 参数仍返回数组。"""
+    settings = get_settings()
+    engine = create_engine(settings.postgres.dsn, connect_args={"check_same_thread": False})
+    with Session(engine) as session:
+        session.add(AuditLog(user_name="alice", action="chat", decision="answered"))
+        session.add(AuditLog(user_name="bob", action="chat", decision="denied"))
+        session.commit()
+
+    filtered = client.get("/api/admin/audit", params={"decision": "answered"}).json()
+    assert filtered["total"] == 1
+    assert [item["decision"] for item in filtered["items"]] == ["answered"]
+
+    legacy = client.get("/api/admin/audit", params={"limit": 1})
+    assert legacy.status_code == 200
+    assert isinstance(legacy.json(), list)
+    assert len(legacy.json()) == 1
+
+
+def test_list_audit_rejects_invalid_pagination(client: TestClient):
+    """分页参数必须在允许范围内。"""
+    assert client.get("/api/admin/audit", params={"page": 0}).status_code == 422
+    assert client.get("/api/admin/audit", params={"page_size": 101}).status_code == 422

@@ -32,6 +32,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -39,6 +40,7 @@ from bycall.admin.schemas import (
     ApprovalOut,
     ApprovalReview,
     AuditOut,
+    AuditPage,
     BatchReindexRequest,
     ChunkPreviewItem,
     ChunkPreviewRequest,
@@ -934,15 +936,36 @@ def delete_skill(
 # ============ 审计 ============
 
 
-@router.get("/audit", response_model=list[AuditOut])
+@router.get("/audit", response_model=AuditPage | list[AuditOut])
 def list_audit(
-    limit: int = Query(default=100, ge=1, le=500, description="返回最近 N 条审计记录"),
+    page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页条数"),
+    user_id: int | None = Query(default=None, ge=1, description="按用户 ID 筛选"),
+    decision: str | None = Query(default=None, description="按决策筛选"),
+    limit: int | None = Query(default=None, ge=1, le=500, description="兼容旧客户端：返回最近 N 条数组"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> list[AuditLog]:
-    """返回最近 N 条审计记录（按时间倒序）。limit ∈ [1, 500]。"""
-    logs = session.exec(AuditLog.select_recent(limit=limit)).all()
-    return list(logs)
+) -> AuditPage | list[AuditLog]:
+    """分页返回审计记录；带旧 ``limit`` 参数时保持数组响应兼容。"""
+    filters = []
+    if user_id is not None:
+        filters.append(AuditLog.user_id == user_id)
+    if decision:
+        filters.append(AuditLog.decision == decision)
+
+    statement = select(AuditLog)
+    count_statement = select(func.count()).select_from(AuditLog)
+    for condition in filters:
+        statement = statement.where(condition)
+        count_statement = count_statement.where(condition)
+
+    ordered_statement = statement.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    if limit is not None:
+        return list(session.exec(ordered_statement.limit(limit)).all())
+
+    total = session.exec(count_statement).one()
+    logs = session.exec(ordered_statement.offset((page - 1) * page_size).limit(page_size)).all()
+    return AuditPage(items=list(logs), total=total, page=page, page_size=page_size)
 
 
 # ============ 运行时设置（LLM/IM 凭证，控制台管理）============

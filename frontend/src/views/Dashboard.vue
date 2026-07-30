@@ -92,9 +92,8 @@ async function load() {
       safe(admin.listUsers(), []),
       safe(admin.listRoles(), []),
       safe(admin.listPrompts(), []),
-      // 后端 audit API 返回扁平列表（无 total 字段），limit 上限 500。
-      // 此处拉满 500 用于计数 + 近期列表；若审计量超 500 需后端加 count 端点。
-      safe(admin.listAudit(500), []),
+      // 审计接口返回分页对象：total 用于总数，items 用于近期动态。
+      safe(admin.listAudit({ page: 1, page_size: 100 }), { items: [], total: 0 }),
       safe(admin.listKnowledgeBases(), []),
       safe(admin.listModels(), []),
       safe(admin.imStatus(), null),
@@ -111,10 +110,10 @@ async function load() {
       roles: roles.length,
       kbs: kbs.length,
       docs,
-      audit: audit.length,
+      audit: audit.total || 0,
     }
     activePrompt.value = prompts.find((p) => p.is_active) || null
-    auditLogs.value = audit
+    auditLogs.value = audit.items || []
     models.value = modelList
     imStatus.value = im
   } finally {

@@ -76,8 +76,8 @@ export const admin = {
     }).then((r) => r.data)
   },
   // 审计
-  listAudit: (limit = 100) =>
-    http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),
+  listAudit: (params = {}) =>
+    http.get('/api/admin/audit', { params }).then((r) => r.data),
   // 运行时设置（IM 凭证，控制台管理）
   listSettings: () => http.get('/api/admin/settings').then((r) => r.data),
   updateSettings: (settings) =>
