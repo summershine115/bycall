@@ -338,8 +338,9 @@ def run_task(
             if step.status == "failed":
                 transition_task_status(session, task, "failed")
                 return task
+            # 继续下一个步骤。
         elif step.kind in ("approval_wait", "clarify"):
-            # HITL：挂起等审批 / 用户澄清；外部响应后改 step.done 再 resume。
+            # S1a 编排层只负责暂停并发事件；ApprovalRequest 创建/回填由后续切片接入。
             transition_task_status(session, task, "paused")
             event_type = "approval_requested" if step.kind == "approval_wait" else "task_paused"
             bus.publish(

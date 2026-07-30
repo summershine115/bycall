@@ -23,7 +23,7 @@
 - [x] **T6** session 续跑 + 共享 event 管线（`147a440`）
 
 ### Checkpoint：S1a 端到端 ✅
-- [x] 对话触发多步任务 → 执行 → HITL 暂停 → 恢复 → 完成
+- [x] 对话触发任务 → 执行；编排引擎可在外部审批/澄清完成后恢复
 - [x] 现有问答路径零回归（全量 589 passed）
 - [ ] Review 后进 S1b（触发与可视化）
 
@@ -32,3 +32,4 @@
 - LLM 自动拆多步 plan（当前为显式「启动任务：」单步）
 - TaskSchedule 定时 / 事件触发 + 前端 SSE 任务进度页
 - app 启动接入 `resume_pending_tasks`
+- 将任务 Step 与现有 `ApprovalRequest` 自动闭环（当前 `approval_wait` 仅发事件并暂停）
