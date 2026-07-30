@@ -133,6 +133,15 @@ def _ensure_schema_compatibility() -> None:
                     )
                 )
 
+    # skill: 补 disclosure 列（渐进式披露：always / on_demand）
+    if "skill" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("skill")}
+        if "disclosure" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE skill ADD COLUMN \"disclosure\" VARCHAR NOT NULL DEFAULT 'always'")
+                )
+
 
 def _migrate_plaintext_secrets() -> None:
     """把升级前的明文模型/系统密钥原地迁移为 enc:v1 密文。"""

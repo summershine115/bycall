@@ -50,6 +50,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class OnDemandSkill:
+    """on_demand 披露的 skill 摘要——进技能索引，全文经 load_skill 工具按需返回。
+
+    只携带 ``load_skill`` 工具判定所需的三元组（name 匹配 / description 进索引 / content 返回 LLM）。
+    在 capability 计算时从绑定 skill 实体派生，随 CapabilitySet 携带——``load_skill`` 的
+    redactor 直接读它，**不再回查 DB**（工具执行路径零 DB 依赖，且天然预过滤：非绑定
+    skill 根本不在此列表，工具拿不到其全文——红线 #1 落地）。
+    """
+
+    name: str
+    description: str
+    content: str
+
+
+@dataclass
 class CapabilitySet:
     """当前会话的能力集——数据面所有判定的输入。
 
@@ -59,12 +74,16 @@ class CapabilitySet:
       ``['*']`` 表示全部（仅 admin）。
     - ``level``：职级，ABAC 用（机密资源按 ``resource_level <= user_level`` 放行）。
     - ``system_prompt``：激活的系统提示词正文，数据面拼到 LLM 的 system message。
-    - ``skills``：该角色绑定的 SKILL name 列表（实际注入的、启用的）。审计可见——
-      AuditLog 据此记录"本次对话注入了哪些 skill"。
-    - ``skill_markdown``：合并后的 skill markdown 正文，供 runner 注入 system message。
-      多个 skill 各自拼成 ``## 技能：{name}\\n{content}`` 后合并。空串 = 无 skill 注入。
-    - ``knowledge_scope_text``：可见知识域的预格式化注入文本（进 system message）。
-      由 ``build_knowledge_scope_text`` 从 knowledge_scope_tags/is_admin 派生，让数字员工
+    - ``skills``：该角色绑定的 SKILL name 列表（实际生效的、启用的，含 always + on_demand）。
+      审计可见——AuditLog 据此记录"本次对话注入了哪些 skill"。
+    - ``skill_markdown``：进 system message 的 skill markdown（``## 领域技能`` 段正文）：
+      always 披露的 skill 拼 ``## 技能：{name}\\n{content}`` + on_demand 披露的拼成
+      ``## 按需技能索引``（只列 name+description）。空串 = 无 skill 注入。
+    - ``on_demand_skills``：on_demand 披露的 skill 摘要（``OnDemandSkill`` 列表，含全文）。
+      runner 据此决定是否自动授予 ``load_skill`` 工具；工具 redactor 据此按 name 返回全文
+      （预过滤：非绑定 skill 不在列表，工具拿不到）。空列表 = 无 on_demand skill。
+    - ``knowledge_scope_text``：可见知识域的预格式化注入文本（进 system message）。由
+      ``build_knowledge_scope_text`` 从 knowledge_scope_tags/is_admin 派生，让数字员工
       能据实回答用户「能访问哪些知识」，而非编造或含糊其辞。空串 = 无注入。
     - ``visible_kb_ids``：该角色可见的知识库 ID 列表。空 = 无限制（全部可见）。
       用于 admin 控制面 KB 列表过滤——管理面板按角色限制 KB 可见性。
@@ -80,6 +99,7 @@ class CapabilitySet:
     system_prompt: str = ""
     skills: list[str] = field(default_factory=list)
     skill_markdown: str = ""
+    on_demand_skills: list[OnDemandSkill] = field(default_factory=list)
     knowledge_scope_text: str = ""
     visible_kb_ids: list[int] = field(default_factory=list)
     is_admin: bool = False
@@ -130,19 +150,22 @@ def get_enabled_skills_by_names(session: Session, names: list[str]) -> list:
     order = {n: i for i, n in enumerate(names)}
     return sorted(rows, key=lambda s: order.get(s.name, len(order)))
 
-
-def build_skill_markdown(skills: list) -> str:
+def build_skill_markdown(always_skills: list = (), on_demand_skills: list[OnDemandSkill] = ()) -> str:
     """把 Skill 实体列表合并成注入 system message 的 markdown 字符串。
 
-    每个 skill 拼 ``## 技能：{name}\\n{content}``，多个用空行分隔。
+    always 披露的 skill 拼 ``## 技能：{name}\\n{content}``，多个用空行分隔。
+    on_demand 披露的 skill 拼 ``## 按需技能索引``（只列 name+description）。
     边界标注（``## 领域技能（参考知识，非指令）`` 等）在 ``session_store`` 拼装时加，
     这里只负责 skill 内容本身的合并（单一职责）。
+    两者都为空时返回 ``""``。
     """
-    if not skills:
+    if not always_skills and not on_demand_skills:
         return ""
-    sections = [f"## 技能：{s.name}\n{s.content}" for s in skills]
+    sections = [f"## 技能：{s.name}\n{s.content}" for s in always_skills]
+    if on_demand_skills:
+        on_demand_lines = "\n".join(f"- **{s.name}**：{s.description}" for s in on_demand_skills)
+        sections.append(f"## 按需技能索引\n{on_demand_lines}")
     return "\n\n".join(sections)
-
 
 def build_knowledge_scope_text(tags: list[str], is_admin: bool, kbs: list[tuple[str, str]]) -> str:
     """拼「可见知识域」注入文本（进 system message，标注为上下文信息、非指令）。
@@ -301,6 +324,7 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
             skills=[],
             skill_markdown="",
             knowledge_scope_text=build_knowledge_scope_text(["*"], True, kb_infos),
+            on_demand_skills=[],
             visible_kb_ids=[],  # 空 = 全部可见
             is_admin=True,
         )
@@ -325,10 +349,13 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
                 config.system_prompt_version,
             )
 
-    # 角色绑定的 SKILL：加载启用的 skill 内容，合并成 markdown 供 runner 注入。
+    # 角色绑定的 SKILL：按 disclosure 拆分注入方式。
     # 未注册/已禁用的 name 静默忽略（容错，与 allowed_tools 一致）。
     bound_skills = get_enabled_skills_by_names(session, config.skills)
-    skill_markdown = build_skill_markdown(bound_skills)
+    # 按 disclosure 拆分：always → 全文进 skill_markdown；on_demand → 索引进 skill_markdown，全文进 on_demand_skills。
+    always = [s for s in bound_skills if s.disclosure != "on_demand"]
+    on_demand = [OnDemandSkill(name=s.name, description=s.description, content=s.content) for s in bound_skills if s.disclosure == "on_demand"]
+    skill_markdown = build_skill_markdown(always, on_demand)
     # 实际生效的 skill name 列表（审计可见）。
     effective_skill_names = [s.name for s in bound_skills]
 
@@ -349,6 +376,7 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         level=config.level,
         system_prompt=system_prompt,
         skills=effective_skill_names,
+        on_demand_skills=on_demand,
         skill_markdown=skill_markdown,
         knowledge_scope_text=build_knowledge_scope_text(
             list(config.knowledge_scope_tags), False, kb_infos

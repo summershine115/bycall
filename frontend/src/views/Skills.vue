@@ -5,6 +5,11 @@
       description="Skill 是 admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt。"
     >
       <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
+      <el-button @click="onExport" :loading="exporting">导出</el-button>
+      <el-button @click="onImportClick" :loading="importing">
+        <input ref="importInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
+        导入
+      </el-button>
     </PageHeader>
 
     <ContentLoader v-if="loading" :rows="4" />
@@ -68,6 +73,13 @@
             placeholder="领域知识 Markdown，会注入 system prompt"
           />
         </el-form-item>
+        <el-form-item label="披露方式">
+          <el-select v-model="form.disclosure" style="width: 100%">
+            <el-option label="始终注入 (always) — 全文常驻 system prompt" value="always" />
+            <el-option label="按需加载 (on_demand) — 只注入索引，全文经工具按需取" value="on_demand" />
+          </el-select>
+          <div class="bc-hint">always：核心约束类技能；on_demand：省 token，适合大量参考文档</div>
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.is_enabled" active-text="启用" inactive-text="停用" />
           <div class="bc-hint">停用后该技能不会被注入任何角色的 system prompt</div>
@@ -93,16 +105,67 @@ import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 const skills = ref([])
+const importInput = ref(null)
+const exporting = ref(false)
+const importing = ref(false)
 const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
-  emptyForm: () => ({ name: '', description: '', content: '', is_enabled: true }),
+  emptyForm: () => ({ name: '', description: '', content: '', is_enabled: true, disclosure: 'always' }),
   toForm: (row) => ({
     name: row.name,
     description: row.description,
     content: row.content,
     is_enabled: row.is_enabled,
+    disclosure: row.disclosure || 'always',
     _original_name: row.name,
   }),
 })
+
+// 导出
+async function onExport() {
+  exporting.value = true
+  try {
+    const blob = await admin.exportSkills()
+    // 触发浏览器下载
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'skills-export.zip'
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch {
+    // 错误已由拦截器处理
+  } finally {
+    exporting.value = false
+  }
+}
+
+// 导入：触发文件选择
+function onImportClick() {
+  importInput.value?.value && (importInput.value.value = '')  // 重置以支持重复选同一文件
+  importInput.value?.click()
+}
+
+// 导入文件选中后上传
+async function onImportFile(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  importing.value = true
+  try {
+    const result = await admin.importSkills(file, 'skip')
+    ElMessage.success(
+      `导入完成：新建 ${result.total_created}、更新 ${result.total_updated}、跳过 ${result.total_skipped}`
+    )
+    if (result.errors?.length) {
+      ElMessage.warning(`${result.errors.length} 项解析失败`)
+    }
+    await load()
+  } catch {
+    // 错误已由拦截器处理
+  } finally {
+    importing.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -130,12 +193,14 @@ async function onSave() {
         description: form.description,
         content: form.content,
         is_enabled: form.is_enabled,
+        disclosure: form.disclosure,
       })
     } else {
       await admin.createSkill({
         name: form.name,
         description: form.description,
         content: form.content,
+        disclosure: form.disclosure,
       })
     }
     ElMessage.success('保存成功')

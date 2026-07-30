@@ -196,4 +196,47 @@ register(
 )
 
 
-__all__ = ["_calculator", "_current_time", "_safe_eval", "_whoami_raw", "_whoami_redactor"]
+# ============ 4. load_skill：渐进式披露——按需加载 skill 全文 ============
+
+
+def _load_skill_raw(name: str) -> str:
+    """返回标识——实际内容由 redactor 按 cap.on_demand_skills 返回。"""
+    return name
+
+
+def _load_skill_redactor(raw_name: str, cap) -> str:
+    """按 cap.on_demand_skills 查找并返回 skill 全文。
+
+    预过滤（红线 #1 落地）：``cap.on_demand_skills`` 仅含该用户绑定+启用+on_demand 的 skill，
+    非绑定 skill 不在此列表，工具自然拿不到——不是"先给再拦"，而是"根本没给"。
+    """
+    for s in getattr(cap, "on_demand_skills", []):
+        if s.name == raw_name:
+            return s.content
+    return f"未找到技能「{raw_name}」或你无权访问。可用的按需技能：{[s.name for s in getattr(cap, 'on_demand_skills', [])]}"
+
+
+register(
+    ToolSpec(
+        name="load_skill",
+        description=(
+            "加载指定领域技能的完整知识文档。当需要详细参考某个技能的操作指南、话术或业务规则时调用。"
+            "参数 name 为技能名（必填）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "技能名（按需技能索引中列出的名称）",
+                }
+            },
+            "required": ["name"],
+        },
+        func=_load_skill_raw,
+        redactor=_load_skill_redactor,
+    )
+)
+
+
+__all__ = ["_calculator", "_current_time", "_load_skill_raw", "_load_skill_redactor", "_safe_eval", "_whoami_raw", "_whoami_redactor"]

@@ -26,6 +26,7 @@ dependencies = [
     "sqlmodel>=0.0.22",  # ORM（User/Role/Prompt/AuditLog）
     "jinja2>=3.1",  # Admin Web UI 服务端渲染
     "python-multipart>=0.0.9",  # form 解析
+    "pyyaml>=6.0",  # SKILL.md frontmatter 解析（导入导出）
     "itsdangerous>=2.2",  # session cookie 签名
     "passlib[bcrypt]>=1.7",  # admin 密码哈希
     "cryptography>=42.0",  # DB 中模型/IM 密钥的 Fernet 加密

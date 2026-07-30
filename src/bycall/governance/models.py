@@ -184,8 +184,15 @@ class Skill(SQLModel, table=True):
     （``RoleConfig.skills`` 绑定 name 列表）。
 
     数据模型：**可迭代文档**（非版本化不可变）——``name`` 唯一标识 + ``is_enabled`` 启停
-    + ``content`` 可编辑 + ``updated_at``。admin 改 content 后下次对话即时生效（DB 即
-    真值）。不走 SystemPrompt 的 version+is_active 模式（每次改发版太重，不贴合文档语义）。
+    + ``content`` 可编辑 + ``updated_at`` + ``disclosure`` 披露方式。admin 改 content 后
+    下次对话即时生效（DB 即真值）。不走 SystemPrompt 的 version+is_active 模式（每次改发
+    版太重，不贴合文档语义）。
+
+    **渐进式披露**（``disclosure``）：对齐 Agent Skills 规范的 progressive disclosure。
+    - ``always``（默认）：全文注入 system prompt（现行行为，零回归）——核心约束类 skill。
+    - ``on_demand``：只把 name+description 注入「技能索引」（进 system），全文由内置工具
+      ``load_skill(name)`` 按需加载。工具按当前用户的绑定集预过滤——非绑定 skill 拿不到
+      全文（红线 #1 对齐：预过滤而非先给再拦）。省 token、支持大量 skill 共存。
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -193,6 +200,8 @@ class Skill(SQLModel, table=True):
     description: str = ""  # 一句话描述（admin 目录展示，不进 prompt）
     content: str  # Markdown body（领域知识，进 system prompt）
     is_enabled: bool = Field(default=True, index=True)  # 启用/禁用（非全局唯一激活）
+    # 披露方式：always=全文常驻 system prompt；on_demand=只进技能索引，全文经 load_skill 工具按需取。
+    disclosure: str = Field(default="always", index=True)
     created_at: datetime = Field(
         default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
     )

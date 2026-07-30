@@ -48,6 +48,7 @@ from bycall.observability import get_tracer, traced
 from bycall.observability.metrics import LLM_CALL_DURATION, LLM_CALLS
 from bycall.rag.retrieve import build_rag_messages
 from bycall.tools.gateway import filter_tools, to_langchain_tools
+from bycall.tools.registry import get_tool
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,13 @@ def run_agent(
     # 3. 工具网关过滤：按 allowed_tools 裁剪工具集，LLM 只见白名单内的工具。
     allowed_tool_specs = filter_tools(cap.allowed_tools)
     langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
+
+    # 渐进式披露：角色有 on_demand skill 时自动授予 load_skill 工具（无需 admin 在 allowed_tools 里显式加）。
+    if cap.on_demand_skills:
+        loader = get_tool("load_skill")
+        if loader and loader not in allowed_tool_specs:
+            allowed_tool_specs.append(loader)
+            langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
 
     # 4. 拼消息（含提示词注入防御——两级隔离，见 session_store.build_conversation_messages）：
     #    - memory 进 system（admin 管控的可信数据，享 system 权重，靠"非指令"标注软隔离）。
@@ -474,6 +482,13 @@ async def run_agent_stream(
     # 3. 工具过滤。
     allowed_tool_specs = filter_tools(cap.allowed_tools)
     langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
+
+    # 渐进式披露：角色有 on_demand skill 时自动授予 load_skill 工具（无需 admin 在 allowed_tools 里显式加）。
+    if cap.on_demand_skills:
+        loader = get_tool("load_skill")
+        if loader and loader not in allowed_tool_specs:
+            allowed_tool_specs.append(loader)
+            langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
 
     # 4. 拼消息。
     if conversation_id is not None:

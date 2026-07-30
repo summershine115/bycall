@@ -77,8 +77,18 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
   移入对应版本并填写日期，同时同步 `pyproject.toml` 与 `src/bycall/__init__.py` 的版本号，
   创建 `v<版本号>` Git tag。
 - commit message 用中文，简述本次改了什么、为什么（参考近期 commit 风格）。
-- **改代码前先从 main 创建新分支**，在新分支上开发。
+- **改代码前先用 `git worktree` 创建独立工作目录**（而非在当前目录切分支），
+  便于并行开发：
+  ```bash
+  # 从 main 创建新 worktree（自动建分支并 checkout）
+  git worktree add -b <feature-name> ../bycall-<feature-name>
+  cd ../bycall-<feature-name>
+  ```
+  所有 worktree 放在主仓库同级目录下（`../bycall-*`），共享同一份 `.git`，
+  创建仅需几秒，无额外 clone 开销。
 - 任务完成并验证通过后**主动 commit 并合并回 main**——无需等用户要求。线性分支用
   fast-forward；较大特性可用 `--no-ff` 配 `merge:` 前缀（参考 `merge: M4 Slice C` 风格）
-  保留分支拓扑。当前仓库无远程，合并到 main 即完成集成；将来若配置 remote，push 默认
-  随合并执行，但高风险改动（DB 迁移 / 删数据 / 公开 API 破坏性变更）先停下确认。
+  保留分支拓扑。合并后在主仓库执行 `git worktree remove ../bycall-<feature-name>`
+  清理 worktree（`git worktree prune` 清理残留）。当前仓库无远程，合并到 main
+  即完成集成；将来若配置 remote，push 默认随合并执行，但高风险改动（DB 迁移 /
+  删数据 / 公开 API 破坏性变更）先停下确认。

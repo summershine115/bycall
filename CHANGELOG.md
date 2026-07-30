@@ -16,6 +16,12 @@
 
 ### 新增
 
+- 新增 Skill 渐进式披露：``disclosure`` 字段（``always`` 常驻 / ``on_demand`` 按需），
+  ``on_demand`` 技能只把 name+description 注入系统提示词，全文经由受治理的内置工具
+  ``load_skill(name)`` 按需加载——工具按用户绑定集预过滤，非绑定技能拿不到全文（红线 #1）。
+- 新增 Skill 导入导出（ZIP 压缩包）：遵循 Agent Skills 规范，每个技能对应
+  ``{name}/SKILL.md``（YAML 前端元数据 + Markdown 正文）。支持按名称筛选导出、冲突策略
+  （跳过/覆盖）导入，后台审计留痕。
 - 新增 Agent 任务执行核心（S1a 执行层）：对话中用「启动任务：{目标}」触发持久化多步任务，
   run_agent 的工具回路成为 Step 内核，支持 HITL 暂停/恢复与进程重启续跑。
   - Task/Step/Run 三层实体 + 状态机（draft→planning→running⇄paused→completed）。

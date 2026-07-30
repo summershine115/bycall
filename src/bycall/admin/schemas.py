@@ -165,6 +165,10 @@ class SkillCreate(BaseModel):
     )
     description: str = Field(default="", description="一句话描述（admin 目录展示，不进 prompt）")
     content: str = Field(..., description="Markdown body（领域知识，进 system prompt）")
+    disclosure: str | None = Field(
+        default=None,
+        description="披露模式：always（始终注入 system prompt）| on_demand（按需加载，默认 always）",
+    )
 
 
 class SkillUpdate(BaseModel):
@@ -173,6 +177,7 @@ class SkillUpdate(BaseModel):
     description: str | None = None
     content: str | None = None
     is_enabled: bool | None = None
+    disclosure: str | None = None
 
 
 class SkillOut(BaseModel):
@@ -185,6 +190,7 @@ class SkillOut(BaseModel):
     description: str
     content: str
     is_enabled: bool
+    disclosure: str = "always"
     created_at: datetime
     updated_at: datetime
 
@@ -775,3 +781,31 @@ class ApprovalReview(BaseModel):
     """审批操作请求体（approve / reject 共用）。"""
 
     note: str = Field(default="", description="审批备注（可选）")
+
+
+# ============ Skill 导入导出 ============
+
+
+class SkillImportItem(BaseModel):
+    """单条导入结果。"""
+
+    name: str
+    status: str  # created / updated / skipped
+    message: str = ""
+
+
+class SkillImportError(BaseModel):
+    """导入解析错误。"""
+
+    entry: str  # zip entry path
+    reason: str
+
+
+class SkillImportResult(BaseModel):
+    """导入结果汇总。"""
+
+    items: list[SkillImportItem] = Field(default_factory=list)
+    errors: list[SkillImportError] = Field(default_factory=list)
+    total_created: int = 0
+    total_updated: int = 0
+    total_skipped: int = 0

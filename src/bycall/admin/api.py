@@ -81,6 +81,9 @@ from bycall.admin.schemas import (
     SettingOut,
     SettingsBatchUpdate,
     SkillCreate,
+    SkillImportError,
+    SkillImportItem,
+    SkillImportResult,
     SkillOut,
     SkillUpdate,
     ToolOut,
@@ -699,6 +702,8 @@ def create_skill(
         content=payload.content,
         is_enabled=True,
     )
+    if payload.disclosure is not None:
+        skill.disclosure = payload.disclosure
     session.add(skill)
     try:
         session.commit()
@@ -759,6 +764,8 @@ def update_skill(
         skill.content = payload.content
     if payload.is_enabled is not None:
         skill.is_enabled = payload.is_enabled
+    if payload.disclosure is not None:
+        skill.disclosure = payload.disclosure
     session.add(skill)
     session.commit()
     session.refresh(skill)
@@ -811,6 +818,116 @@ def delete_skill(
     _audit_admin(session, request, "delete_skill", f"Skill({name})", before=before_snapshot)
 
 
+
+
+# ============ Skill 导入导出 ============
+
+
+@router.get("/skills/export")
+def export_skills(
+    names: list[str] | None = Query(default=None, description="要导出的 skill name 列表，不传=全部"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+):
+    """导出 Skill 为 ZIP（Agent Skills 规范格式）。
+
+    每个 skill 对应 zip 内一个目录 ``{name}/SKILL.md``（YAML frontmatter + Markdown body）。
+    返回 ``application/zip`` 流式下载响应。
+    """
+    import io
+
+    from bycall.admin.skill_io import export_skills_to_zip
+
+    if names:
+        skills = list(session.exec(Skill.select_all()).all())
+        skills = [s for s in skills if s.name in names]
+        missing = set(names) - {s.name for s in skills}
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Skill 不存在: {', '.join(sorted(missing))}")
+    else:
+        skills = list(session.exec(Skill.select_all()).all())
+
+    buf = io.BytesIO()
+    export_skills_to_zip(skills, buf)
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="skills-export.zip"'},
+    )
+
+
+@router.post("/skills/import", response_model=SkillImportResult)
+def import_skills(
+    file: UploadFile,
+    request: Request,
+    on_conflict: str = Query(default="skip", description="冲突策略：skip=跳过已有 / overwrite=覆盖"),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+):
+    """导入 Skill ZIP 包。
+
+    解析 zip 内所有 ``{name}/SKILL.md``（Agent Skills 规范格式），按 name 合并到 DB。
+    - ``on_conflict=skip``（默认）：name 已存在 → 跳过，不覆盖。
+    - ``on_conflict=overwrite``：name 已存在 → 覆盖 content/description/disclosure，保留 created_at。
+
+    返回导入结果汇总（各条 created/updated/skipped + 解析错误）。
+    """
+    if on_conflict not in ("skip", "overwrite"):
+        raise HTTPException(status_code=400, detail="on_conflict 仅支持 skip 或 overwrite")
+
+    from bycall.admin.skill_io import import_skills_from_zip
+
+    raw = file.file.read()
+    parsed = import_skills_from_zip(raw, on_conflict)
+
+    result = SkillImportResult()
+
+    for err in parsed.get("errors", []):
+        result.errors.append(SkillImportError(entry=err["entry"], reason=err["reason"]))
+
+    for skill_data in parsed.get("skills", []):
+        name = skill_data["name"]
+        existing = session.exec(Skill.select_by_name(name)).first()
+        if existing is not None:
+            if on_conflict == "skip":
+                result.items.append(SkillImportItem(name=name, status="skipped", message="名称已存在"))
+                result.total_skipped += 1
+                continue
+            # overwrite
+            existing.description = skill_data.get("description", existing.description)
+            existing.content = skill_data.get("content", "")
+            existing.disclosure = skill_data.get("disclosure", "always")
+            existing.is_enabled = skill_data.get("is_enabled", True)
+            session.add(existing)
+            session.flush()
+            result.items.append(SkillImportItem(name=name, status="updated", message="已覆盖"))
+            result.total_updated += 1
+        else:
+            new_skill = Skill(
+                name=name,
+                description=skill_data.get("description", ""),
+                content=skill_data.get("content", ""),
+                disclosure=skill_data.get("disclosure", "always"),
+                is_enabled=skill_data.get("is_enabled", True),
+            )
+            session.add(new_skill)
+            session.flush()
+            result.items.append(SkillImportItem(name=name, status="created", message="新创建"))
+            result.total_created += 1
+
+    # 审计：导入整体记录
+    session.commit()
+    _audit_admin(
+        session,
+        request,
+        "import_skills",
+        f"{len(parsed.get('skills', []))} skills from zip (on_conflict={on_conflict})",
+        after={"created": result.total_created, "updated": result.total_updated, "skipped": result.total_skipped, "errors": len(result.errors)},
+    )
+    session.commit()
+    return result
 # ============ 审计 ============
 
 

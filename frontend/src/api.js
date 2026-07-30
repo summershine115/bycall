@@ -63,6 +63,18 @@ export const admin = {
   createSkill: (data) => http.post('/api/admin/skills', data).then((r) => r.data),
   updateSkill: (name, data) => http.put(`/api/admin/skills/${name}`, data).then((r) => r.data),
   deleteSkill: (name) => http.delete(`/api/admin/skills/${name}`),
+  // Skill 导入导出
+  exportSkills: (names) => {
+    const params = names?.length ? { names: names.join(',') } : {}
+    return http.get('/api/admin/skills/export', { params, responseType: 'blob' }).then((r) => r.data)
+  },
+  importSkills: (file, onConflict = 'skip') => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return http.post(`/api/admin/skills/import?on_conflict=${onConflict}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
   // 审计
   listAudit: (limit = 100) =>
     http.get('/api/admin/audit', { params: { limit } }).then((r) => r.data),
