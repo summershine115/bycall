@@ -249,6 +249,74 @@ class TestRunTask:
             )
             assert t.status == "failed"
 
+    def test_plan_is_persisted(self, engine):
+        """首次执行保存实际计划，供恢复与审计使用。"""
+        import json
+
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user()
+        tid = _task(uid)
+        plan = [{"goal": "查故障", "kind": "tool_loop"}]
+
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            run_task(session=s, task=task, chat_model=_FakeChatModel(), plan=plan)
+            assert json.loads(task.plan_json) == plan
+
+    def test_empty_plan_fails_instead_of_completing(self, engine):
+        """draft task 没有可执行计划时必须失败，不能零步完成。"""
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user()
+        tid = _task(uid)
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            with pytest.raises(ValueError, match="没有可执行步骤"):
+                run_task(session=s, task=task, chat_model=_FakeChatModel(), plan=[])
+            assert task.status == "failed"
+
+    def test_running_task_without_steps_fails(self, engine):
+        """损坏的 running task 不得被误标为 completed。"""
+        from bycall.agent.task_engine import run_task, transition_task_status
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user()
+        tid = _task(uid)
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            transition_task_status(s, task, "planning")
+            transition_task_status(s, task, "running")
+            with pytest.raises(ValueError, match="没有可执行步骤"):
+                run_task(session=s, task=task, chat_model=_FakeChatModel())
+            assert task.status == "failed"
+
+    def test_unsupported_step_kind_fails_task(self, engine):
+        """未实现的 step kind 必须显式失败，不能静默跳过后完成。"""
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import Step, Task
+
+        uid = _user()
+        tid = _task(uid)
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            with pytest.raises(ValueError, match="不支持的 Step kind: deterministic"):
+                run_task(
+                    session=s,
+                    task=task,
+                    chat_model=_FakeChatModel(),
+                    plan=[{"goal": "发推送", "kind": "deterministic"}],
+                )
+            assert task.status == "failed"
+            step = list(s.exec(Step.select_by_task(tid)))[0]
+            assert step.status == "failed"
+
     def test_terminal_task_not_runnable(self, engine):
         """终态 task 再调 run_task 抛 ValueError。"""
         from bycall.agent.task_engine import run_task, transition_task_status
