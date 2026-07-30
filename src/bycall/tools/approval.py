@@ -145,8 +145,7 @@ def execute_approved_tool(req) -> tuple[bool, str]:
 
     ``req`` 是 ``ApprovalRequest`` ORM 实例（status 应为 pending，由调用方保证）。
     """
-    from bycall.governance.capability import compute_capability_set
-    from bycall.governance.models import User
+    from bycall.governance.capability import reload_user_and_compute_cap
     from bycall.mcp.context import reset_current_capability, set_current_capability
     from bycall.tools.gateway import filter_tools
     from bycall.tools.registry import get_tool
@@ -159,14 +158,14 @@ def execute_approved_tool(req) -> tuple[bool, str]:
 
     args = json.loads(req.tool_args_json) if req.tool_args_json else {}
 
-    # 重新计算能力集 + 验证工具仍在白名单。
+    # 重新计算能力集（重新加载用户最新状态——审批等待期间权限可能已变更）。
+    # 与 Step 执行器共用 reload_user_and_compute_cap，避免陈旧权限放行（红线 #7）。
     with session_scope() as session:
-        user = session.get(User, req.user_id)
-        if user is None:
-            return False, f"请求用户(id={req.user_id})不存在，无法执行"
-        if not user.is_active:
-            return False, f"用户 {user.name} 已被禁用，拒绝执行"
-        cap = compute_capability_set(session, user)
+        try:
+            cap = reload_user_and_compute_cap(session, req.user_id)
+        except PermissionError as e:
+            logger.warning("审批 #%s 执行被拒（用户状态）: %s", req.id, e)
+            return False, str(e)
         # 过滤验证：工具是否仍在用户当前白名单内。
         allowed_names = {s.name for s in filter_tools(cap.allowed_tools)}
 

@@ -219,6 +219,22 @@ def compute_capability_set(session: Session, user: User) -> CapabilitySet:
     return copy.deepcopy(cap)
 
 
+def reload_user_and_compute_cap(session: Session, user_id: int) -> CapabilitySet:
+    """执行前重算能力集——重新加载用户最新状态再算。
+
+    审批等待 / Task 暂停恢复等跨请求场景下，传入的 user 对象可能陈旧（被 admin
+    禁用 / 改角色）。先 ``session.get`` 重新加载最新状态，再交给
+    ``compute_capability_set``（内部验活跃 / 角色：禁用或角色未定义 → PermissionError）。
+
+    供 ``execute_approved_tool``（审批执行）与 Step 执行器（S1a）共用——两处都在
+    "等待后执行"，必须用最新用户状态，避免陈旧权限放行（红线 #7）。
+    """
+    user = session.get(User, user_id)
+    if user is None:
+        raise PermissionError(f"用户(id={user_id})不存在")
+    return compute_capability_set(session, user)
+
+
 @event.listens_for(Session, "after_flush")
 def _cap_mark_invalidation(session: Session, _flush_context) -> None:
     """flush 后扫脏实例：本事务若改了能力集相关表，置标记等 commit 时清缓存。
