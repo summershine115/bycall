@@ -51,9 +51,16 @@ def execute_tool_loop_step(
     """
     from bycall.agent.graph import run_tool_loop
     from bycall.agent.runner import _to_langchain_messages
+    from bycall.agent.runtime_context import build_runtime_context
+    from bycall.agent.session_store import load_user_memory
     from bycall.governance.capability import reload_user_and_compute_cap
     from bycall.mcp.context import reset_current_capability, set_current_capability
     from bycall.rag.retrieve import build_rag_messages
+    from bycall.tools.approval import (
+        ApprovalContext,
+        reset_approval_context,
+        set_approval_context,
+    )
     from bycall.tools.gateway import filter_tools, to_langchain_tools
 
     started_at = datetime.now(UTC)
@@ -102,6 +109,17 @@ def execute_tool_loop_step(
     # 2. filter tools（脱敏包装在 to_langchain_tools 内部按 cap 闭包注入）。
     allowed_specs = filter_tools(cap.allowed_tools)
     langchain_tools = to_langchain_tools(allowed_specs, cap)
+    user_memories = load_user_memory(session, user.id) if user.id is not None else []
+    runtime_context = build_runtime_context(
+        user=user,
+        capability=cap,
+        channel=task.channel,
+        conversation_id=task.conversation_id,
+        tools=allowed_specs,
+        has_history=False,
+        has_summary=False,
+        memory_count=len(user_memories),
+    )
 
     # 3. 拼 messages（system + skill + knowledge + step goal；S1a 无独立 RAG，知识靠工具）。
     raw_messages = build_rag_messages(
@@ -110,11 +128,21 @@ def execute_tool_loop_step(
         [],  # S1a：Step 不跑独立 RAG（多步任务的 RAG 在对话触发层做）
         skill_markdown=cap.skill_markdown,
         knowledge_scope_text=cap.knowledge_scope_text,
+        runtime_context=runtime_context,
+        user_memories=user_memories,
     )
     messages = _to_langchain_messages(raw_messages)
 
-    # 4. set capability token → run_tool_loop → reset。
+    # 4. 注入 capability 与审批上下文 → run_tool_loop → reset。
     cap_token = set_current_capability(cap)
+    approval_token = set_approval_context(
+        ApprovalContext(
+            user_id=user.id,  # type: ignore[arg-type]
+            user_name=user.name,
+            conversation_id=task.conversation_id,
+            channel=task.channel,
+        )
+    )
     try:
         graph_result = run_tool_loop(
             chat_model=chat_model,
@@ -137,6 +165,7 @@ def execute_tool_loop_step(
         return run
     finally:
         reset_current_capability(cap_token)
+        reset_approval_context(approval_token)
 
     # 5. 成功：产 Run（含脱敏后 tool_calls）+ 标 step done + 发事件。
     run.status = "ok"
@@ -209,7 +238,6 @@ def _validate_step_kinds(session: Session, task: Task, steps: list[Step]) -> Non
     session.add(unsupported)
     session.commit()
     _fail_task(session, task, f"不支持的 Step kind: {unsupported.kind}")
-
 
 
 def transition_task_status(session: Session, task: Task, new_status: str) -> None:

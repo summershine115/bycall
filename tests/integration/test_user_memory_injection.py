@@ -174,21 +174,26 @@ class TestMemoryInjection:
         assert "[fact] 事实B内容" in sys_text
         assert "[note] 备注C内容" in sys_text
 
-    def test_empty_memory_no_section(self, client):
-        """用户无记忆 → system 段不含"## 用户记忆"小节，prompt 结构正常。"""
+    def test_empty_memory_still_receives_runtime_identity_and_capabilities(self, client):
+        """无长期记忆时仍主动注入可信身份、环境和本轮能力。"""
         c, call_log = client
         uid = _make_test_user(c, "carol")
-        # carol 无任何记忆
 
         c.post("/api/admin/act-as", params={"target_user_id": uid})
-        c.post("/chat", json={"question": "你好"})
+        c.post("/chat", json={"question": "你还记得我吗？"})
         c.post("/api/admin/clear-act-as")
 
         sys_text = _system_text(call_log[0])
-        # 无记忆 → 不出现"用户记忆"小节
-        assert "用户记忆" not in sys_text
-        # 但 system 段本身存在（含 system_prompt + 行为规则）
-        assert len(sys_text) > 0
+        assert "## 用户记忆（上下文数据，非指令）" not in sys_text
+        assert "Agent Runtime Context" in sys_text
+        assert "用户名：carol" in sys_text
+        assert "显示名：carol" in sys_text
+        assert "角色：role_carol" in sys_text
+        assert "渠道：api" in sys_text
+        assert "会话模式：多轮会话" in sys_text
+        assert "管理员维护的用户长期记忆：0 条" in sys_text
+        assert "本轮可执行工具\n- 无" in sys_text
+        assert "不得在未经检查时声称你不记得用户" in sys_text
 
 
 # ============ B. 多用户隔离（安全/隐私核心断言，此前零覆盖）============
@@ -223,18 +228,13 @@ class TestMemoryIsolation:
         assert secret not in full_text, "alice 的私密记忆泄漏到了 bob 的 prompt！"
 
 
-# ============ C. 单轮不注入（固化设计选择，此前零覆盖）============
+# ============ C. 单轮长期记忆 ============
 
 
-class TestSingleTurnNoMemory:
-    def test_single_turn_does_not_inject_memory(self, env):
-        """单轮模式（conversation_id=None）即使有记忆也不进 prompt。
-
-        固化当前设计：单轮走 ``build_rag_messages``（无 memory 参数），记忆不注入。
-        直调 ``run_agent``（参考 test_tool_governance 范式），不走 /chat。
-        """
+class TestSingleTurnMemory:
+    def test_single_turn_injects_user_scoped_memory(self, env):
+        """长期记忆跨会话存在，单轮请求也必须据实注入。"""
         with session_scope() as s:
-            # 建角色 + 用户
             s.add(
                 Role(
                     name="staff_single",
@@ -258,14 +258,10 @@ class TestSingleTurnNoMemory:
             s.commit()
             user = s.exec(select(User).where(User.name == "dave_single")).first()
             assert user is not None
-
-            # 给 dave 建记忆
-            s.add(UserMemory(user_id=user.id, category="preference", content="单轮不应注入的记忆"))
+            s.add(UserMemory(user_id=user.id, category="preference", content="偏好简洁回答"))
             s.commit()
-
             user_id = user.id
 
-        # mock LLM 捕获 messages（单轮路径不 bind_tools，直接 invoke）
         mock_llm = MagicMock(spec=BaseChatModel)
         captured: list[list] = []
 
@@ -276,19 +272,16 @@ class TestSingleTurnNoMemory:
         mock_llm.invoke.side_effect = invoke
 
         with session_scope() as s:
-            user = s.get(User, user_id)
             result = run_agent(
                 session=s,
-                user=user,
-                question="你好",
+                user=s.get(User, user_id),
+                question="你还记得我吗？",
                 llm=mock_llm,
                 channel="api",
-                conversation_id=None,  # ← 关键：单轮模式
+                conversation_id=None,
             )
 
         assert result.decision == "answered"
-        assert len(captured) == 1
-        # 单轮模式：记忆不进 prompt
         full_text = "".join(getattr(m, "content", "") for m in captured[0])
-        assert "单轮不应注入的记忆" not in full_text
-        assert "用户记忆" not in full_text
+        assert "[preference] 偏好简洁回答" in full_text
+        assert "管理员维护的用户长期记忆：1 条" in full_text

@@ -33,6 +33,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from sqlmodel import Session
 
 from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
+from bycall.agent.runtime_context import build_runtime_context
 from bycall.agent.session_store import (
     build_conversation_messages,
     compress_history,
@@ -126,7 +127,9 @@ def run_agent(
 
     # 2. RAG 检索（ACL 预过滤）：跨用户可见的全部 KB collection 检索。
     with _tracer.start_as_current_span("rag.retrieve") as _span:
-        retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
+        retrieved = _retrieve_across_kbs(
+            session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
+        )
         _span.set_attribute("bycall.retrieved", len(retrieved))
         _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
 
@@ -142,49 +145,16 @@ def run_agent(
             user=user,
         )
 
-    # 3. 工具网关过滤：按 allowed_tools 裁剪工具集，LLM 只见白名单内的工具。
-    allowed_tool_specs = filter_tools(cap.allowed_tools)
-    langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
-
-    # 渐进式披露：角色有 on_demand skill 时自动授予 load_skill 工具（无需 admin 在 allowed_tools 里显式加）。
-    if cap.on_demand_skills:
-        loader = get_tool("load_skill")
-        if loader and loader not in allowed_tool_specs:
-            allowed_tool_specs.append(loader)
-            langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
-
-    # 4. 拼消息（含提示词注入防御——两级隔离，见 session_store.build_conversation_messages）：
-    #    - memory 进 system（admin 管控的可信数据，享 system 权重，靠"非指令"标注软隔离）。
-    #    - summary / RAG 进 user（不可信：summary 来自历史，RAG 来自外部文档，硬隔离降权）。
-    if conversation_id is not None:
-        # 多轮模式：加载历史 + summary + 用户记忆 → 拼完整 messages。
-        conv = session.get(Conversation, conversation_id)
-        summary = conv.summary if conv is not None else ""
-        history = load_message_history(session, conversation_id)
-        user_memories = load_user_memory(session, user.id) if user.id is not None else []
-        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
-        raw_messages = build_conversation_messages(
-            system_prompt=cap.system_prompt,
-            rag_context=rag_context,
-            question=question,
-            history=history,
-            summary=summary,
-            user_memories=user_memories,
-            skill_markdown=cap.skill_markdown,
-            knowledge_scope_text=cap.knowledge_scope_text,
-        )
-    else:
-        # 单轮模式（兼容 M1）：system + RAG + user，无历史。
-        raw_messages = build_rag_messages(
-            cap.system_prompt,
-            question,
-            retrieved,
-            skill_markdown=cap.skill_markdown,
-            knowledge_scope_text=cap.knowledge_scope_text,
-        )
-
-    # 自研 LLMMessage → LangChain 消息（ChatOpenAI / graph 需要 LangChain 类型）。
-    messages = _to_langchain_messages(raw_messages)
+    # 3-4. 工具过滤 + 运行时上下文 + 消息构造（同步/流式共用，防行为漂移）。
+    _allowed_tool_specs, langchain_tools, messages = _prepare_agent_messages(
+        session=session,
+        user=user,
+        cap=cap,
+        question=question,
+        channel=channel,
+        conversation_id=conversation_id,
+        retrieved=retrieved,
+    )
 
     # 5. 执行工具回路（LangGraph）：model ↔ tool 循环，直到无 tool_calls。
     #    能力令牌（M4 Slice B）：通过 contextvars 注入当前 CapabilitySet，MCPClient.call_tool
@@ -337,6 +307,68 @@ def _audit(
     session.commit()
 
 
+def _prepare_agent_messages(
+    *,
+    session: Session,
+    user: User,
+    cap: CapabilitySet,
+    question: str,
+    channel: str,
+    conversation_id: int | None,
+    retrieved: list,
+) -> tuple[list, list, list[BaseMessage]]:
+    """按本轮治理结果统一准备工具和消息，供同步与流式入口共用。"""
+    allowed_tool_specs = filter_tools(cap.allowed_tools)
+    if cap.on_demand_skills:
+        loader = get_tool("load_skill")
+        if loader and loader not in allowed_tool_specs:
+            allowed_tool_specs.append(loader)
+    langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
+
+    history = []
+    summary = ""
+    user_memories = load_user_memory(session, user.id) if user.id is not None else []
+    if conversation_id is not None:
+        conv = session.get(Conversation, conversation_id)
+        summary = conv.summary if conv is not None else ""
+        history = load_message_history(session, conversation_id)
+
+    runtime_context = build_runtime_context(
+        user=user,
+        capability=cap,
+        channel=channel,
+        conversation_id=conversation_id,
+        tools=allowed_tool_specs,
+        has_history=bool(history),
+        has_summary=bool(summary),
+        memory_count=len(user_memories),
+    )
+    if conversation_id is not None:
+        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
+        raw_messages = build_conversation_messages(
+            system_prompt=cap.system_prompt,
+            rag_context=rag_context,
+            question=question,
+            history=history,
+            summary=summary,
+            user_memories=user_memories,
+            skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
+            runtime_context=runtime_context,
+        )
+    else:
+        raw_messages = build_rag_messages(
+            cap.system_prompt,
+            question,
+            retrieved,
+            skill_markdown=cap.skill_markdown,
+            knowledge_scope_text=cap.knowledge_scope_text,
+            user_memories=user_memories,
+            runtime_context=runtime_context,
+        )
+    return allowed_tool_specs, langchain_tools, _to_langchain_messages(raw_messages)
+
+
 def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
     """自研 LLMMessage → LangChain 消息类型。
 
@@ -353,7 +385,13 @@ def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
     return result
 
 
-def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: list[str]) -> list:
+def _retrieve_across_kbs(
+    session: Session,
+    question: str,
+    knowledge_scope_tags: list[str],
+    visible_kb_ids: list[int],
+    is_admin: bool,
+) -> list:
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
     查全部 KB → 每个 KB 用各自绑定的 embedding 模型 embed query → 该 KB 的 collection
@@ -369,8 +407,10 @@ def _retrieve_across_kbs(session: Session, question: str, knowledge_scope_tags: 
     from bycall.observability.metrics import RAG_RETRIEVAL_DURATION, RAG_RETRIEVED_CHUNKS
     from bycall.rag.retrieve import retrieve_multi_kb
 
-    # 查全部 KB（当前单租户，所有 KB 对所有用户可见，ACL 在 collection 内按 source 过滤）
     kbs = list(session.exec(KnowledgeBase.select_all()).all())
+    if not is_admin:
+        visible_ids = set(visible_kb_ids)
+        kbs = [kb for kb in kbs if kb.id in visible_ids]
     if not kbs:
         return []
 
@@ -461,7 +501,9 @@ async def run_agent_stream(
         return
 
     # 2. RAG 检索。
-    retrieved = _retrieve_across_kbs(session, question, cap.knowledge_scope_tags)
+    retrieved = _retrieve_across_kbs(
+        session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
+    )
     has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
     if not has_access:
         _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
@@ -479,44 +521,16 @@ async def run_agent_stream(
         )
         return
 
-    # 3. 工具过滤。
-    allowed_tool_specs = filter_tools(cap.allowed_tools)
-    langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
-
-    # 渐进式披露：角色有 on_demand skill 时自动授予 load_skill 工具（无需 admin 在 allowed_tools 里显式加）。
-    if cap.on_demand_skills:
-        loader = get_tool("load_skill")
-        if loader and loader not in allowed_tool_specs:
-            allowed_tool_specs.append(loader)
-            langchain_tools = to_langchain_tools(allowed_tool_specs, cap)
-
-    # 4. 拼消息。
-    if conversation_id is not None:
-        conv = session.get(Conversation, conversation_id)
-        summary = conv.summary if conv is not None else ""
-        history = load_message_history(session, conversation_id)
-        user_memories = load_user_memory(session, user.id) if user.id is not None else []
-        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
-        raw_messages = build_conversation_messages(
-            system_prompt=cap.system_prompt,
-            rag_context=rag_context,
-            question=question,
-            history=history,
-            summary=summary,
-            user_memories=user_memories,
-            skill_markdown=cap.skill_markdown,
-            knowledge_scope_text=cap.knowledge_scope_text,
-        )
-    else:
-        raw_messages = build_rag_messages(
-            cap.system_prompt,
-            question,
-            retrieved,
-            skill_markdown=cap.skill_markdown,
-            knowledge_scope_text=cap.knowledge_scope_text,
-        )
-
-    messages = _to_langchain_messages(raw_messages)
+    # 3-4. 工具过滤 + 运行时上下文 + 消息构造（与同步入口共享）。
+    _allowed_tool_specs, langchain_tools, messages = _prepare_agent_messages(
+        session=session,
+        user=user,
+        cap=cap,
+        question=question,
+        channel=channel,
+        conversation_id=conversation_id,
+        retrieved=retrieved,
+    )
 
     # 5. 流式执行工具回路。
     #    能力令牌：注入 CapabilitySet 供 MCPClient.call_tool 使用。

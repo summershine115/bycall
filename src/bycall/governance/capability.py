@@ -150,7 +150,10 @@ def get_enabled_skills_by_names(session: Session, names: list[str]) -> list:
     order = {n: i for i, n in enumerate(names)}
     return sorted(rows, key=lambda s: order.get(s.name, len(order)))
 
-def build_skill_markdown(always_skills: list = (), on_demand_skills: list[OnDemandSkill] = ()) -> str:
+
+def build_skill_markdown(
+    always_skills: list = (), on_demand_skills: list[OnDemandSkill] = ()
+) -> str:
     """把 Skill 实体列表合并成注入 system message 的 markdown 字符串。
 
     always 披露的 skill 拼 ``## 技能：{name}\\n{content}``，多个用空行分隔。
@@ -166,6 +169,7 @@ def build_skill_markdown(always_skills: list = (), on_demand_skills: list[OnDema
         on_demand_lines = "\n".join(f"- **{s.name}**：{s.description}" for s in on_demand_skills)
         sections.append(f"## 按需技能索引\n{on_demand_lines}")
     return "\n\n".join(sections)
+
 
 def build_knowledge_scope_text(tags: list[str], is_admin: bool, kbs: list[tuple[str, str]]) -> str:
     """拼「可见知识域」注入文本（进 system message，标注为上下文信息、非指令）。
@@ -354,7 +358,11 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
     bound_skills = get_enabled_skills_by_names(session, config.skills)
     # 按 disclosure 拆分：always → 全文进 skill_markdown；on_demand → 索引进 skill_markdown，全文进 on_demand_skills。
     always = [s for s in bound_skills if s.disclosure != "on_demand"]
-    on_demand = [OnDemandSkill(name=s.name, description=s.description, content=s.content) for s in bound_skills if s.disclosure == "on_demand"]
+    on_demand = [
+        OnDemandSkill(name=s.name, description=s.description, content=s.content)
+        for s in bound_skills
+        if s.disclosure == "on_demand"
+    ]
     skill_markdown = build_skill_markdown(always, on_demand)
     # 实际生效的 skill name 列表（审计可见）。
     effective_skill_names = [s.name for s in bound_skills]
@@ -366,6 +374,7 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         kb_roles = kb.visible_to_roles
         if kb_roles is None or len(kb_roles) == 0 or user.role in kb_roles:
             visible_kb_ids.append(kb.id)  # pyright: ignore[reportOptionalMemberAccess]
+    visible_kb_infos = [(kb.name, kb.description) for kb in all_kbs if kb.id in visible_kb_ids]
 
     return CapabilitySet(
         user_id=user.id,
@@ -379,7 +388,7 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         on_demand_skills=on_demand,
         skill_markdown=skill_markdown,
         knowledge_scope_text=build_knowledge_scope_text(
-            list(config.knowledge_scope_tags), False, kb_infos
+            list(config.knowledge_scope_tags), False, visible_kb_infos
         ),
         visible_kb_ids=visible_kb_ids,
         is_admin=False,

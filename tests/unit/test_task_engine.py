@@ -292,6 +292,91 @@ class TestRunTask:
             assert "skill_markdown" not in snapshot
             assert "knowledge_scope_text" not in snapshot
 
+    def test_step_receives_runtime_context(self, engine):
+        """任务 Step 的 LLM 调用同样收到当前用户、环境和工具能力。"""
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user("runtime_task_user")
+        tid = _task(uid)
+        model = _FakeChatModel()
+        captured = []
+
+        def invoke(messages):
+            captured.append(messages)
+            return AIMessage(content="ok")
+
+        model.invoke = invoke
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            run_task(
+                session=s,
+                task=task,
+                chat_model=model,
+                plan=[{"goal": "查资料", "kind": "tool_loop"}],
+            )
+
+        system_text = captured[0][0].content
+        assert "Agent Runtime Context" in system_text
+        assert "用户名：runtime_task_user" in system_text
+        assert "渠道：" in system_text
+        assert "本轮可执行工具" in system_text
+
+    def test_destructive_tool_creates_approval_instead_of_executing(self, engine):
+        """任务模式不能绕过破坏性工具审批门。"""
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import ApprovalRequest, Task
+        from bycall.tools.base import ToolSpec
+        from bycall.tools.registry import register
+
+        calls = []
+
+        def destructive(**kwargs):
+            calls.append(kwargs)
+            return "executed"
+
+        register(
+            ToolSpec(
+                name="task_delete",
+                description="删除记录",
+                parameters={"type": "object", "properties": {}},
+                func=destructive,
+                requires_approval=True,
+            )
+        )
+        uid = _user("approval_task_user")
+        tid = _task(uid)
+
+        from langchain_core.messages import AIMessage as TaskAIMessage
+
+        class ApprovalCallingModel(_FakeChatModel):
+            def bind_tools(self, tools):
+                self.bound_tools = tools
+                return self
+
+            def invoke(self, messages):
+                if not hasattr(self, "called"):
+                    self.called = True
+                    return TaskAIMessage(
+                        content="",
+                        tool_calls=[{"name": "task_delete", "args": {}, "id": "call_1"}],
+                    )
+                return TaskAIMessage(content="已提交审批")
+
+        with session_scope() as s:
+            run_task(
+                session=s,
+                task=s.get(Task, tid),
+                chat_model=ApprovalCallingModel(),
+                plan=[{"goal": "删除记录", "kind": "tool_loop"}],
+            )
+            requests = list(s.exec(ApprovalRequest.select_all()))
+            request_data = [(req.tool_name, req.status) for req in requests]
+
+        assert calls == []
+        assert request_data == [("task_delete", "pending")]
 
     def test_empty_plan_fails_instead_of_completing(self, engine):
         """draft task 没有可执行计划时必须失败，不能零步完成。"""

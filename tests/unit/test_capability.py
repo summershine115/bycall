@@ -415,6 +415,42 @@ def test_normal_capability_scope_text_lists_role_tags(db_session):
     assert "public" in cap.knowledge_scope_text
 
 
+def test_normal_capability_hides_role_restricted_kb_names(db_session):
+    """普通用户的能力自描述只枚举其角色可见的知识库。"""
+    db_session.add(
+        Role(
+            name="sales_limited",
+            config=RoleConfig(knowledge_scope_tags=["sales"], level=1),
+        )
+    )
+    db_session.add(
+        KnowledgeBase(
+            name="销售知识库",
+            description="销售资料",
+            embedding_model_id=1,
+            collection_name="kb_sales",
+            visible_to_roles=["sales_limited"],
+        )
+    )
+    db_session.add(
+        KnowledgeBase(
+            name="HR机密知识库",
+            description="仅 HR 可见",
+            embedding_model_id=1,
+            collection_name="kb_hr_secret",
+            visible_to_roles=["hr"],
+        )
+    )
+    db_session.flush()
+
+    user = _make_user(db_session, "sales_user", role="sales_limited")
+    cap = compute_capability_set(db_session, user)
+
+    assert "销售知识库" in cap.knowledge_scope_text
+    assert "HR机密知识库" not in cap.knowledge_scope_text
+    assert len(cap.visible_kb_ids) == 1
+
+
 # ============ 能力集缓存（M5 性能调优）============
 
 

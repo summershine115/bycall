@@ -203,6 +203,28 @@ class TestBuildConversationMessages:
         assert "喜欢简洁回答" in messages[0].content
         assert "preference" in messages[0].content
 
+    def test_runtime_context_injected_before_skills_and_memory(self):
+        """可信运行时上下文进入 system，并先于领域知识和用户记忆。"""
+        from bycall.governance.models import UserMemory as Mem
+
+        messages = build_conversation_messages(
+            system_prompt="你是数字员工。",
+            rag_context="",
+            question="你还记得我吗？",
+            history=[],
+            summary="",
+            user_memories=[Mem(user_id=1, category="fact", content="用户负责华东区")],
+            skill_markdown="## 技能：sales\n销售流程",
+            runtime_context="当前用户：Alice\n可执行工具：calculator（算术计算器）",
+        )
+
+        system_content = messages[0].content
+        assert "Agent Runtime Context" in system_content
+        assert "当前用户：Alice" in system_content
+        assert "calculator（算术计算器）" in system_content
+        assert system_content.index("Agent Runtime Context") < system_content.index("领域技能")
+        assert system_content.index("Agent Runtime Context") < system_content.index("用户记忆")
+
 
 # ============ should_compress ============
 
