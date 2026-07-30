@@ -266,6 +266,29 @@ class TestRunTask:
             run_task(session=s, task=task, chat_model=_FakeChatModel(), plan=plan)
             assert json.loads(task.plan_json) == plan
 
+    def test_step_refreshes_capability_snapshot(self, engine):
+        """每步执行前把最新能力集写回 Task，保留权限重验轨迹。"""
+        import json
+
+        from bycall.agent.task_engine import run_task
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user()
+        tid = _task(uid)
+        with session_scope() as s:
+            task = s.get(Task, tid)
+            run_task(
+                session=s,
+                task=task,
+                chat_model=_FakeChatModel(),
+                plan=[{"goal": "查故障", "kind": "tool_loop"}],
+            )
+            snapshot = json.loads(task.capability_snapshot_json)
+            assert snapshot["user_id"] == uid
+            assert snapshot["role"] == "admin"
+            assert snapshot["allowed_tools"] == ["*"]
+
     def test_empty_plan_fails_instead_of_completing(self, engine):
         """draft task 没有可执行计划时必须失败，不能零步完成。"""
         from bycall.agent.task_engine import run_task

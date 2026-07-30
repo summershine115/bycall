@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from sqlmodel import Session
@@ -87,6 +88,13 @@ def execute_tool_loop_step(
             )
         )
         return run
+
+    task = session.get(Task, step.task_id)
+    if task is None:
+        raise ValueError(f"Step #{step.id} 关联的 Task #{step.task_id} 不存在")
+    task.capability_snapshot_json = json.dumps(asdict(cap), ensure_ascii=False)
+    session.add(task)
+    session.commit()
 
     # 2. filter tools（脱敏包装在 to_langchain_tools 内部按 cap 闭包注入）。
     allowed_specs = filter_tools(cap.allowed_tools)
