@@ -1,4 +1,4 @@
-# ADR-0004：抽象统一 ABAC Policy 接口（自研，暂不引 OPA/Cedar）
+# ADR-0005：抽象统一 ABAC Policy 接口（自研，暂不引 OPA/Cedar）
 
 - **状态**：已采纳
 - **日期**：2026-07-30（M5）

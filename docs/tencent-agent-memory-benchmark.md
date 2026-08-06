@@ -1,11 +1,12 @@
 # 对标参考：TencentDB Agent Memory（TAM）可借鉴机制
 
+> 状态：调研记录（已采纳，已升华为 ADR-0007） · 关联：[决策登记册](decisions/README.md)
 > 调研日期：2026-08-06 · 来源：[github.com/TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)（MIT）`feat/server_team` 分支
 > 定位：腾讯出品的**面向 Agent 团队的记忆系统**——把"凡能让下一个 Agent 少走弯路的信息"统一抽象成
 > 记忆资产（Chat Memory / Skill / Wiki / CodeGraph），沉淀→流动→按身份装配（Loadout）给 Agent。
 > 本文记录 TAM 中值得 Bycall 借鉴的机制。**与 QM 不同：TAM 的信任模型比 Bycall 宽松**（agent 可自主
 > 提炼记忆并进 system 权重），因此每条借鉴项都需"治理化改造"才能落地——本文逐条标注改造点与红线关系。
-> 关联决策：`docs/decisions/0006-governed-cognition-two-plane.md`（受治理认知：两平面信任模型）。
+> 关联决策：`docs/decisions/0007-governed-cognition-two-plane.md`（受治理认知：两平面信任模型）。
 
 ## 0. 信任模型差异（决定借鉴方式）
 
@@ -16,13 +17,13 @@ QM 与 Bycall 信任模型同构，机制可直接映射；**TAM 不同**——�
 | 维度 | TAM | Bycall |
 |---|---|---|
 | 定位 | 个人/团队 Agent，**让经验自动复利** | 组织数字员工，**策略绝不活在提示词层** |
-| 记忆归谁 | LLM 自主提炼、自主写，享 system 权重 | "记忆是组织管控的，不是 LLM 自己写的"（旧立场，见 ADR-0006） |
+| 记忆归谁 | LLM 自主提炼、自主写，享 system 权重 | "记忆是组织管控的，不是 LLM 自己写的"（旧立场，见 ADR-0007） |
 | 记忆注入 | 记忆可进 system prompt | 不可信内容只能进 user 角色（红线 #7） |
 | 知识形态 | 整库可被 agent 按需调用（工具） | RAG 召回结果拼进 prompt |
 | 共享边界 | private/team/restricted/agent 四级可见性 | 共享=静态配置；动态数据全隔离（缺第四象限） |
 
 > **一句话**：TAM 的"结构"（分层、有界召回、资产模型、按需知识）几乎全可借鉴；TAM 的"自主性"
-> （自由生成 + 自由进 system）全部要套发布门。详见 ADR-0006。
+> （自由生成 + 自由进 system）全部要套发布门。详见 ADR-0007。
 
 ## 1. 核心机制（值得研究的六个点）
 
@@ -69,7 +70,7 @@ PersonaMem（长期交互后能否正确运用用户信息）从 48%→76%（+59
 
 ## 2. 可借鉴机制（含治理化改造）
 
-> 改造原则（ADR-0006）：agent 可自由生成认知产物，但 (1) 默认 private；(2) 进 system 前过发布门
+> 改造原则（ADR-0007）：agent 可自由生成认知产物，但 (1) 默认 private；(2) 进 system 前过发布门
 > （admin 审，复用 `ApprovalRequest` 模式）；(3) 召回结果降权进 user 角色（红线 #7 不变）；
 > (4) 认知产物永不改写策略。
 
@@ -91,7 +92,7 @@ PersonaMem（长期交互后能否正确运用用户信息）从 48%→76%（+59
 实际记忆 = admin 手填 `UserMemory` + 压缩 `summary` + 历史窗口。
 
 **改造点**：四层映射——L0=`Message`、L1=`UserMemory`(atom)、L2=场景块、L3=稳定画像。复用现有
-zvec/pgvector 做向量召回。**这是 ADR-0006 的落地主体。**
+zvec/pgvector 做向量召回。**这是 ADR-0007 的落地主体。**
 
 ### 2.3 记忆提取的发布门（P0，核心治理化改造）
 
@@ -176,5 +177,5 @@ draft→review→publish"完全一致——TAM 在此点上印证并具体化了
 | Skill 生命周期 | review→promote（qm-benchmark §2.7） | draft→review→publish + 版本/校验 | **互相印证** |
 | 信任模型 | 与 Bycall 同构（直接映射） | 比 Bycall 宽松（需治理化改造） | QM 直接用，TAM 套门用 |
 
-> 二者不冲突：QM 给的是"治理机制如何更工程化"，TAM 给的是"认知能力如何落地"。ADR-0006 把两者
+> 二者不冲突：QM 给的是"治理机制如何更工程化"，TAM 给的是"认知能力如何落地"。ADR-0007 把两者
 > 统一在"策略平面严（QM 同构）+ 认知平面开放受治理（TAM 结构 + 发布门）"的两平面模型里。

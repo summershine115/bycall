@@ -1,5 +1,6 @@
 # 对标参考：QM（yc-software/qm）可借鉴机制
 
+> 状态：调研记录（已采纳，借鉴项映射见 product-design §6.1） · 关联：[决策登记册](decisions/README.md)
 > 调研日期：2026-08-06 · 来源：[github.com/yc-software/qm](https://github.com/yc-software/qm)（MIT，11k+ stars）
 > 定位：QM 是 YC 出品的**多人协作 Agent harness**——员工在 Slack/Web 上与 Agent 协作，每人/每频道
 > 有独立 memory、文件、keychain、权限、cron、沙箱；组织管理员设 org 级配置与安全姿态。
