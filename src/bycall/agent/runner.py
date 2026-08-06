@@ -679,13 +679,13 @@ def _run_as_task(
     channel: str,
     conversation_id: int | None,
 ) -> AgentResult:
-    """对话触发的任务执行路径（S1a）。
+    """对话触发的任务执行路径（S1a + S1b 多步拆解）。
 
-    显式「启动任务：{goal}」触发：创建 Task + 单步 plan → run_task 编排执行 →
-    取执行结果作 AgentResult.answer。S1a 简化：plan 用单步（goal 作唯一 Step），
-    LLM 拆多步 plan 留后置；任务模式不跑对话层 RAG（知识靠工具）。
+    显式「启动任务：{goal}」触发：创建 Task → LLM 拆多步计划（建议性，代码层校验，
+    失败降级单步）→ run_task 编排执行 → 取执行结果作 AgentResult.answer。
+    任务模式不跑对话层 RAG（知识靠工具）。
     """
-    from bycall.agent.task_engine import run_task
+    from bycall.agent.task_engine import plan_task_goal, run_task
     from bycall.governance.models import Task
 
     task = Task(
@@ -699,8 +699,8 @@ def _run_as_task(
     session.commit()
     session.refresh(task)
 
-    # S1a：单步任务（goal 作唯一 Step）；LLM 拆多步 plan 留后置。
-    plan: list[dict] = [{"goal": goal, "kind": "tool_loop"}]
+    # S1b：LLM 把目标拆成多步计划；解析失败自动降级单步（goal 作唯一 tool_loop 步）。
+    plan = plan_task_goal(llm, goal)
     run_task(session=session, task=task, chat_model=llm, plan=plan)
 
     answer = _task_answer(session, task)
@@ -710,7 +710,7 @@ def _run_as_task(
         channel,
         question,
         "task",
-        f"task={task.id},status={task.status}",
+        f"task={task.id},status={task.status},steps={len(plan)}",
         answer[:500],
     )
     return _result(answer=answer, decision="task", scope=[], retrieved=0, user=user)

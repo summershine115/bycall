@@ -772,6 +772,8 @@ class ApprovalOut(BaseModel):
     user_name: str
     conversation_id: int | None = None
     channel: str = ""
+    task_id: int | None = None  # S1b：关联任务（任务内审批闭环）
+    step_id: int | None = None
     tool_name: str
     tool_args: dict = Field(default_factory=dict, description="LLM 生成的调用参数")
     status: str  # pending / executed / rejected / failed
@@ -816,3 +818,113 @@ class SkillImportResult(BaseModel):
     total_created: int = 0
     total_updated: int = 0
     total_skipped: int = 0
+
+
+# ============ Task / Step / Run（S1 任务执行）============
+
+
+class TaskOut(BaseModel):
+    """任务列表项（控制面：admin 审计/跟进任务执行）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    user_name: str = ""
+    conversation_id: int | None = None
+    channel: str = ""
+    trigger: str  # conversation / cron / event
+    schedule_id: int | None = None
+    goal: str
+    status: str  # draft/planning/running/paused/completed/failed/cancelled
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskStepOut(BaseModel):
+    """任务步骤（详情页进度展示）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: int
+    step_index: int
+    kind: str  # tool_loop / deterministic / approval_wait / clarify
+    spec_json: str = "{}"
+    status: str  # pending/running/done/failed/skipped/awaiting_approval
+    retry_count: int = 0
+    max_retries: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskRunOut(BaseModel):
+    """步骤执行尝试（含工具调用明细与输出）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    step_id: int
+    input_json: str = "{}"
+    output_json: str = "{}"
+    tool_calls_json: str = "[]"
+    status: str  # ok / error / timeout
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int = 0
+
+
+class TaskDetailOut(BaseModel):
+    """任务详情：Task + 步骤 + 每次尝试。"""
+
+    task: TaskOut
+    steps: list[TaskStepOut] = Field(default_factory=list)
+    runs: list[TaskRunOut] = Field(default_factory=list)
+
+
+# ============ TaskSchedule（S1b 定时/事件触发）============
+
+
+class TaskScheduleCreate(BaseModel):
+    """创建任务调度。cron / event 二选一（按 trigger_type 校验）。"""
+
+    name: str = Field(..., min_length=1, max_length=100, description="调度名，全局唯一")
+    trigger_type: str = Field(..., description="cron / event")
+    cron_expr: str = Field(default="", description="cron 表达式（trigger_type=cron 必填）")
+    event_source: str = Field(default="", description="事件来源标识（trigger_type=event 必填）")
+    task_template: dict = Field(
+        default_factory=dict,
+        description='{"goal": "...", "plan": [...]}；goal 支持 {payload.xxx} 插值',
+    )
+    user_id: int = Field(..., description="执行身份（User.id，权限重算基准）")
+    is_enabled: bool = True
+
+
+class TaskScheduleUpdate(BaseModel):
+    """更新任务调度（PATCH 语义：仅传入字段生效）。"""
+
+    name: str | None = None
+    trigger_type: str | None = None
+    cron_expr: str | None = None
+    event_source: str | None = None
+    task_template: dict | None = None
+    user_id: int | None = None
+    is_enabled: bool | None = None
+
+
+class TaskScheduleOut(BaseModel):
+    """任务调度响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    trigger_type: str
+    cron_expr: str = ""
+    event_source: str = ""
+    task_template: dict = Field(default_factory=dict)
+    user_id: int
+    is_enabled: bool = True
+    last_fired_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

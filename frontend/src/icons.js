@@ -20,6 +20,7 @@ import {
   MagicStick,
   RefreshLeft,
   Setting,
+  Timer,
   User,
 } from '@element-plus/icons-vue'
 
@@ -41,5 +42,6 @@ export const iconMap = {
   MagicStick,
   RefreshLeft,
   Setting,
+  Timer,
   User,
 }

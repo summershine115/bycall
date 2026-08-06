@@ -409,6 +409,10 @@ class ApprovalRequest(SQLModel, table=True):
     conversation_id: int | None = Field(default=None, index=True)
     channel: str = ""
     im_user_id: str = ""  # M6：发起请求时的 IM userid（审批通过后主动推送结果用）
+    # S1b 任务闭环：审批挂到 Task/Step 上，approve/reject 后据此恢复任务
+    # （工具拦截审批与显式 approval_wait 步共用；对话内审批（无任务）时为空）。
+    task_id: int | None = Field(default=None, index=True)  # Task.id（任务内审批）
+    step_id: int | None = Field(default=None, index=True)  # Step.id（等待审批的步）
     tool_name: str = Field(index=True)
     tool_args_json: str = "{}"
     status: str = Field(default="pending", index=True)
@@ -445,6 +449,15 @@ class ApprovalRequest(SQLModel, table=True):
             select(ApprovalRequest)
             .where(ApprovalRequest.status == status)
             .order_by(ApprovalRequest.created_at.desc())
+        )
+
+    @staticmethod
+    def select_by_step(step_id: int):
+        """按 Step 列审批请求（任务内审批：approve/reject 后恢复任务用）。"""
+        from sqlmodel import select
+
+        return select(ApprovalRequest).where(ApprovalRequest.step_id == step_id).order_by(
+            ApprovalRequest.id
         )
 
     @staticmethod
@@ -924,3 +937,57 @@ class Run(SQLModel, table=True):
         from sqlmodel import select
 
         return select(Run).where(Run.step_id == step_id).order_by(Run.started_at)
+
+
+# ============ TaskSchedule：任务调度（S1b 定时/事件触发）============
+
+
+class TaskSchedule(SQLModel, table=True):
+    """任务调度——admin 手动安排的定时（cron）或事件（webhook）触发入口。
+
+    与对话触发（``Task.trigger="conversation"``，用户自动）不同，调度触发是
+    **admin 显式配置**的（spec §3.5）：配置方是管理员，agent 不自主决定何时跑任务。
+
+    - ``trigger_type="cron"``：``cron_expr`` 标准 5 段 cron 表达式（分 时 日 月 周），
+      由调度器线程周期性扫描到期触发（见 ``agent/scheduler.py``）。
+    - ``trigger_type="event"``：``event_source`` 是外部系统的调用密钥（webhook path），
+      ``POST /api/events/{event_source}`` 触发。
+    - ``user_id``：执行身份——任务以该用户身份创建，每步执行前按该用户重算能力集
+      （红线 #7：权限变更即拒，不因调度绕过治理）。
+    - ``task_template_json``：``{"goal": "...", "plan": [...]}``——goal 支持
+      ``{payload.xxx}`` 占位符插值（事件触发时用外部 payload 填充）；plan 可选，
+      缺省时由 LLM 在任务创建时拆解。
+    """
+
+    __table_args__ = (UniqueConstraint("name", name="uq_taskschedule_name"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)  # 调度名（admin 识别，全局唯一）
+    trigger_type: str = Field(index=True)  # "cron" / "event"
+    cron_expr: str = ""  # 定时：cron 表达式（trigger_type=cron 必填）
+    event_source: str = ""  # 事件：来源标识（trigger_type=event 必填，作 webhook key）
+    task_template_json: str = "{}"  # {"goal": "...", "plan": [...]}（plan 可选）
+    user_id: int = Field(index=True)  # 执行身份（User.id，权限重算基准）
+    is_enabled: bool = Field(default=True, index=True)  # 停用 → 不再触发
+    last_fired_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_enabled():
+        """列全部启用的调度（调度器 tick 用）。"""
+        from sqlmodel import select
+
+        return select(TaskSchedule).where(TaskSchedule.is_enabled == True)  # noqa: E712
+
+    @staticmethod
+    def select_by_event_source(event_source: str):
+        """按事件来源查（事件入口校验用）。"""
+        from sqlmodel import select
+
+        return select(TaskSchedule).where(TaskSchedule.event_source == event_source)

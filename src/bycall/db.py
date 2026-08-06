@@ -132,6 +132,17 @@ def _ensure_schema_compatibility() -> None:
                         "ALTER TABLE approvalrequest ADD COLUMN \"im_user_id\" VARCHAR NOT NULL DEFAULT ''"
                     )
                 )
+        # S1b：补 task_id / step_id 列（任务内审批 → approve/reject 后恢复任务）
+        if "task_id" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE approvalrequest ADD COLUMN \"task_id\" INTEGER")
+                )
+        if "step_id" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE approvalrequest ADD COLUMN \"step_id\" INTEGER")
+                )
 
     # skill: 补 disclosure 列（渐进式披露：always / on_demand）
     if "skill" in inspector.get_table_names():

@@ -19,6 +19,7 @@ const routes = [
       { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
       { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
       { path: 'approvals', name: 'approvals', component: () => import('./views/Approvals.vue') },
+      { path: 'tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },

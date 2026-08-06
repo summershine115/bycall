@@ -56,6 +56,9 @@ def _req(**kw):
         "im_user_id": "WecomUid001",
         "user_id": 7,
         "user_name": "alice",
+        # S1b 任务关联：mock 无任务场景（对话内审批）→ None 跳过任务恢复。
+        "task_id": None,
+        "step_id": None,
     }
     defaults.update(kw)
     return SimpleNamespace(**defaults)
