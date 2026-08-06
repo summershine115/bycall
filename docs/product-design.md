@@ -218,10 +218,38 @@ src/bycall/
 | **M0** ✅ | — | 基础设施 | — |
 | **M1** | 身份数据模型 + 认证 + 身份绑定 + RBAC + 权限中间件 | 单渠道IM(飞书或企微长连接) + 最简RAG(带ACL预过滤) | 用户/角色管理骨架 + 基础审计 |
 | **M2** | 提示词版本化 + 知识库ACL管理 | 第二渠道(企微) + 混合检索增强(重排/查询改写) | 提示词管理 + 知识库ACL管理 |
-| **M3** | 工具按权限过滤 + 记忆scope隔离 + **会话状态层** | LangGraph编排 + **多用户会话(§2.4)** + 分层记忆 + Skill系统 | 工具白名单管理 + 记忆策略 |
+| **M3** | 工具按权限过滤 + 记忆scope隔离 + **会话状态层**（含租约/幂等，见 §6.1） | LangGraph编排 + **多用户会话(§2.4)** + 分层记忆 + Skill系统 | 工具白名单管理 + 记忆策略 |
 | **M4** | MCP RBAC + capability token | MCP网关 + HITL完整闭环(破坏性操作人审) | MCP注册管理 + 审批队列 |
 | **M5** | 合规审计 | 可观测(OTel/Langfuse) + 性能调优 + 迁移准备 | 审计dashboard + 合规报表 |
 | **M6** | 主动推送权限边界（推送对象须为已授权用户，内容复用脱敏/过滤） | 企微SDK能力增强：主动推送(审批结果/异步任务回推) + 多模态输入(图片/文件经`download_file`解密) + 图文混排回复(`msg_item` citation) + 模板卡片交互 + 连接可观测 + 重连可靠性 | IM渠道真实健康状态(`is_connected`) + 重连参数可配(`SystemSetting`) |
+
+### 6.1 工程化修改项与可新增项（QM 借鉴，2026-08）
+
+> 二轮调研 QM 后把「工程化差距」（机制详解见 `docs/qm-benchmark.md` §6）正式化进路线图。
+> **修改项** = 增强现有条目；**可新增项** = 路线图新增条目。
+
+#### 修改项（改现有条目）
+
+| 里程碑 | 现有条目 | 修改内容 |
+|---|---|---|
+| M3 | 会话状态层（治理脊柱列） | 范围扩展：会话条目 append 必须持 DB 租约（turn/compaction 分 holder，原子获取 + token 释放）；失败时 user 消息 back-fill + system 失败条目——历史永不断裂 |
+| M3 | 多轮会话压缩（能力列） | 压缩从请求路径改为后台异步（per-session keyed queue 串行 + 持租约），不阻塞回复 |
+| M4 | HITL 完整闭环 | 审批等待期会话状态持久化（idle/awaiting_approval），等待期间新消息提示「待审批」而非并发执行；审批授权三档（once/session/always）持久化 |
+| M5 | 可观测（能力列） | 增加成本预算维度（per-user + org 双维度 USD，turn 前 check / 后 record），防费用 DoS |
+| M6 | 主动推送（能力列） | 推送升级为 outbox 语义：先落库再发送，幂等 key + TTL 重领重试 + tombstone 防重投 |
+
+#### 可新增项（路线图新增）
+
+| 新增项 | 里程碑 | 说明 | QM 参考 |
+|---|---|---|---|
+| 消息幂等去重 | M3 | 企微 `MsgId` → 幂等键，once 语义（inflight 去重 + DB 持久 + retention），事件重发不重复执行（双回答/双费用/双审计） | `idempotency-store.ts` |
+| 会话租约表 | M3 | `session_leases` 单行 UPSERT 原子获取 + token 释放；worker 心跳丢失连续 3 次 → 取消进程内 turn | `postgres-session-store.ts` / `worker.ts` |
+| operator error log | M3 雏形 / M5 完整 | `error_events` 表（category/code/message/scope/session + 索引，admin 可查）；错误分类（可重试 vs 终局失败） | `postgres-error-log.ts` / `turn-error.ts` |
+| 成本预算 | M5 | per-user + org 双维度 USD 预算 | `budget.ts` |
+| 推送 outbox | M6 | 持久化投递队列 + TTL 重领重试 + tombstone 防重投 | `delivery-store.ts` |
+
+> **落地顺序提示**：修改项 1 + 新增项 1、2 共享「会话条目 append 带租约」同一基础设施，M3 一并落地。
+> 建议 M3 验收标准补充一条：「同一条 IM 消息重发（模拟企微重连）只执行一次；执行失败后用户消息仍在历史中可见，不出现历史断裂」。
 
 **M1 验收标准**（垂直切片完整闭环）：
 1. admin 在控制台邀请一个用户、分配「销售」角色、导入一批带 ACL 的文档。
