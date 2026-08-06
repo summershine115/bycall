@@ -172,7 +172,70 @@ orderedScopes)` 按 scope 层级解析同名 skill（低层 shadow 高层）。
 | P2 | Skill 生命周期 | review/promote（2.7） | M3 Skill 系统升级方向 |
 | P2 | 层级共享模型 | Workspace layers（2.6） | 团队级共享（需求出现时） |
 
-## 5. QM 源码参考清单（按需精读）
+## 6. 工程化与稳健性差距对照（2026-08 二轮调研）
+
+> 二轮调研聚焦「我们做得不够工程化/稳健的地方」。逐条对照 QM 的做法、Bycall 现状、差距等级与落地建议。
+
+### 6.1 差距总览
+
+| # | 主题 | QM 的做法 | Bycall 现状 | 差距 | 落地 |
+|---|---|---|---|---|---|
+| 1 | **消息幂等去重** | `IdempotencyStore.once(key, fn)`：inflight 去重 + DB 持久 + 14 天 retention + 定时 prune；入站 trigger 用 `fireKey` 去重，出站 delivery 用 `idempotencyKey` + Slack 侧 metadata 端到端去重 | ❌ 无：企微重连/事件重发会重复执行同一条消息（双回答、双费用、双审计） | 高 | M3 |
+| 2 | **会话级并发保护** | DB 表 `session_leases`：`INSERT … ON CONFLICT DO UPDATE WHERE expires_at <= now` 原子获取，token 所有权；holder 分 turn/compaction/fork/backfill；worker 心跳（TTL/3），连续 3 次丢失 → AbortController 取消进程内 turn | ❌ 无：同 conversation 并发消息 → 历史读写竞争、消息乱序、压缩并发写 summary | 高 | M3 会话状态层 |
+| 3 | **失败持久化 + operator error log** | turn 失败时：user 消息 back-fill 进历史 + system `turn_failure` 条目（用户看到通用文案，详情指向 operator error log）；`errors.record(category/code/message/scope/session)` 落 `error_events` 表（含索引、admin 可查）；`NonRetryableTurnError` 区分可重试/永久失败；重试耗尽 `errorParks` 自动停机 | ⚠️ 审计记 error 条目，但：用户消息不落库（历史断裂）、无错误表（只有 logger）、无重试分类 | 高 | M5（M3 顺带） |
+| 4 | **出站消息 outbox** | `DeliveryStore`：enqueue（幂等 key 去重）→ `claimPending(ttl)` → ack（tombstone 防重投）；`shadow` 影子投递试跑；`onEnqueue` 唤醒投递 worker | ⚠️ M6 主动推送直接调 SDK 发送，无持久化队列/重试/去重，推送失败即丢 | 中高 | M6 增强 |
+| 5 | **异步压缩** | 每 turn 结束后 `scheduleBackgroundCompaction`（不阻塞用户），per-session `createKeyedQueue` 串行化，compaction 持 lease（不与对话冲突） | ⚠️ 压缩同步在请求路径（用户多等一次 LLM 调用） | 中 | M3 |
+| 6 | **成本预算** | `BudgetTracker`：per-principal + org 双维度 USD 预算（`estimateCostUsd(inputTokens)`），turn 前 check、turn 后 record | ❌ 只有次数限流（30 次/分钟），无成本预算 | 中 | M5 |
+| 7 | **turn outcome 状态机** | `deriveTurnOutcome`：completed / paused / approvalsBlock / awaitingApproval → 会话状态 idle / awaiting_approval，审批等待会 block 后续输入 | ⚠️ 审批门已有（M4 Slice C），但无显式会话状态机 | 低中 | M4 |
+| 8 | **依赖供应链** | `.npmrc min-release-age=7`（新包 7 天冷却期才能进 lockfile）+ knip 死代码检查 + oxlint `--deny-warnings` | Python 生态无对等物；ruff 已有 | 低 | 思路参考 |
+| 9 | **DB 演进** | `CREATE TABLE IF NOT EXISTS` + `VERSIONS_TABLE`（tbl→v 乐观版本），建表即建索引 | ✅ `create_all` + 手写迁移函数（`_migrate_im_bindings` 等） | 无 | — |
+| 10 | **限流** | Redis/Postgres 限流 + 登录防爆破 | ✅ Redis + 内存降级限流 | 无 | — |
+
+### 6.2 重点机制详解（QM 做法）
+
+**① 幂等去重（`src/idempotency/idempotency-store.ts`）**：`once(key, fn)` 用 `inflight` Set 防进程内重入，
+DB 记录 + 14 天 retention + 定时 prune；重复 key 直接返回 false 不执行。入站侧
+（`src/triggers/run-trigger.ts`）每个 trigger 带 `fireKey`，`idempotency.once(fireKey, …)` 保证
+cron/webhook/monitor 触发只跑一次；出站侧 delivery 的 idempotencyKey 随 Slack 消息 metadata
+（`event_payload.idempotency_key`）发出，即使 Slack 侧重试也能对账。
+
+**② 会话租约（`src/sessions/postgres-session-store.ts`）**：单行 UPSERT 原子获取
+（`ON CONFLICT DO UPDATE … WHERE expires_at <= now`，返回 token），持有者用 token 释放；
+拿不到 lease 时返回持有者信息（谁持有、何时过期）用于排队提示。worker 侧
+（`src/runs/worker.ts`）按 TTL/3 心跳续约，**连续 3 次续约失败 → `cancel.abort()` 取消进程内 turn**，
+防止两个进程同时推进同一会话；run 本体也有 lease（`run-store.ts`：claim/heartbeat/complete/fail，
+`maxClaims` 耗尽后 park 不再重试）。
+
+**③ 失败处理（`src/core/orchestrator.ts` 末尾 catch）**：`CommandDenied` → 用户看到拒绝原因；
+`NonRetryableTurnError` → 终局失败，写 system `turn_failure` 条目（`turnFailureMessage` 只放通用文案，
+细节进 `deps.errors.record` → `error_events` 表，admin 可按 scope/session/时间查）；其他异常 → 记录后
+抛给 worker 重试。**用户消息无论成败都会 back-fill 进历史**，历史永不断裂。
+
+**④ 出站 outbox（`src/delivery/delivery-store.ts`）**：`enqueue` 幂等（同 key 返回已有 delivery）→
+worker `claimPending(type, ttl)` 领取（带过期保护）→ 成功后 `ack`；`ackByKey` 写 tombstone 防已投递
+消息重投；`shadow` 模式用于灰度试跑投递逻辑；`onEnqueue` 监听器唤醒 worker（无轮询）。
+
+**⑤ 异步压缩（`src/core/orchestrator/compaction.ts`）**：turn 的 `finally` 里调度，不阻塞回复；
+`createKeyedQueue` 按 session 串行化（同会话的压缩排队），避免多个后台压缩互相覆盖；
+压缩本身也走 lease（holder=compaction），不会与正在进行的 turn 冲突。
+
+**⑥ 成本预算（`src/ratelimit/budget.ts`）**：按 `inputTokens` 估算 USD（`estimateCostUsd`），
+窗口内 per-user 与 org 双维度累计；turn 前 `check`（超限拒绝）、turn 后 `record`；Postgres 版
+（`postgres-budget.ts`）多实例共享计数。
+
+### 6.3 落地建议（按差距优先级）
+
+1. **M3 会话状态层一并落地 #1/#2/#3 的基础**：会话租约表（防并发双写）+ 入站消息
+   fireKey 幂等（企微 `MsgId` 作 key）+ 失败回填 user 消息与 system 失败条目。三者共享
+   「会话条目 append 带 lease」这一个基础设施，边际成本低。
+2. **M4 审批闭环补 #7**：显式会话状态机（idle/awaiting_approval）持久化，审批等待期间
+   新消息提示「上一请求待审批」而非并发执行。
+3. **M5 补 #3 错误表与 #6 预算**：`error_events` 表（admin 可查、按会话聚合）与成本预算
+   （org 维度上限优先，防费用 DoS）。
+4. **M6 主动推送升级为 outbox（#4）**：推送先落库再发送，失败按 TTL 重领重试，
+   消息带幂等 key；与现有审批推送打通。
+
+## 7. QM 源码参考清单（按需精读）
 
 - 群聊 floor：`src/resolution/audience-floor.ts`（约 60 行，核心算法）、`src/resolution/context-filter.ts`
 - Grant 模型：`src/acl/acl-store.ts`（含 no transitive re-share 规则）
@@ -183,3 +246,8 @@ orderedScopes)` 按 scope 层级解析同名 skill（低层 shadow 高层）。
 - 模型批准：`src/harness/harness-router.ts`
 - Skill：`src/skills/skill-store.ts`
 - 威胁模型：`SECURITY.md`（known limitations 写法可仿）
+- **工程化（§6 对应）**：`src/idempotency/idempotency-store.ts`、`src/sessions/postgres-session-store.ts`（lease）、
+  `src/runs/worker.ts` + `src/runs/run-store.ts`（心跳/重试/park）、`src/delivery/delivery-store.ts`（outbox）、
+  `src/core/orchestrator/compaction.ts`（异步压缩 + keyed queue）、`src/ratelimit/budget.ts`（成本预算）、
+  `src/admin/postgres-error-log.ts`（error_events 表）、`src/util/async.ts`（createKeyedQueue）、
+  `src/triggers/run-trigger.ts`（fireKey 幂等入口）
