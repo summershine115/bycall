@@ -86,6 +86,11 @@ IM 消息 → 认证(可信身份) → 身份映射 → 角色 → 当前能力�
 **SKILL 的信任定位**：SKILL（领域知识文档）由 admin 管控，经 `RoleConfig.skills` 按角色分发后注入 system prompt 并享 system 权重。这看似与 §1"策略绝不能活在提示词层"冲突，实则一致——该红线约束的是 **LLM/用户侧的越权升级**（用户消息、LLM 摘要、RAG 文档只能进 user 角色作上下文数据），而 SKILL 与 SystemPrompt 同属 **admin 管控的可信配置层**，不在此约束内。二者的隔离方式不同：SKILL 靠"参考知识，非指令"标注做**软隔离**（享 system 权重但显式标注为非指令），summary/RAG 靠角色降级做**硬隔离**（强制进 user 角色）。详见 `architecture.md` 架构红线 #7。
 
 > **当前已启用多轮会话**：`run_agent` 按 `conversation_id` 加载历史、摘要与管理员维护的用户记忆。企微群聊在“群成员共同授权 + 群会话隔离”模型落地前一律拒绝，避免把某个发送者有权看到的内容暴露给群内其他成员，也避免私聊与群聊串历史。
+>
+> **群聊共同授权的机制参考**（2026-08 调研 QM 后记录）：采用 audience floor——群聊 = channel scope，
+> 进入 LLM 上下文的任何内容（历史/RAG 结果/工具返回/共享文件）先按**全体成员权限交集**过滤，
+> 任何成员单独无权的内容不进上下文；出网白名单取交集、黑名单取并集。具体机制与源码位置见
+> `docs/qm-benchmark.md` §2.1，落地排期见 §8。
 
 **会话主键与 per-session 模型**：架构红线定义 `session_key = (agent_id, channel, tenant_id, user_id)`（见 `architecture.md` §架构红线 #2）。在 DB 层落地为 `Conversation` 表，一个 `(user_id, channel)` 自然对应一条私聊会话；`Conversation.model_id` 为可空外键，空则 fallback 到全局激活模型——默认行为完全兼容现状，需要 per-session 模型时只是一个外键绑定。
 
@@ -243,6 +248,25 @@ src/bycall/
 | 提示词注入防御 | 结构化封装 + **策略不在提示词**（主防线） | 额外加输出校验层 |
 | Admin 认证 | 独立账号密码（起步） | 接企业 SSO（M5） |
 | 多用户模型选择 | **全局激活一个默认模型，会话级可选覆盖**（`Conversation.model_id` 可空，空→默认） | 每用户/每角色强制指定 |
+
+## 8. 对标参考：QM 可借鉴机制（2026-08）
+
+调研 [yc-software/qm](https://github.com/yc-software/qm)（多人协作 Agent harness，MIT）后记录的借鉴项，
+**QM 的具体做法、机制细节与源码位置见 `docs/qm-benchmark.md`**，此处只列要点与落地映射：
+
+| 借鉴项 | 优先级 | QM 机制（一句话） | 落地到 Bycall |
+|---|---|---|---|
+| 群聊共同授权 | P0 | audience floor：群内有效权限 = 全体成员交集，任何内容进上下文前按成员权限过滤 | M3 多用户会话：解除群聊禁令（§2.4） |
+| 安全姿态分级 | P1 | strict/auto/dangerous 三档，org 为地板、scope 只能收紧，破坏性命令永不豁免 | `SystemSetting.security_posture` |
+| HITL 审批闭环 | P1 | 命令策略 allow/deny/require_approval + once/session/always 三档授权 | M3 骨架 / M4 完整闭环 |
+| 策略组合 floor 语义 | P1 | org 规则恒在 + scope 只能追加收紧（代码层组合，提示词带优先级标记） | 按角色/群/项目分发时采用 |
+| 模型批准集合 | P1 | org 批准模型集合，scope 只能在集合内选，空 → 默认项 | M3 per-session 模型白名单 |
+| 工具返回脱敏 | P2 | 外部数据带 provenance 标签，判定层决定以“数据”还是“指令”身份进上下文 | 支柱 4 泄漏面 2 |
+| Skill 生命周期 | P2 | draft → review 授予 capability → publish → promote 到 org | M3 Skill 系统升级方向 |
+
+> **M4 设计红线（借鉴 QM「Deliberately portal-only actions」）**：三个决策**故意**不给 agent 入口——
+> grant 变更、身份冒充、命令审批。每个决策都在授权未来的 agent 行为，因此决策必须来自 agent 之外
+> （控制面/人工），否则 HITL 门就会坍缩成一次模型决策。
 
 ---
 
