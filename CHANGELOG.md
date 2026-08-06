@@ -16,6 +16,12 @@
 
 ### 新增
 
+（空）
+
+## [0.3.0] - 2026-08-06
+
+### 新增
+
 - 新增 Skill 渐进式披露：``disclosure`` 字段（``always`` 常驻 / ``on_demand`` 按需），
   ``on_demand`` 技能只把 name+description 注入系统提示词，全文经由受治理的内置工具
   ``load_skill(name)`` 按需加载——工具按用户绑定集预过滤，非绑定技能拿不到全文（红线 #1）。
@@ -28,6 +34,17 @@
   - typed event 事件总线作为任务执行事件来源，供后续审计、流式与前端 SSE 接入。
   - 每步执行前重算能力集并保存快照（权限变更即拒，红线 #7）；HITL 审批执行共用重算逻辑。
   - 提供未完成任务扫库续跑能力；应用启动自动接入与任务审批自动闭环留待后续切片。
+- 新增任务调度（S1b）：admin 在控制面配置 cron 定时或事件（webhook）触发，任务以指定
+  用户身份执行（每步仍重算能力集，调度不绕过治理）；新增 ``POST /api/events/{event_source}``
+  事件入口（goal 模板支持 ``{payload.xxx}`` 插值），调度器 tick 间隔可用
+  ``task.scheduler_tick_seconds`` 配置。
+- 新增任务执行可视化（S1b）：控制面任务列表 + 进度详情页，``GET /api/admin/tasks/{id}/events``
+  SSE 实时推送执行事件（先回放 DB 快照，再增量追平，断线重连不丢进度）。
+- 对话触发任务支持 LLM 自动拆解多步计划（建议性，代码层校验 kind 白名单；解析失败
+  自动降级单步，保证任务永远可执行）。
+- 任务审批自动闭环（S1b）：任务内工具拦截审批与显式 ``approval_wait`` 步统一挂到
+  Task/Step 上，admin 批准后任务自动恢复执行、拒绝后对应步骤失败；应用启动自动续跑
+  paused/running 任务。
 
 ### 变更
 
@@ -100,5 +117,6 @@
 - 图片消息目前在未配置可靠视觉模型能力时以 `[图片]` 上下文安全降级；文件文本解析已完整
   接入，视觉理解能力将在支持 vision 的模型链路落地后启用。
 
-[未发布]: https://github.com/lilinsen/bycall/compare/v0.2.0...HEAD
+[未发布]: https://github.com/lilinsen/bycall/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/lilinsen/bycall/releases/tag/v0.3.0
 [0.2.0]: https://github.com/lilinsen/bycall/releases/tag/v0.2.0

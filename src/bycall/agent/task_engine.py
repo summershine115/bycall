@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -23,7 +24,7 @@ from datetime import UTC, datetime
 from sqlmodel import Session
 
 from bycall.agent.events import TaskEvent, TaskEventBus, default_bus
-from bycall.governance.models import Run, Step, Task, User
+from bycall.governance.models import ApprovalRequest, Run, Step, Task, User
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,8 @@ def execute_tool_loop_step(
     messages = _to_langchain_messages(raw_messages)
 
     # 4. 注入 capability 与审批上下文 → run_tool_loop → reset。
+    #    任务内审批：context 带 task_id/step_id，审批门创建 ApprovalRequest 时写入关联，
+    #    审批通过/拒绝后据此恢复任务（S1b 自动闭环）。
     cap_token = set_current_capability(cap)
     approval_token = set_approval_context(
         ApprovalContext(
@@ -141,6 +144,8 @@ def execute_tool_loop_step(
             user_name=user.name,
             conversation_id=task.conversation_id,
             channel=task.channel,
+            task_id=task.id,
+            step_id=step.id,
         )
     )
     try:
@@ -168,12 +173,33 @@ def execute_tool_loop_step(
         reset_approval_context(approval_token)
 
     # 5. 成功：产 Run（含脱敏后 tool_calls）+ 标 step done + 发事件。
+    #    审批门拦截检测（S1b 闭环）：本轮工具调用命中了 requires_approval 工具 →
+    #    工具实际未执行（已创建 pending 审批请求），Step 转入 awaiting_approval 等待
+    #    管理员审批；approve/reject 后由 run_task resume 推进。
+    gated_names = {s.name for s in allowed_specs if s.requires_approval}
+    intercepted = [tc for tc in graph_result.tool_calls_made if tc.get("name") in gated_names]
+
     run.status = "ok"
     run.output_json = json.dumps(
         {"answer": graph_result.answer, "hit_iteration_limit": graph_result.hit_iteration_limit},
         ensure_ascii=False,
     )
     run.tool_calls_json = json.dumps(graph_result.tool_calls_made, ensure_ascii=False)
+
+    if intercepted:
+        # 工具被审批门拦截：记录 Run（LLM 产出已保存），但 Step 不完成，转等待审批。
+        step.status = "awaiting_approval"
+        run.finished_at = datetime.now(UTC)
+        run.duration_ms = int((time.perf_counter() - t0) * 1000)
+        session.add(run)
+        session.add(step)
+        session.commit()
+        session.refresh(run)
+        logger.info(
+            "Step #%s 命中审批门（%s），转等待审批", step.id, [t["name"] for t in intercepted]
+        )
+        return run
+
     _finish(session, step, run, step_status="done", t0=t0)
     bus.publish(
         TaskEvent(
@@ -354,6 +380,53 @@ def run_task(
         if step.status == "done":
             continue  # 幂等：跳过已完成
 
+        # S1b 审批闭环：等待审批的 Step 在 resume 时按审批结果推进。
+        if step.status == "awaiting_approval":
+            approvals = list(session.exec(ApprovalRequest.select_by_step(step.id)))
+            if not approvals or any(a.status == "pending" for a in approvals):
+                # 仍有待审批 → 继续挂起。
+                transition_task_status(session, task, "paused")
+                bus.publish(
+                    TaskEvent(
+                        type="approval_requested",
+                        task_id=task.id,
+                        step_id=step.id,
+                        payload={
+                            "reason": "tool_approval",
+                            "approval_ids": [a.id for a in approvals],
+                        },
+                    )
+                )
+                return task
+            if all(a.status == "executed" for a in approvals):
+                # 全部审批通过 → 该步完成，继续后续步骤。
+                step.status = "done"
+                session.add(step)
+                session.commit()
+                bus.publish(
+                    TaskEvent(
+                        type="step_completed",
+                        task_id=task.id,
+                        step_id=step.id,
+                        payload={"reason": "approval_passed", "approval_ids": [a.id for a in approvals]},
+                    )
+                )
+                continue
+            # 存在 rejected / failed → 审批未通过，该步失败 → 任务失败。
+            step.status = "failed"
+            session.add(step)
+            session.commit()
+            bus.publish(
+                TaskEvent(
+                    type="step_failed",
+                    task_id=task.id,
+                    step_id=step.id,
+                    payload={"reason": "approval_rejected"},
+                )
+            )
+            transition_task_status(session, task, "failed")
+            return task
+
         if step.kind == "tool_loop":
             execute_tool_loop_step(
                 session=session,
@@ -366,14 +439,59 @@ def run_task(
             if step.status == "failed":
                 transition_task_status(session, task, "failed")
                 return task
+            if step.status == "awaiting_approval":
+                # 审批门拦截：暂停任务等审批（approve/reject 后自动恢复）。
+                approvals = list(session.exec(ApprovalRequest.select_by_step(step.id)))
+                transition_task_status(session, task, "paused")
+                bus.publish(
+                    TaskEvent(
+                        type="approval_requested",
+                        task_id=task.id,
+                        step_id=step.id,
+                        payload={
+                            "reason": "tool_approval",
+                            "approval_ids": [a.id for a in approvals],
+                        },
+                    )
+                )
+                return task
             # 继续下一个步骤。
-        elif step.kind in ("approval_wait", "clarify"):
-            # S1a 编排层只负责暂停并发事件；ApprovalRequest 创建/回填由后续切片接入。
+        elif step.kind == "approval_wait":
+            # S1b 闭环：创建任务级审批请求（伪工具 ``__task_approval__``，纯 HITL
+            # 确认无工具执行）→ 暂停等审批；approve 后 run_task resume 推进。
+            from bycall.tools.approval import ApprovalContext, create_approval_request
+
+            step.status = "awaiting_approval"
+            session.add(step)
+            session.commit()
+            req_id = create_approval_request(
+                ApprovalContext(
+                    user_id=task.user_id,
+                    user_name=user.name if user is not None else "",
+                    conversation_id=task.conversation_id,
+                    channel=task.channel,
+                    task_id=task.id,
+                    step_id=step.id,
+                ),
+                "__task_approval__",
+                {},
+            )
             transition_task_status(session, task, "paused")
-            event_type = "approval_requested" if step.kind == "approval_wait" else "task_paused"
             bus.publish(
                 TaskEvent(
-                    type=event_type,
+                    type="approval_requested",
+                    task_id=task.id,
+                    step_id=step.id,
+                    payload={"reason": step.kind, "approval_id": req_id},
+                )
+            )
+            return task
+        elif step.kind == "clarify":
+            # S1b：clarify 步保持暂停等待用户输入（无审批请求；恢复由对话续跑触发）。
+            transition_task_status(session, task, "paused")
+            bus.publish(
+                TaskEvent(
+                    type="task_paused",
                     task_id=task.id,
                     step_id=step.id,
                     payload={"reason": step.kind},
@@ -414,3 +532,144 @@ def resume_pending_tasks(
         except Exception as e:
             logger.error("Task #%s 续跑失败: %s", task.id, e)
     return resumed
+
+
+# ============ 计划生成 + 调度触发（S1b）============
+
+
+_PLAN_SYSTEM_PROMPT = (
+    "你是企业数字员工的任务规划器。把用户的目标拆成可逐步执行的任务计划。"
+    "输出必须是 JSON 数组，每个元素形如 {\"goal\": \"这一步要做什么\", \"kind\": \"tool_loop\"}。"
+    "约束：\n"
+    "- kind 只能是 tool_loop（工具回路一步）或 approval_wait（需要管理员审批的一步）；\n"
+    "- 简单目标（一问一答、单次检索）只拆 1 步，不要过度拆分；\n"
+    "- 需要调用多个工具才能完成的目标拆成多个顺序步骤，每步一个可独立执行的小目标；\n"
+    "- 不要输出任何解释或 Markdown 围栏，只输出 JSON 数组。"
+)
+
+
+def plan_task_goal(chat_model, goal: str) -> list[dict]:
+    """LLM 把目标拆成 Step 计划（建议性，执行前代码层校验）。
+
+    计划是**建议**不是命令（spec §3.2）：``create_steps_from_plan`` + ``_validate_step_kinds``
+    在代码层校验 kind 合法性与非空。LLM 输出非法 / 解析失败 → 降级为单步
+    （goal 作唯一 ``tool_loop`` 步）——保证任务永远可执行，不因拆解失败卡死。
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    try:
+        resp = chat_model.invoke(
+            [SystemMessage(content=_PLAN_SYSTEM_PROMPT), HumanMessage(content=goal)]
+        )
+        content = getattr(resp, "content", "")
+        if isinstance(content, list):  # 多模态返回（罕见）取文本段
+            content = "".join(
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        raw = str(content).strip()
+        # 剥离可能出现的 Markdown 围栏（```json ... ```，首行语言标识一并去掉）。
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            raw = "\n".join(lines)
+            if raw.endswith("```"):
+                raw = raw[:-3].rstrip()
+        plan = json.loads(raw)
+        if not isinstance(plan, list) or not plan:
+            raise ValueError("计划不是非空数组")
+        steps = []
+        for item in plan:
+            if not isinstance(item, dict):
+                raise ValueError("计划项不是对象")
+            kind = item.get("kind", "tool_loop")
+            step_goal = str(item.get("goal", "")).strip()
+            if kind not in ("tool_loop", "approval_wait"):
+                raise ValueError(f"不支持的 kind: {kind}")
+            if not step_goal:
+                raise ValueError("计划项缺少 goal")
+            steps.append({"goal": step_goal, "kind": kind})
+        return steps
+    except Exception as e:  # 任何解析失败 → 单步降级（可执行性优先）
+        logger.warning("LLM 拆解计划失败，降级单步: %s", e)
+        return [{"goal": goal, "kind": "tool_loop"}]
+
+
+def _interpolate_goal(goal: str, payload: dict) -> str:
+    """把 ``{payload.xxx}`` 占位符替换为事件 payload 字段值。
+
+    嵌套键用点号（``{payload.order.id}``）；缺键抛 ``KeyError``（事件端点据此 400）。
+    """
+
+    def _repl(match: re.Match) -> str:
+        key = match.group(1)
+        if not key.startswith("payload"):
+            return match.group(0)  # 非 payload 占位符原样保留
+        value: object = payload
+        for part in key.split(".")[1:]:
+            if not isinstance(value, dict) or part not in value:
+                raise KeyError(f"payload 缺少字段: {key}")
+            value = value[part]
+        return str(value)
+
+    return re.sub(r"\{([^{}]+)\}", _repl, goal)
+
+
+def fire_schedule_task(
+    *,
+    session: Session,
+    schedule,
+    payload: dict | None = None,
+    chat_model=None,
+    bus: TaskEventBus = default_bus,
+) -> Task:
+    """按调度模板创建 Task 并执行（cron / event 触发共用）。
+
+    - ``template.plan`` 存在 → 直接用（代码层校验 kind）；缺省 → LLM 拆解。
+    - ``chat_model=None``（未激活对话模型）→ 仅创建 draft Task 不执行，
+      由调用方（调度器/事件端点）决定如何处理——调度器跳过，事件端点 503。
+    - ``payload``（仅 event 触发）：替换 ``goal`` 中的 ``{payload.xxx}`` 占位符。
+    """
+    try:
+        template = json.loads(schedule.task_template_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        template = {}
+    if not isinstance(template, dict):
+        template = {}
+
+    goal = str(template.get("goal", "")).strip()
+    if payload is not None:  # 事件触发（含空 dict）：占位符必须能填满，缺键报错。
+        try:
+            goal = _interpolate_goal(goal, payload)
+        except KeyError as e:
+            raise ValueError(f"调度模板插值失败: {e}") from e
+    if not goal:
+        raise ValueError(f"调度 #{schedule.id} 模板缺少 goal")
+
+    task = Task(
+        user_id=schedule.user_id,
+        channel="api",
+        trigger="cron" if schedule.trigger_type == "cron" else "event",
+        schedule_id=schedule.id,
+        goal=goal,
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+
+    if chat_model is not None:
+        plan = template.get("plan")
+        if plan is None or not isinstance(plan, list) or not plan:
+            plan = plan_task_goal(chat_model, goal)
+        else:
+            # 模板 plan 同样过代码层校验：kind 白名单 + 非空。
+            validated: list[dict] = []
+            for item in plan:
+                if isinstance(item, dict) and item.get("goal"):
+                    kind = item.get("kind", "tool_loop")
+                    if kind in ("tool_loop", "approval_wait"):
+                        validated.append({"goal": str(item["goal"]), "kind": kind})
+            plan = validated if validated else plan_task_goal(chat_model, goal)
+        run_task(session=session, task=task, chat_model=chat_model, plan=plan, bus=bus)
+    return task

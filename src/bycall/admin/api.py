@@ -32,6 +32,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -88,6 +89,13 @@ from bycall.admin.schemas import (
     SkillImportResult,
     SkillOut,
     SkillUpdate,
+    TaskDetailOut,
+    TaskOut,
+    TaskRunOut,
+    TaskScheduleCreate,
+    TaskScheduleOut,
+    TaskScheduleUpdate,
+    TaskStepOut,
     ToolOut,
     UserCreate,
     UserOut,
@@ -103,9 +111,13 @@ from bycall.governance.models import (
     Message,
     Model,
     Role,
+    Run,
     Skill,
+    Step,
     SystemPrompt,
     SystemSetting,
+    Task,
+    TaskSchedule,
     User,
     UserMemory,
 )
@@ -3332,6 +3344,34 @@ def _get_operator_name(request: Request) -> str:
     return "unknown"
 
 
+def _resume_task_after_approval(session: Session, req) -> None:
+    """审批处理后恢复关联任务（S1b 闭环：approve/reject → 任务自动推进）。
+
+    任务处于 paused（等审批）时调 ``run_task`` resume；resume 内部按该 Step 的审批
+    结果推进：全部 executed → 继续；有 rejected/failed → 该步失败 → 任务失败。
+    无激活对话模型时保持 paused（配置模型后由启动续跑恢复）。
+    """
+    if req.task_id is None:
+        return
+    task = session.get(Task, req.task_id)
+    if task is None or task.status != "paused":
+        return
+
+    from bycall.agent.task_engine import run_task
+    from bycall.llm.resolver import get_chat_model
+
+    resolved = get_chat_model(session)
+    if resolved is None:
+        logger.warning("无激活对话模型，任务 #%s 保持暂停（审批 #%s 已处理）", task.id, req.id)
+        return
+    _, chat_model = resolved
+    try:
+        run_task(session=session, task=task, chat_model=chat_model)
+        logger.info("审批 #%s 后任务 #%s 已恢复", req.id, task.id)
+    except Exception:
+        logger.exception("审批 #%s 后任务 #%s 恢复失败", req.id, task.id)
+
+
 def _get_approval_or_404(session: Session, approval_id: int):
     """按 id 取审批请求，不存在 → 404。"""
     from bycall.governance.models import ApprovalRequest
@@ -3451,6 +3491,8 @@ def approve_approval(
     # M6：只有审批状态、结果和会话历史成功提交后才通知；失败不回滚已提交事务。
     if ok:
         push_approval_result(req, result_text)
+    # S1b：任务内审批 → 恢复关联任务（resume 按审批结果推进 Step）。
+    _resume_task_after_approval(session, req)
     return _approval_to_out(req)
 
 
@@ -3489,4 +3531,381 @@ def reject_approval(
     _audit_admin(session, request, "reject_tool", f"ApprovalRequest(#{req.id}, {req.tool_name})")
     session.commit()
     session.refresh(req)
+    # S1b：任务内审批被拒 → 恢复任务（resume 将对应 Step 标 failed → 任务失败）。
+    _resume_task_after_approval(session, req)
     return _approval_to_out(req)
+
+
+# ============ 任务执行（S1）：列表 / 详情 / SSE 进度 ============
+
+
+def _task_to_out(session: Session, task: Task) -> TaskOut:
+    """Task ORM → TaskOut（补 user_name，列表/详情共用）。"""
+    user = session.get(User, task.user_id)
+    return TaskOut(
+        id=task.id,  # type: ignore[arg-type]
+        user_id=task.user_id,
+        user_name=user.name if user is not None else "",
+        conversation_id=task.conversation_id,
+        channel=task.channel,
+        trigger=task.trigger,
+        schedule_id=task.schedule_id,
+        goal=task.goal,
+        status=task.status,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+def _task_detail_out(session: Session, task: Task) -> TaskDetailOut:
+    """任务详情：Task + Steps + Runs（进度页一次取全）。"""
+    steps = list(session.exec(Step.select_by_task(task.id)))  # type: ignore[arg-type]
+    runs: list[Run] = []
+    for step in steps:
+        runs.extend(session.exec(Run.select_by_step(step.id)))
+    return TaskDetailOut(
+        task=_task_to_out(session, task),
+        steps=[TaskStepOut.model_validate(s) for s in steps],
+        runs=[TaskRunOut.model_validate(r) for r in runs],
+    )
+
+
+def _get_task_or_404(session: Session, task_id: int) -> Task:
+    """按 id 取任务，不存在 → 404。"""
+    task = session.get(Task, task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务不存在: {task_id}",
+        )
+    return task
+
+
+@router.get("/tasks", response_model=list[TaskOut])
+def list_tasks(
+    status_filter: str | None = Query(
+        default=None, alias="status", description="按状态过滤（completed/failed/paused/...）"
+    ),
+    user_id: int | None = Query(default=None, description="按执行用户过滤"),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[TaskOut]:
+    """列出任务（默认全部，按创建时间倒序）。admin 视角：跟进全员任务执行。"""
+    stmt = select(Task)
+    if status_filter:
+        stmt = stmt.where(Task.status == status_filter)
+    if user_id is not None:
+        stmt = stmt.where(Task.user_id == user_id)
+    rows = session.exec(stmt.order_by(Task.created_at.desc()).limit(limit)).all()
+    return [_task_to_out(session, t) for t in rows]
+
+
+@router.get("/tasks/{task_id}", response_model=TaskDetailOut)
+def get_task(
+    task_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> TaskDetailOut:
+    """任务详情（Task + Steps + Runs），供进度页初始渲染。"""
+    return _task_detail_out(session, _get_task_or_404(session, task_id))
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(
+    task_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> Response:
+    """任务执行 SSE 事件流：先回放 DB 快照（snapshot 事件），再转发实时事件。
+
+    实现要点：
+    - 事件未落库（进程内总线），连接时以 DB 现状合成 ``snapshot`` 事件做初始渲染，
+      之后增量追平——前端先渲染快照再按事件推进，断线重连不丢进度。
+    - 订阅进程级 ``default_bus``（通配），只转发本任务事件；handler 异常已隔离。
+    - 异步生成器 + ``request.is_disconnected()``：客户端断开立即退出（不依赖
+      GeneratorExit 时序），15s 无事件发注释行心跳保活。
+    """
+    import asyncio
+
+    from bycall.agent.events import TaskEvent, default_bus
+
+    _get_task_or_404(session, task_id)  # 404 校验
+
+    steps = list(session.exec(Step.select_by_task(task_id)))
+    runs: list[Run] = []
+    for step in steps:
+        runs.extend(session.exec(Run.select_by_step(step.id)))
+    snapshot = {
+        "task": _task_to_out(session, session.get(Task, task_id)).model_dump(mode="json"),
+        "steps": [TaskStepOut.model_validate(s).model_dump(mode="json") for s in steps],
+        "runs": [TaskRunOut.model_validate(r).model_dump(mode="json") for r in runs],
+    }
+
+    async def _event_stream():
+        # 先发快照，再订阅总线追平增量。
+        yield f"data: {TaskEvent(type='snapshot', task_id=task_id, payload=snapshot).model_dump_json()}\n\n"
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+
+        def _put(event: TaskEvent) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        default_bus.subscribe(None, _put)
+        try:
+            while True:
+                # 同时等待：事件 / 客户端断开 / 心跳超时——断开立即退出，不拖 15s。
+                get_task = asyncio.create_task(queue.get())
+                disc_task = asyncio.create_task(request.is_disconnected())
+                done, pending = await asyncio.wait(
+                    {get_task, disc_task}, timeout=15, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                if disc_task in done and disc_task.result():
+                    return
+                if get_task in done:
+                    event: TaskEvent = get_task.result()
+                    if event.task_id == task_id:
+                        yield f"data: {event.model_dump_json()}\n\n"
+                else:
+                    yield ": keepalive\n\n"  # 心跳注释行（SSE 协议空行间隔）
+        finally:
+            default_bus.unsubscribe(None, _put)
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+# ============ 任务调度（S1b）：定时/事件触发管理 ============
+
+
+def _get_schedule_or_404(session: Session, schedule_id: int) -> TaskSchedule:
+    """按 id 取调度，不存在 → 404。"""
+    sched = session.get(TaskSchedule, schedule_id)
+    if sched is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务调度不存在: {schedule_id}",
+        )
+    return sched
+
+
+def _schedule_to_out(sched: TaskSchedule) -> TaskScheduleOut:
+    """TaskSchedule ORM → TaskScheduleOut（task_template_json 解析为 dict）。"""
+    try:
+        template = json.loads(sched.task_template_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        template = {}
+    if not isinstance(template, dict):
+        template = {}
+    return TaskScheduleOut(
+        id=sched.id,  # type: ignore[arg-type]
+        name=sched.name,
+        trigger_type=sched.trigger_type,
+        cron_expr=sched.cron_expr,
+        event_source=sched.event_source,
+        task_template=template,
+        user_id=sched.user_id,
+        is_enabled=sched.is_enabled,
+        last_fired_at=sched.last_fired_at,
+        created_at=sched.created_at,
+        updated_at=sched.updated_at,
+    )
+
+
+def _validate_schedule_payload(payload: TaskScheduleCreate | TaskScheduleUpdate) -> None:
+    """校验调度触发配置：cron/event 字段按 trigger_type 二选一，cron 表达式合法。"""
+    trigger_type = payload.trigger_type
+    cron_expr = payload.cron_expr
+    event_source = payload.event_source
+    # PATCH 语义：更新时未传的字段沿用旧值，校验只针对传入部分。
+    if trigger_type is None:
+        return
+    if trigger_type not in ("cron", "event"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"trigger_type 必须是 cron 或 event（收到: {trigger_type}）",
+        )
+    if trigger_type == "cron":
+        if not cron_expr:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="trigger_type=cron 时必须提供 cron_expr",
+            )
+        from croniter import croniter
+
+        if not croniter.is_valid(cron_expr):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"cron 表达式非法: {cron_expr}",
+            )
+    else:
+        if not event_source:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="trigger_type=event 时必须提供 event_source",
+            )
+
+
+@router.get("/task-schedules", response_model=list[TaskScheduleOut])
+def list_task_schedules(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[TaskScheduleOut]:
+    """列出全部任务调度（按 id 升序）。"""
+    rows = session.exec(select(TaskSchedule).order_by(TaskSchedule.id)).all()
+    return [_schedule_to_out(r) for r in rows]
+
+
+@router.post("/task-schedules", response_model=TaskScheduleOut, status_code=201)
+def create_task_schedule(
+    payload: TaskScheduleCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> TaskScheduleOut:
+    """创建任务调度（cron 定时 / event 事件触发）。"""
+    _validate_schedule_payload(payload)
+    if session.get(User, payload.user_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"执行用户不存在: {payload.user_id}",
+        )
+    sched = TaskSchedule(
+        name=payload.name,
+        trigger_type=payload.trigger_type,
+        cron_expr=payload.cron_expr,
+        event_source=payload.event_source,
+        task_template_json=json.dumps(payload.task_template, ensure_ascii=False),
+        user_id=payload.user_id,
+        is_enabled=payload.is_enabled,
+    )
+    try:
+        session.add(sched)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"调度名已存在: {payload.name}",
+        ) from None
+    session.refresh(sched)
+    _audit_admin(
+        session, request, "create_task_schedule", f"TaskSchedule(#{sched.id}, {sched.name})"
+    )
+    return _schedule_to_out(sched)
+
+
+@router.get("/task-schedules/{schedule_id}", response_model=TaskScheduleOut)
+def get_task_schedule(
+    schedule_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> TaskScheduleOut:
+    """任务调度详情。"""
+    return _schedule_to_out(_get_schedule_or_404(session, schedule_id))
+
+
+@router.patch("/task-schedules/{schedule_id}", response_model=TaskScheduleOut)
+def update_task_schedule(
+    schedule_id: int,
+    payload: TaskScheduleUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> TaskScheduleOut:
+    """更新任务调度（PATCH 语义：仅传入字段生效）。"""
+    sched = _get_schedule_or_404(session, schedule_id)
+    # 合并旧值后整体校验（PATCH 只校验最终形态）。
+    merged = TaskScheduleCreate(
+        name=payload.name or sched.name,
+        trigger_type=payload.trigger_type or sched.trigger_type,
+        cron_expr=payload.cron_expr if payload.cron_expr is not None else sched.cron_expr,
+        event_source=(
+            payload.event_source if payload.event_source is not None else sched.event_source
+        ),
+        task_template=(
+            payload.task_template
+            if payload.task_template is not None
+            else (json.loads(sched.task_template_json or "{}") or {})
+        ),
+        user_id=payload.user_id if payload.user_id is not None else sched.user_id,
+        is_enabled=payload.is_enabled if payload.is_enabled is not None else sched.is_enabled,
+    )
+    _validate_schedule_payload(merged)
+    if session.get(User, merged.user_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"执行用户不存在: {merged.user_id}",
+        )
+
+    sched.name = merged.name
+    sched.trigger_type = merged.trigger_type
+    sched.cron_expr = merged.cron_expr
+    sched.event_source = merged.event_source
+    sched.task_template_json = json.dumps(merged.task_template, ensure_ascii=False)
+    sched.user_id = merged.user_id
+    sched.is_enabled = merged.is_enabled
+    try:
+        session.add(sched)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"调度名已存在: {merged.name}",
+        ) from None
+    session.refresh(sched)
+    _audit_admin(
+        session, request, "update_task_schedule", f"TaskSchedule(#{sched.id}, {sched.name})"
+    )
+    return _schedule_to_out(sched)
+
+
+@router.delete("/task-schedules/{schedule_id}", status_code=204)
+def delete_task_schedule(
+    schedule_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除任务调度（不影响已触发的任务）。"""
+    sched = _get_schedule_or_404(session, schedule_id)
+    name = sched.name
+    session.delete(sched)
+    session.commit()
+    _audit_admin(session, request, "delete_task_schedule", f"TaskSchedule(#{schedule_id}, {name})")
+
+
+@router.post("/task-schedules/{schedule_id}/fire", response_model=TaskOut)
+def fire_task_schedule(
+    schedule_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> TaskOut:
+    """手动触发一次调度（测试/立即执行用），与定时/事件触发走同一引擎。"""
+    from bycall.agent.task_engine import fire_schedule_task
+    from bycall.llm.resolver import get_chat_model
+
+    sched = _get_schedule_or_404(session, schedule_id)
+    resolved = get_chat_model(session)
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="未激活对话模型，无法执行任务",
+        )
+    _, chat_model = resolved
+    task = fire_schedule_task(session=session, schedule=sched, chat_model=chat_model)
+    sched.last_fired_at = datetime.now(UTC)
+    session.add(sched)
+    session.commit()
+    _audit_admin(
+        session,
+        request,
+        "fire_task_schedule",
+        f"TaskSchedule(#{schedule_id}, {sched.name}) → Task(#{task.id})",
+    )
+    return _task_to_out(session, task)

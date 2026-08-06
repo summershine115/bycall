@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -79,6 +80,11 @@ def create_app() -> FastAPI:
 
     app.include_router(dataplane_router)
 
+    # ---- 外部事件入口（S1b）：POST /api/events/{event_source} 触发任务 ----
+    from bycall.api.events import router as events_router
+
+    app.include_router(events_router)
+
     # ---- SPA 托管（生产用：托管 frontend/dist 打包产物）----
     _mount_spa(app)
 
@@ -112,6 +118,44 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     def _close_mcp() -> None:
         mcp_mgr.close_all()
+
+    # ---- S1b：任务调度器 + 未完成任务续跑（启动即恢复，不阻塞启动）----
+    from bycall.agent.scheduler import get_task_scheduler
+
+    task_scheduler = get_task_scheduler()
+
+    @app.on_event("startup")
+    def _start_task_scheduler() -> None:
+        task_scheduler.start()
+
+    @app.on_event("startup")
+    def _resume_pending_tasks() -> None:
+        """启动后后台恢复 paused/running 任务（spec §3.4：进程重启可续跑）。
+
+        放后台线程：续跑会调 LLM，可能耗时；启动路径不该被阻塞。无激活对话模型时
+        跳过（模型配好后重启或手动触发）。
+        """
+
+        def _run() -> None:
+            from bycall.agent.task_engine import resume_pending_tasks
+            from bycall.db import session_scope
+            from bycall.llm.resolver import get_chat_model
+
+            with session_scope() as sess:
+                resolved = get_chat_model(sess)
+                if resolved is None:
+                    logger.warning("无激活对话模型，跳过未完成任务续跑")
+                    return
+                _, chat_model = resolved
+                resumed = resume_pending_tasks(session=sess, chat_model=chat_model)
+                if resumed:
+                    logger.info("启动续跑完成: %d 个任务", len(resumed))
+
+        threading.Thread(target=_run, name="task-resume", daemon=True).start()
+
+    @app.on_event("shutdown")
+    def _stop_task_scheduler() -> None:
+        task_scheduler.stop()
 
     logger.info("Bycall app created (env=%s, version=%s)", settings.env, __version__)
     return app

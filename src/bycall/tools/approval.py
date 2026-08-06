@@ -58,6 +58,8 @@ class ApprovalContext:
 
     由 runner 在 graph 执行前设置（与 capability token 同一时机），审批门在拦截
     破坏性工具调用时读取。``conversation_id`` 可空（REST 单轮请求无会话）。
+    ``task_id`` / ``step_id`` 可空——任务内审批时填写，供 approve/reject 后恢复任务
+    （S1b 审批自动闭环）；对话内审批（无任务）时为空。
     """
 
     user_id: int
@@ -65,6 +67,8 @@ class ApprovalContext:
     conversation_id: int | None
     channel: str
     im_user_id: str = ""
+    task_id: int | None = None
+    step_id: int | None = None
 
 
 def set_approval_context(ctx: ApprovalContext | None) -> contextvars.Token:
@@ -86,6 +90,7 @@ def create_approval_request(ctx: ApprovalContext, tool_name: str, args: dict[str
     """创建一条 pending 审批请求，返回其 id。
 
     用独立 ``session_scope``（与 runner 的 session 隔离），立即提交——admin 队列需立即可见。
+    任务内审批（``ctx.task_id`` 非空）把 Task/Step 关联写入，approve/reject 后据此恢复任务。
     """
     from bycall.governance.models import ApprovalRequest
 
@@ -97,6 +102,8 @@ def create_approval_request(ctx: ApprovalContext, tool_name: str, args: dict[str
             conversation_id=ctx.conversation_id,
             channel=ctx.channel,
             im_user_id=ctx.im_user_id,
+            task_id=ctx.task_id,
+            step_id=ctx.step_id,
             tool_name=tool_name,
             tool_args_json=args_json,
             status="pending",
@@ -144,11 +151,19 @@ def execute_approved_tool(req) -> tuple[bool, str]:
     5. 返回脱敏后结果（截断到 ``_RESULT_TRUNCATE``）。
 
     ``req`` 是 ``ApprovalRequest`` ORM 实例（status 应为 pending，由调用方保证）。
+
+    S1b 任务级审批（``__task_approval__`` 伪工具）：approval_wait Step 的审批是纯 HITL
+    确认（无实际工具执行），直接通过——真实工具的审批仍走下方完整链路。
     """
     from bycall.governance.capability import reload_user_and_compute_cap
     from bycall.mcp.context import reset_current_capability, set_current_capability
     from bycall.tools.gateway import filter_tools
     from bycall.tools.registry import get_tool
+
+    # 任务级审批（approval_wait Step）：管理员确认即通过，无工具可执行。
+    if req.tool_name == "__task_approval__":
+        logger.info("审批 #%s 任务级确认通过", req.id)
+        return True, "任务审批已通过"
 
     spec = get_tool(req.tool_name)
     if spec is None:

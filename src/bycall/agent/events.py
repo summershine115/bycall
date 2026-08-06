@@ -34,8 +34,9 @@ TaskEventType = Literal[
     "step_failed",
     "task_done",
     "task_paused",
+    "snapshot",  # S1b SSE：连接时的任务状态快照（DB 回放，非总线事件）
 ]
-"""任务执行全程的事件类型（spec §3.3）。"""
+"""任务执行全程的事件类型（spec §3.3）。``snapshot`` 是 SSE 连接时合成的回放事件。"""
 
 
 class TaskEvent(BaseModel):

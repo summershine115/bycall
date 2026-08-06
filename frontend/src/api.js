@@ -190,6 +190,19 @@ export const admin = {
     http.post(`/api/admin/approvals/${id}/approve`, { note }).then((r) => r.data),
   rejectApproval: (id, note) =>
     http.post(`/api/admin/approvals/${id}/reject`, { note }).then((r) => r.data),
+  // 任务执行（S1）：多步任务列表 / 详情 / SSE 进度
+  listTasks: (params = {}) => http.get('/api/admin/tasks', { params }).then((r) => r.data),
+  getTask: (id) => http.get(`/api/admin/tasks/${id}`).then((r) => r.data),
+  taskEventsUrl: (id) => `/api/admin/tasks/${id}/events`,
+  // 任务调度（S1b）：定时/事件触发管理
+  listTaskSchedules: () => http.get('/api/admin/task-schedules').then((r) => r.data),
+  createTaskSchedule: (data) =>
+    http.post('/api/admin/task-schedules', data).then((r) => r.data),
+  updateTaskSchedule: (id, data) =>
+    http.patch(`/api/admin/task-schedules/${id}`, data).then((r) => r.data),
+  deleteTaskSchedule: (id) => http.delete(`/api/admin/task-schedules/${id}`),
+  fireTaskSchedule: (id) =>
+    http.post(`/api/admin/task-schedules/${id}/fire`).then((r) => r.data),
 }
 
 // ============ 数据面 /chat ============
