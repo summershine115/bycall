@@ -724,13 +724,13 @@ class Message(SQLModel, table=True):
 
 
 class UserMemory(SQLModel, table=True):
-    """用户级长期记忆——跨会话持久，admin 可见可编辑。
+    """用户级长期记忆——跨会话持久，admin 可见可编辑（L1 atom 层）。
 
-    参考 Hermes 的 USER.md + MEMORY.md，但关键差异：Bycall 的记忆不由 LLM 自主编辑
-    （企业场景：记忆是组织管控的，不是 LLM 自己写的）。M3 先做表结构 + admin 手动管理，
-    LLM 自动提取记忆留后续迭代。
-
-    记忆在拼 prompt 时注入 system message（与 system_prompt 一起，不是 user message）。
+    信任定位（ADR-0006「受治理认知」）：记忆属认知平面。当前为 admin 手写录入——与
+    SystemPrompt/SKILL 同属可信配置层，注入 system message（软隔离，享 system 权重但标注为
+    非指令）。M3 起 agent 可自主提炼记忆草稿，但须经发布门（admin 审，复用 ApprovalRequest）
+    才成已发布资产；**agent 生成的记忆召回时降权进 user 角色**（红线 #7 硬隔离），admin 手写
+    记忆仍进 system。详见 ADR-0006 与 docs/tencent-agent-memory-benchmark.md。
     """
 
     id: int | None = Field(default=None, primary_key=True)

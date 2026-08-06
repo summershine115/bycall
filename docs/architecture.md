@@ -43,6 +43,7 @@
 ```
 
 标注 `[M?]` 表示该层在对应里程碑落地。✅ 表示已完成。
+> **记忆层（[M3]）落地为受治理认知**：短期=对话窗口；长期=L0→L3 分层（Postgres+pgvector），agent 提炼但过发布门（admin 审）才成团队资产，召回降权进 user 角色 + 三重预算。详见 ADR-0006 与红线 #4。
 
 ## M0 已落地的部分
 
@@ -64,6 +65,8 @@
    - **per-session 模型**：`Conversation.model_id` 可空外键，空 → fallback 全局激活模型（`Model.is_active`）。默认行为兼容 M1/M2 无状态形态。
 3. **混合架构**：LangGraph durable（超步边界持久化）+ 同步 RAG 热路径。
 4. **分层记忆**：工作/情景/语义/治理四层，**agent memory ≠ RAG**。
+   - **受治理认知（ADR-0006）**：记忆分两平面——策略平面（谁能用、何时用、能力上限）严苛不变；认知平面（agent 提炼 L0→L3、Skill 蒸馏）开放但受治理：默认 private，过发布门（admin 审，复用 `ApprovalRequest`）才成团队/组织资产；召回结果降权进 user 角色（红线 #7）；认知产物永不改写策略。
+   - **落地映射**：L0=`Message`、L1=`UserMemory`(atom)、L2=场景块、L3=稳定画像；混合召回（BM25+向量+RRF）+ 三重预算（条数/字符/超时）。机制见 `docs/tencent-agent-memory-benchmark.md`。
 5. **MCP 网关**：统一工具治理，agent 不直连 MCP server。
 6. **失败时保持授权状态**：文档删除、ACL 变更、索引重建必须先确认向量侧操作成功；不得在向量删除失败时仍提交元数据删除或 ACL 变更。
 7. **不可信上下文不得提权**：用户消息、LLM 生成摘要和 RAG 文档只能作为上下文数据进入模型，不能占用控制面 system 指令角色。
