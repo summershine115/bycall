@@ -193,7 +193,7 @@ class TestMemoryInjection:
         assert "会话模式：多轮会话" in sys_text
         assert "管理员维护的用户长期记忆：0 条" in sys_text
         assert "本轮可执行工具\n- 无" in sys_text
-        assert "不得在未经检查时声称你不记得用户" in sys_text
+        assert "自然地体现你认识对方" in sys_text
 
 
 # ============ B. 多用户隔离（安全/隐私核心断言，此前零覆盖）============

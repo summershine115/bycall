@@ -10,8 +10,6 @@
 - ``current_time``：验证**无参工具**能进回路并执行（最简形态）。
 - ``calculator``：验证**带必填参数**的工具——JSON Schema 参数经
   ``StructuredTool.from_function`` 反射调用 + 安全求值（防注入）。
-- ``whoami``：验证**脱敏 + CapabilitySet 闭包注入**（product-design 支柱 4 第二条
-  泄漏面）——工具能感知"当前是谁在调"，返回值按权限裁剪后才进 LLM 上下文。
 
 权限（谁能用）不在本模块判定，由治理脊柱的 ``CapabilitySet.allowed_tools`` 白名单
 决定（见 ``gateway.filter_tools``）。admin（``['*']``）自动可见全部；普通角色由
@@ -21,7 +19,6 @@ admin 在控制面把工具名加进 ``RoleConfig.allowed_tools``。
 from __future__ import annotations
 
 import ast
-import json
 import operator
 from datetime import UTC, datetime
 from typing import Any
@@ -143,60 +140,7 @@ register(
 )
 
 
-# ============ 3. whoami：脱敏 + CapabilitySet 闭包注入（支柱 4 第二条泄漏面）============
-
-
-def _whoami_raw() -> str:
-    """返回当前用户的身份信息（JSON 字符串，未脱敏）。
-
-    注意：``func`` 本身拿不到 ``CapabilitySet``（``@register_tool`` 装饰的普通函数
-    签名固定）。脱敏由下方的 ``redactor`` 在工具网关包装时闭包注入 ``cap`` 完成
-    （见 ``gateway._wrap_with_redactor``）——这正是支柱 4 第二条泄漏面的落地：
-    工具返回值进 LLM 上下文**前**按当前用户权限裁剪。
-
-    ``func`` 返回全部字段（含敏感的 user_id），由 ``redactor`` 决定哪些字段对当前
-    用户可见。这种"全量返回 + 出口脱敏"的分工让工具实现不耦合权限判定。
-    """
-    # 占位：实际值由 redactor 从 cap 取。func 返回模板，redactor 覆写。
-    # 这样 func 签名保持无参（StructuredTool 反射调用要求），敏感数据不进 func。
-    return "{}"
-
-
-def _whoami_redactor(raw: str, cap) -> str:
-    """按当前用户权限组装并脱敏身份信息。
-
-    - admin（``is_admin`` 或 ``level >= 999``）：返回完整信息（user_id 明文）。
-    - 普通用户：``user_id`` 打码（只保留身份摘要，不暴露内部主键），其余可见。
-
-    返回 JSON 字符串供 LLM 读取。这演示了"工具结果按权限裁剪后才进上下文"——
-    即便工具被允许调用，返回的数据也按用户权限二次过滤。
-    """
-    info: dict[str, Any] = {
-        "user_name": cap.user_name,
-        "role": cap.role,
-        "level": cap.level,
-    }
-    if cap.is_admin or cap.level >= 999:
-        info["user_id"] = cap.user_id
-        info["allowed_tools"] = cap.allowed_tools
-    else:
-        # 普通用户：user_id 打码（不暴露内部主键给非 admin）。
-        info["user_id"] = "***"
-    return json.dumps(info, ensure_ascii=False)
-
-
-register(
-    ToolSpec(
-        name="whoami",
-        description='查询当前用户的身份与权限信息（用户名、角色、职级）。当用户问"我是谁""我有哪些权限"时调用。',
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=_whoami_raw,
-        redactor=_whoami_redactor,
-    )
-)
-
-
-# ============ 4. load_skill：渐进式披露——按需加载 skill 全文 ============
+# ============ 3. load_skill：渐进式披露——按需加载 skill 全文 ============
 
 
 def _load_skill_raw(name: str) -> str:
@@ -239,4 +183,4 @@ register(
 )
 
 
-__all__ = ["_calculator", "_current_time", "_load_skill_raw", "_load_skill_redactor", "_safe_eval", "_whoami_raw", "_whoami_redactor"]
+__all__ = ["_calculator", "_current_time", "_load_skill_raw", "_load_skill_redactor", "_safe_eval"]

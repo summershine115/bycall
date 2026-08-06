@@ -13,8 +13,7 @@ LLM 的工具列表 = 「该角色可用工具集」，无权工具 LLM 根本�
   ``CapabilitySet.allowed_tools`` → ``gateway.filter_tools`` → ``gateway.to_langchain_tools``
     → ``agent/graph.py`` 的 ``ToolNode``（LLM 只见过滤后的列表）
 
-内置工具见 ``builtins``（随包导入自动注册：``current_time`` / ``calculator`` /
-``whoami``）。新增自定义工具只需 ``register(ToolSpec(...))`` 或 ``@register_tool``
+内置工具见 ``builtins``（随包导入自动注册：``current_time`` / ``calculator``）。新增自定义工具只需 ``register(ToolSpec(...))`` 或 ``@register_tool``
 装饰一个函数；M4 MCP 网关落地后，MCP 工具在启动时动态注册进同一张表，对本包透明。
 """
 

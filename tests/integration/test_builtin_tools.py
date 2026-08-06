@@ -1,9 +1,8 @@
 """内置工具端到端测试 —— 验证 M3 工具回路用真实工具跑通（M3 收尾）。
 
-三个工具各验证工具回路的一个特性：
+两个工具各验证工具回路的一个特性：
 1. ``current_time``：无参工具能进回路并执行（最简形态）。
 2. ``calculator``：带必填参数的工具——schema 反射调用 + 安全求值（注入防御）。
-3. ``whoami``：脱敏 + CapabilitySet 闭包注入（支柱 4 第二条泄漏面）。
 
 外加「注册触发」测试：``import bycall.tools`` 后内置工具自动出现在注册表与
 ``GET /api/admin/tools`` 控制面目录里。
@@ -20,7 +19,6 @@ graph + SQLite，验证治理链路而非 LLM 质量。
 from __future__ import annotations
 
 import importlib
-import json
 import re
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -114,11 +112,11 @@ def _make_user(session, name, role_name, allowed_tools, scope_tags, level=1):
 
 class TestRegistrationTrigger:
     def test_builtin_tools_registered_on_import(self):
-        """reload builtins 后，三个内置工具出现在注册表。"""
+        """reload builtins 后，内置工具出现在注册表。"""
         from bycall.tools.registry import get_all_tools
 
         names = {t.name for t in get_all_tools()}
-        assert {"current_time", "calculator", "whoami"} <= names
+        assert {"current_time", "calculator"} <= names
 
     def test_admin_tools_endpoint_lists_builtins(self, env):
         """admin 登录后 GET /api/admin/tools 能列出内置工具目录。"""
@@ -130,7 +128,7 @@ class TestRegistrationTrigger:
         resp = client.get("/api/admin/tools")
         assert resp.status_code == 200
         names = {t["name"] for t in resp.json()}
-        assert {"current_time", "calculator", "whoami"} <= names
+        assert {"current_time", "calculator"} <= names
 
         # 验证 schema 字段（calculator 带必填 expression 参数）
         calc = next(t for t in resp.json() if t["name"] == "calculator")
@@ -200,74 +198,7 @@ class TestCalculator:
         assert calc.func("7 / 2") == "3.5"
 
 
-# ============ 3. whoami：脱敏 + CapabilitySet 闭包注入（支柱 4 第二条泄漏面）============
-
-
-class TestWhoamiRedaction:
-    def test_whoami_masks_user_id_for_normal_user(self, env):
-        """普通用户调 whoami → user_id 打码（不暴露内部主键给非 admin）。"""
-        with session_scope() as s:
-            from bycall.agent.session_store import get_or_create_conversation
-
-            user_id = _make_user(
-                s, "bob", "staff", allowed_tools=["whoami"], scope_tags=["public"], level=1
-            )
-            conv = get_or_create_conversation(s, user_id, "api")
-            conv_id = conv.id
-
-        mock_llm = _make_mock_llm_with_tool_call("whoami", {})
-
-        with session_scope() as s:
-            user = s.get(User, user_id)
-            result = run_agent(
-                session=s,
-                user=user,
-                question="我是谁？",
-                llm=mock_llm,
-                channel="api",
-                conversation_id=conv_id,
-            )
-
-        assert result.decision == "answered"
-        whoami_result = result.tool_calls[0]["result"]
-        # 普通用户：user_id 被打码
-        info = json.loads(whoami_result)
-        assert info["user_id"] == "***"
-        assert info["user_name"] == "bob"
-        assert "allowed_tools" not in info  # 普通用户不暴露完整工具白名单
-
-    def test_whoami_shows_full_for_admin(self, env):
-        """admin 调 whoami → user_id 明文 + 含 allowed_tools（脱敏按权限分级）。"""
-        mock_llm = _make_mock_llm_with_tool_call("whoami", {})
-
-        with session_scope() as s:
-            from bycall.agent.session_store import get_or_create_conversation
-
-            admin = s.exec(select(User).where(User.name == "admin")).first()
-            assert admin is not None, "dev 模式应内置 admin 用户"
-            conv = get_or_create_conversation(s, admin.id, "api")
-            conv_id = conv.id
-
-        with session_scope() as s:
-            admin = s.exec(select(User).where(User.name == "admin")).first()
-            result = run_agent(
-                session=s,
-                user=admin,
-                question="我是谁？",
-                llm=mock_llm,
-                channel="api",
-                conversation_id=conv_id,
-            )
-
-        assert result.decision == "answered"
-        info = json.loads(result.tool_calls[0]["result"])
-        # admin：user_id 明文 + 含 allowed_tools
-        assert isinstance(info["user_id"], int)
-        assert info["allowed_tools"] == ["*"]
-        assert info["user_name"] == "admin"
-
-
-# ============ 4. current_time：无参工具进回路 ============
+# ============ 3. current_time：无参工具进回路 ============
 
 
 class TestCurrentTime:

@@ -67,7 +67,6 @@ def test_runtime_context_does_not_invent_unavailable_capabilities():
     assert "本轮可执行工具\n- 无" in context
     assert "当前未配置领域 Skill" in context
     assert "单轮请求" in context
-    assert "whoami" not in context
 
 
 def test_shared_message_preparation_keeps_sync_and_stream_context_identical(monkeypatch):
