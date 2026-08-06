@@ -8,9 +8,10 @@
 
 - `docs/product-design.md` — 产品形态、治理架构、信任模型、里程碑路线图（§6）、待确认假设（§7）。**决定"做什么、为什么这么做"。**
 - `docs/architecture.md` — 分层架构、架构红线（不可违背）、核心数据流、后端可切换设计。**决定"怎么搭、边界在哪"。**
-- `docs/decisions/` — ADR（架构决策记录），如 `0001-vectorstore-abstraction.md`。
+- `docs/decisions/` — ADR（架构决策记录），**决策登记册（唯一入口）是 `docs/decisions/README.md`**：ADR 索引、待拍板清单、新决策流程。新决策先写 ADR 并登记，待拍板项集中在登记册 §3，正文只留指针。
 
 新增功能/改架构时，**先确认与文档是否一致**；若文档已落后于代码，先更新文档再改代码。路线图按里程碑推进，不要跳跃（见 product-design.md §6）。
+所有决策（含待拍板项）以 `docs/decisions/README.md` 登记册为准，不再散落于正文文档。
 
 ## 1. 这是什么项目
 

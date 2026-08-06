@@ -1,7 +1,7 @@
 # Spec：Agent 框架升级（受控自主 + 分层记忆 + skill 演化）
 
-> 状态：草案（待 review）· 2026-07-30
-> 关联：ADR-0005（任务系统）、ADR-0004（ABAC Policy，后置）、`product-strategy.md` §4.3/§7
+> 状态：已采纳（S1a 已落地，S1b–S4 待排期，切片见 §8） · 更新：2026-08-06 · 关联：[决策登记册](decisions/README.md)
+> 关联：ADR-0006（任务系统）、ADR-0005（ABAC Policy，后置）、`product-strategy.md` §4.3/§7
 > 参考：PI / pi.dev（执行 loop 原语）、OpenClaw（Skill Workshop 向上汇聚）、Hermes（5-pillar 自主学习）
 
 ---
@@ -28,7 +28,7 @@ bycall 已有标准 ReAct 工具回路（`agent/graph.py` 的 `run_tool_loop`）
    不另造审批体系。
 2. **扩展 `UserMemory`**（已有 `category`）承载 L3 用户长短期记忆，加「agent 可写」路径，
    不新建表。
-3. **执行层落在 ADR-0005 的 `Task/Step/Run`**，复用 `execute_approved_tool` 的「执行前重算
+3. **执行层落在 ADR-0006 的 `Task/Step/Run`**，复用 `execute_approved_tool` 的「执行前重算
    CapabilitySet」模式做每步权限重验。
 4. **agent 写入的 L3 记忆是不可信内容**，进 user 角色（红线 #7），不提权到 system。
 5. **不引入 PI 的 TS/bun 代码栈**，只借鉴其设计（loop 原语 + typed event + session 续跑），
@@ -95,7 +95,7 @@ draft → planning → running ⇄ paused(等审批/等输入) → completed
 - `planning`：LLM 把目标拆成 Step 序列（计划是**建议**，执行前代码层校验）。
 - `paused`：Step 需要 HITL 审批或用户澄清时挂起，admin/用户响应后 resume。
 - 每次从 paused 恢复、或每个 Step 执行前，**重算 CapabilitySet**（复用
-  `execute_approved_tool` 模式）——任务创建后用户权限变更不再继续越权执行（ADR-0005 红线）。
+  `execute_approved_tool` 模式）——任务创建后用户权限变更不再继续越权执行（ADR-0006 红线）。
 
 ### 3.3 typed event protocol（借鉴 PI）
 
@@ -287,7 +287,7 @@ class TaskSchedule(SQLModel, table=True):
 
 | 切片 | 内容 | 闭合 |
 |------|------|------|
-| **S1a 执行核心** | `Task/Step/Run` + 状态机 + `run_agent` 作 Step 内核 + **对话触发** + typed event + session 续跑 | ADR-0005 骨架 + 缝隙 #6 |
+| **S1a 执行核心** | `Task/Step/Run` + 状态机 + `run_agent` 作 Step 内核 + **对话触发** + typed event + session 续跑 | ADR-0006 骨架 + 缝隙 #6 |
 | **S1b 触发与可视化** | `TaskSchedule`（定时/事件）+ 调度器 + 事件入口 + **前端任务进度页**（SSE 事件流） | 完整任务入口 + 可观测 |
 | **S2 记忆层** | `UserMemory` 扩展 + agent 可写路径（保守策略）+ 注入分层 | 分层记忆落地 |
 | **S3 skill 演化** | `SkillProposal` + 自动提议（轨迹分析，N=3/每日）+ admin review 晋升 + **Skill 版本化/回滚** | 自主学习闭环 |

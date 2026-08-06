@@ -1,9 +1,9 @@
-# ADR-0006：受治理认知——两平面信任模型
+# ADR-0007：受治理认知——两平面信任模型
 
 - **状态**：已采纳
 - **日期**：2026-08-06
 - **背景**：从"agent 不可学习"到"受治理的、会成长的团队协作者"
-- **关联**：`product-design.md` §0/§2.4/§6/§8、`architecture.md` 红线 #4/#7、ADR-0005、
+- **关联**：`product-design.md` §0/§2.4/§6/§8、`architecture.md` 红线 #4/#7、ADR-0006、
   `docs/tencent-agent-memory-benchmark.md`、`docs/qm-benchmark.md`
 
 ## 背景

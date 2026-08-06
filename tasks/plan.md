@@ -1,6 +1,6 @@
 # Implementation Plan：S1a 执行核心（Agent 框架升级第 1 切片）
 
-> 关联：`docs/specs/agent-framework-upgrade.md` §3/§8（S1a）、ADR-0005
+> 关联：`docs/specs/agent-framework-upgrade.md` §3/§8（S1a）、ADR-0006
 > 范围：仅 S1a 执行核心。S1b（触发与可视化）/ S2 / S3 / S4 见 spec §8，各自独立 plan。
 
 ## Overview
@@ -17,7 +17,7 @@
 2. **typed event 统一两套 run 路径**：定义事件类型 + 事件总线，`run_agent` / `run_agent_stream`
    都产出同一事件流 → 审计 / 流式输出 / （S1b）前端。解决两套流程漂移（缝隙 #6）。
 3. **每步执行前重算 `CapabilitySet`**：复用 `execute_approved_tool` 的已验证模式（重算能力集 +
-   白名单验证 + 脱敏），抽成共享函数。满足 ADR-0005 红线。
+   白名单验证 + 脱敏），抽成共享函数。满足 ADR-0006 红线。
 4. **对话触发**：`run_agent` 识别到「多步任务目标」→ 创建 Task。无识别时退化为当前 `run_agent`
    （零回归）。
 5. **状态机驱动续跑**：Task/Step 状态显式持久化，`paused`（等审批/等输入）可跨进程恢复。
