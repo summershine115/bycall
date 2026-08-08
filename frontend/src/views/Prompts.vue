@@ -83,9 +83,6 @@
         </div>
       </template>
       <pre class="prompt-viewer__body">{{ viewing.content }}</pre>
-      <template #footer>
-        <el-button @click="viewVisible = false">关闭</el-button>
-      </template>
     </el-dialog>
   </div>
 </template>
