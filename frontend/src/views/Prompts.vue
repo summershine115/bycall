@@ -30,7 +30,10 @@
         </el-table-column>
         <el-table-column label="内容" min-width="320">
           <template #default="{ row }">
-            <div class="bc-cell-clamp">{{ row.content }}</div>
+            <div class="prompt-cell" @click="onView(row)">
+              <div class="bc-cell-clamp">{{ row.content }}</div>
+              <span class="prompt-cell__more">查看全部</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110">
@@ -39,10 +42,11 @@
             <span v-else class="bc-muted bc-text-sm">历史版本</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="onView(row)">查看</el-button>
             <el-button v-if="!row.is_active" size="small" type="success" plain @click="onActivate(row)">
-              回滚到此版
+              回滚
             </el-button>
           </template>
         </el-table-column>
@@ -69,6 +73,20 @@
         <el-button type="primary" :loading="saving" @click="onSave">创建并激活</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="viewVisible" width="760px">
+      <template #header>
+        <div class="prompt-viewer__title">
+          <span class="bc-strong mono">v{{ viewing.version }}</span>
+          <span class="bc-muted">{{ viewing.label || '未命名版本' }}</span>
+          <StatusBadge v-if="viewing.is_active" type="ok" text="激活中" />
+        </div>
+      </template>
+      <pre class="prompt-viewer__body">{{ viewing.content }}</pre>
+      <template #footer>
+        <el-button @click="viewVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -87,6 +105,8 @@ const prompts = ref([])
 const { loading, dialogVisible, saving, form, openCreate } = useCrud({
   emptyForm: () => ({ label: '', content: '' }),
 })
+const viewVisible = ref(false)
+const viewing = ref({})
 
 async function load() {
   loading.value = true
@@ -132,5 +152,47 @@ async function onActivate(row) {
   await load()
 }
 
+function onView(row) {
+  viewing.value = row
+  viewVisible.value = true
+}
+
 onMounted(load)
 </script>
+
+<style scoped>
+/* 内容单元格可点击，点击查看全文 */
+.prompt-cell {
+  cursor: pointer;
+}
+.prompt-cell__more {
+  display: inline-block;
+  margin-top: var(--bc-space-1);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-primary-6);
+}
+.prompt-cell:hover .prompt-cell__more {
+  text-decoration: underline;
+}
+
+/* 全文查看器 */
+.prompt-viewer__title {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+}
+.prompt-viewer__body {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  padding: var(--bc-space-4);
+  background: var(--bc-bg-sunken);
+  border-radius: var(--bc-radius-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-sm);
+  line-height: var(--bc-leading-normal);
+  color: var(--bc-text-2);
+}
+</style>
