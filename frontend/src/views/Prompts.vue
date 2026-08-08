@@ -30,10 +30,7 @@
         </el-table-column>
         <el-table-column label="内容" min-width="320">
           <template #default="{ row }">
-            <div class="prompt-cell" @click="onView(row)">
-              <div class="bc-cell-clamp">{{ row.content }}</div>
-              <span class="prompt-cell__more">查看全部</span>
-            </div>
+            <div class="bc-cell-clamp">{{ row.content }}</div>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110">
@@ -158,19 +155,6 @@ onMounted(load)
 </script>
 
 <style scoped>
-/* 内容单元格可点击，点击查看全文 */
-.prompt-cell {
-  cursor: pointer;
-}
-.prompt-cell__more {
-  display: inline-block;
-  margin-top: var(--bc-space-1);
-  font-size: var(--bc-text-xs);
-  color: var(--bc-primary-6);
-}
-.prompt-cell:hover .prompt-cell__more {
-  text-decoration: underline;
-}
 
 /* 全文查看器 */
 .prompt-viewer__title {
