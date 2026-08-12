@@ -49,6 +49,9 @@ class InboundMessage:
     raw_frame: Any = None  # 原始帧（回复时需要透传给 SDK，否则无法回包）
     chat_id: str = ""  # 会话标识（群聊 chatid / 单聊留空）
     message_type: str = "text"
+    # M3：IM 平台消息 ID（企微 body.msgid），用于幂等去重——同一条消息重发只执行一次。
+    # 无 ID 的事件（部分回执）留空，幂等层据此放行（无法去重）。
+    msg_id: str = ""
     # M6：已解密的图片/文件附件。文本消息为空列表，多模态消息非空。
     attachments: list[Attachment] = field(default_factory=list)
 

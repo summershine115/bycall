@@ -70,6 +70,20 @@ def _extract_userid(frame: dict[str, Any]) -> str:
     return im_user_id
 
 
+def _extract_msgid(frame: dict[str, Any]) -> str:
+    """从任意 frame 抽取消息 ID（``body.msgid`` 优先，``headers.msg_id`` 兜底）。
+
+    MsgId 是企微对每条消息的全局唯一标识，用于幂等去重（重连/重发同一 MsgId 只处理一次）。
+    与 userid 同样采用 body 优先 + headers 兜底，兼容不同 SDK/转发实现。
+    """
+    body = frame.get("body", {}) or {}
+    msg_id = body.get("msgid", "") or body.get("msg_id", "")
+    if not msg_id:
+        headers = frame.get("headers", {}) or {}
+        msg_id = headers.get("msg_id", "") or headers.get("msgid", "")
+    return msg_id
+
+
 def _media_url(meta: dict[str, Any]) -> str:
     """取附件下载地址：``fileurl`` 与 ``url`` 两种字段名都兼容（SDK 文档/实现不一致）。"""
     return meta.get("fileurl") or meta.get("url") or ""
@@ -235,6 +249,7 @@ class WecomChannel(Channel):
                 raw_frame=frame,
                 chat_id=chat_id,
                 message_type="text",
+                msg_id=_extract_msgid(frame),
             )
             sender = channel._build_sender(frame, generate_req_id)
             try:
@@ -312,6 +327,7 @@ class WecomChannel(Channel):
             raw_frame=frame,
             chat_id=chat_id,
             message_type=kind,
+            msg_id=_extract_msgid(frame),
             attachments=[attachment],
         )
         await self._deliver(msg, on_message, frame, generate_req_id, kind, im_user_id)
@@ -365,6 +381,7 @@ class WecomChannel(Channel):
             text="\n".join(text_parts),
             raw_frame=frame,
             chat_id=chat_id,
+            msg_id=_extract_msgid(frame),
             message_type="mixed",
             attachments=attachments,
         )
@@ -398,6 +415,7 @@ class WecomChannel(Channel):
             raw_frame=frame,
             chat_id=chat_id,
             message_type="card_action",
+            msg_id=_extract_msgid(frame),
         )
         await self._deliver(msg, on_message, frame, generate_req_id, "card_action", im_user_id)
 

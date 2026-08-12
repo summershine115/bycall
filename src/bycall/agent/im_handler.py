@@ -124,119 +124,176 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         )
         return
 
-    # 限流。
-    from bycall.governance.ratelimit import RATE_LIMIT_CHAT, get_limiter
-
-    allowed = await asyncio.to_thread(
-        lambda: get_limiter().allow(f"chat:{user_id}", **RATE_LIMIT_CHAT)
+    # 2. 幂等去重（身份映射之后、流式执行之前）：同一条 IM 消息重发只执行一次，
+    #    防企微重连/重发导致双回答 / 双 LLM 费用 / 双审计。
+    from bycall.agent.idempotency import (
+        claim_message,
+        make_key,
+        mark_message_done,
+        release_inflight,
     )
-    if not allowed:
-        await sender.send_text("请求过于频繁，请稍后再试。")
-        return
 
-    # M6 P3 非破坏性季度澄清：先落会话历史再发卡，点击后沿正常路径继续同一会话。
-    if sender.send_card is not None and _needs_quarter_clarification(msg, text):
-        await asyncio.to_thread(_persist_quarter_clarification, user_id, msg.channel, text)
-        await sender.send_card(_build_quarter_card())
-        return
-
-    # M6 P1 多模态输入：附件解析文本并入问题（无附件时 no-op）。解析放线程池避免阻塞事件循环。
-    if msg.attachments:
-        text = await _enrich_question(text, msg.attachments)
-    # 2. 流式执行治理链路。
-    stream_id = uuid.uuid4().hex[:12]
-    # 企微 WebSocket 流式协议是 replace 语义：每帧 content 是"当前应显示的完整文本"，
-    # 客户端用它覆盖之前显示的全部内容（非增量追加）。因此这里维护 full_text 累积全文，
-    # 每帧发送累积全文，而不是单 token 增量——否则客户端每次只显示最新一个字符（闪烁）。
-    full_text = ""
-    can_stream = sender.send_stream is not None
-    first_chunk = True
-    last_flush = time.monotonic()
-
-    # 流式开始前先发"正在思考…"占位，覆盖 RAG 检索 + LLM 首 token 延迟（可达数秒）
-    # 期间的空白，提升用户感知（参考 WeKnora）。首个真实 chunk 到来时由 full_text 覆盖占位。
-    if can_stream:
-        await sender.send_stream("正在思考…", stream_id, False)
+    idem_key = make_key(msg.channel, msg.msg_id)
+    _engaged = False  # 是否已「处理」该消息（落 done 记录防重发；瞬态拒绝如限流不落）
+    if idem_key is not None:
+        with session_scope() as session:
+            if not claim_message(session, idem_key):
+                logger.info(
+                    "重复消息丢弃(幂等去重): channel=%s key=%s im_user_id=%s",
+                    msg.channel,
+                    idem_key,
+                    msg.im_user_id,
+                )
+                return
 
     try:
-        async for chunk_text, is_final, result in _run_stream(
-            user_id, text, msg.channel, im_user_id=msg.im_user_id
-        ):
-            if is_final:
-                final_answer = _format_answer(result.decision, result.answer)
-                # M6 P2：RAG 引用来源卡片，附在最终帧（仅确有检索命中时才非空）。
-                msg_item = _build_msg_item(getattr(result, "citations", None) or [])
-                if can_stream:
-                    # finish 帧发完整 final_answer（replace 语义覆盖全文），不受节流影响立即发送。
-                    # 空 finish 会让企微客户端清空已显示内容（空白气泡），故必须非空——
-                    # final_answer 为空时回退到已累积全文或占位文本保底。
-                    finish_content = final_answer or full_text or "正在思考…"
-                    if msg_item:
-                        try:
-                            await sender.send_stream(
-                                finish_content, stream_id, True, msg_item=msg_item
-                            )
-                        except TypeError as e:
-                            if _is_unsupported_msg_item_error(e):
-                                await sender.send_stream(finish_content, stream_id, True)
-                            else:
-                                raise
-                    else:
-                        await sender.send_stream(finish_content, stream_id, True)
-                else:
-                    # 非流式渠道降级：把来源拼成 Markdown 参考列表附在答案末尾。
-                    out = final_answer or full_text
-                    if msg_item:
-                        out = _append_citation_markdown(out, msg_item)
-                    await sender.send_text(out)
-                break
-            elif chunk_text is TOOL_ROUND_FLUSH:
-                # 工具回合前导文本（如「当前 UTC 时间是：」）已流式显示，现丢弃——
-                # 清空累积全文，下一回合的真实答案帧会以 replace 语义覆盖前导语。
-                # 不发空帧（企微空内容 finish/refresh 会清空显示 → 空白气泡）。
-                full_text = ""
-                continue
-            elif chunk_text:
-                # 首个真实 chunk 重置 full_text（覆盖"正在思考…"占位），后续累加。
-                if first_chunk:
-                    full_text = chunk_text
-                    first_chunk = False
-                else:
-                    full_text += chunk_text
-                # 节流：避免每个 token 都发一帧（replace 语义下每帧都是全文，帧过密
-                # 无感知增益且浪费带宽）。内容累积在 full_text 里不会丢失，下次 flush 一并
-                # 发出；is_final 帧不受节流，始终立即发送。
-                if can_stream:
-                    now = time.monotonic()
-                    if now - last_flush >= STREAM_FLUSH_INTERVAL:
-                        await sender.send_stream(full_text, stream_id, False)
-                        last_flush = now
-    except Exception:
-        logger.exception("治理链路流式执行失败")
+        # 限流。
+        from bycall.governance.ratelimit import RATE_LIMIT_CHAT, get_limiter
+
+        allowed = await asyncio.to_thread(
+            lambda: get_limiter().allow(f"chat:{user_id}", **RATE_LIMIT_CHAT)
+        )
+        if not allowed:
+            await sender.send_text("请求过于频繁，请稍后再试。")
+            return  # 瞬态拒绝：不落 done，重发可重新尝试
+
+        # M6 P3 非破坏性季度澄清：先落会话历史再发卡，点击后沿正常路径继续同一会话。
+        if sender.send_card is not None and _needs_quarter_clarification(msg, text):
+            await asyncio.to_thread(_persist_quarter_clarification, user_id, msg.channel, text)
+            await sender.send_card(_build_quarter_card())
+            _engaged = True  # 完整交互：落 done 防重发
+            return
+
+        # M6 P1 多模态输入：附件解析文本并入问题（无附件时 no-op）。解析放线程池避免阻塞事件循环。
+        if msg.attachments:
+            text = await _enrich_question(text, msg.attachments)
+        # 3. 流式执行治理链路。
+        stream_id = uuid.uuid4().hex[:12]
+        # 企微 WebSocket 流式协议是 replace 语义：每帧 content 是"当前应显示的完整文本"，
+        # 客户端用它覆盖之前显示的全部内容（非增量追加）。因此这里维护 full_text 累积全文，
+        # 每帧发送累积全文，而不是单 token 增量——否则客户端每次只显示最新一个字符（闪烁）。
+        full_text = ""
+        can_stream = sender.send_stream is not None
+        first_chunk = True
+        last_flush = time.monotonic()
+
+        # 流式开始前先发"正在思考…"占位，覆盖 RAG 检索 + LLM 首 token 延迟（可达数秒）
+        # 期间的空白，提升用户感知（参考 WeKnora）。首个真实 chunk 到来时由 full_text 覆盖占位。
         if can_stream:
-            # 异常时用已累积全文（或占位）+ 错误提示作为 finish 帧覆盖显示，
-            # 绝不能发空 finish（企微客户端会清空已显示内容 → 空白气泡）。
-            base = full_text or "正在思考…"
-            error_finish = f"{base}\n\n[处理时出错，请稍后重试]"
-            await sender.send_stream(error_finish, stream_id, True)
-        else:
-            await sender.send_text("抱歉，处理时出错了，请稍后重试。")
+            await sender.send_stream("正在思考…", stream_id, False)
+
+        try:
+            async for chunk_text, is_final, result in _run_stream(
+                user_id, text, msg.channel, im_user_id=msg.im_user_id
+            ):
+                if is_final:
+                    final_answer = _format_answer(result.decision, result.answer)
+                    # M6 P2：RAG 引用来源卡片，附在最终帧（仅确有检索命中时才非空）。
+                    msg_item = _build_msg_item(getattr(result, "citations", None) or [])
+                    if can_stream:
+                        # finish 帧发完整 final_answer（replace 语义覆盖全文），不受节流影响立即发送。
+                        # 空 finish 会让企微客户端清空已显示内容（空白气泡），故必须非空——
+                        # final_answer 为空时回退到已累积全文或占位文本保底。
+                        finish_content = final_answer or full_text or "正在思考…"
+                        if msg_item:
+                            try:
+                                await sender.send_stream(
+                                    finish_content, stream_id, True, msg_item=msg_item
+                                )
+                            except TypeError as e:
+                                if _is_unsupported_msg_item_error(e):
+                                    await sender.send_stream(finish_content, stream_id, True)
+                                else:
+                                    raise
+                        else:
+                            await sender.send_stream(finish_content, stream_id, True)
+                    else:
+                        # 非流式渠道降级：把来源拼成 Markdown 参考列表附在答案末尾。
+                        out = final_answer or full_text
+                        if msg_item:
+                            out = _append_citation_markdown(out, msg_item)
+                        await sender.send_text(out)
+                    break
+                elif chunk_text is TOOL_ROUND_FLUSH:
+                    # 工具回合前导文本（如「当前 UTC 时间是：」）已流式显示，现丢弃——
+                    # 清空累积全文，下一回合的真实答案帧会以 replace 语义覆盖前导语。
+                    # 不发空帧（企微空内容 finish/refresh 会清空显示 → 空白气泡）。
+                    full_text = ""
+                    continue
+                elif chunk_text:
+                    # 首个真实 chunk 重置 full_text（覆盖"正在思考…"占位），后续累加。
+                    if first_chunk:
+                        full_text = chunk_text
+                        first_chunk = False
+                    else:
+                        full_text += chunk_text
+                    # 节流：避免每个 token 都发一帧（replace 语义下每帧都是全文，帧过密
+                    # 无感知增益且浪费带宽）。内容累积在 full_text 里不会丢失，下次 flush 一并
+                    # 发出；is_final 帧不受节流，始终立即发送。
+                    if can_stream:
+                        now = time.monotonic()
+                        if now - last_flush >= STREAM_FLUSH_INTERVAL:
+                            await sender.send_stream(full_text, stream_id, False)
+                            last_flush = now
+        except Exception:
+            logger.exception("治理链路流式执行失败")
+            if can_stream:
+                # 异常时用已累积全文（或占位）+ 错误提示作为 finish 帧覆盖显示，
+                # 绝不能发空 finish（企微客户端会清空已显示内容 → 空白气泡）。
+                base = full_text or "正在思考…"
+                error_finish = f"{base}\n\n[处理时出错，请稍后重试]"
+                await sender.send_stream(error_finish, stream_id, True)
+            else:
+                await sender.send_text("抱歉，处理时出错了，请稍后重试。")
+        # 流式执行完成（成功或已处理的失败均落 done，防重发重复执行）。
+        _engaged = True
+    finally:
+        if idem_key is not None:
+            # 先落 done 再清 inflight，保证两者防护区间无缝衔接（无「皆空」漏过窗口）。
+            if _engaged:
+                try:
+                    with session_scope() as session:
+                        mark_message_done(session, idem_key)
+                except Exception:
+                    logger.warning("幂等记录落库失败 key=%s", idem_key, exc_info=True)
+            release_inflight(idem_key)
 
 
 async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str = ""):
     """流式执行治理链路——异步生成器，逐 token yield。
 
-    在生成器内打开 session（保证整个流式期间 session 存活），
-    生成器结束时 session 自动关闭（finally 块确保清理）。
+    在生成器内打开 session（保证整个流式期间 session 存活），生成器结束时 session
+    自动关闭（finally 块确保清理）。
+
+    会话稳健性地基（M3）：
+    - **会话租约**：打开会话后获取 turn 租约，串行化同一会话的并发消息（拿不到 → 提示
+      「正在处理中」）。租约存活区 = session 存活区 = 历史 append 区；后台心跳续租，
+      turn 结束（正常/异常）释放。
+    - **失败不断裂历史**：执行失败（run_agent_stream 抛异常，或产出 ``decision="error"``
+      的终局结果）时，回填 user 消息 + 写一条 system 失败条目——用户问了什么始终可见，
+      历史永不断裂。回填在租约释放前完成（持租约 append）。
     """
     from bycall.agent.runner import run_agent_stream
+    from bycall.agent.session_lease import (
+        acquire_turn_lease,
+        lease_heartbeat,
+        release_turn_lease,
+    )
     from bycall.agent.session_store import get_or_create_conversation
+    from bycall.config import get_settings
     from bycall.governance.models import User
     from bycall.llm.resolver import get_chat_model
+
+    settings = get_settings()
+    ttl = settings.session_lease_ttl_seconds
+    # 心跳间隔 = TTL/3（参考 QM worker），保证一次续租失败后仍有过半 TTL 缓冲。
+    interval = max(1.0, ttl / 3)
 
     # 打开 session——流式期间保持存活。用同一 ctx 实例保证 enter/exit 配对。
     ctx = session_scope()
     session: Any = ctx.__enter__()
+    lease_token: str | None = None
+    conv_id: int | None = None
     try:
         user = session.get(User, user_id)
         if user is None:
@@ -251,19 +308,56 @@ async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str
         _, chat_model = resolved
 
         conv = get_or_create_conversation(session, user_id, channel)
+        conv_id = conv.id
 
-        async for chunk_text, is_final, result in run_agent_stream(
-            session=session,
-            user=user,
-            question=question,
-            llm=chat_model,
-            channel=channel,
-            conversation_id=conv.id,
-            im_user_id=im_user_id,
-        ):
-            yield chunk_text, is_final, result
+        # 获取 turn 租约：同一会话同一时刻只有一个 turn，串行化历史 append。
+        lease_token = acquire_turn_lease(conv_id, ttl_seconds=ttl)
+        if lease_token is None:
+            yield "上一条消息仍在处理中，请稍后再试。", True, _busy_result()
+            return
+
+        # 后台心跳续租：定期延长 TTL；进程死亡时心跳停止 → 租约自然过期释放。
+        heartbeat = asyncio.ensure_future(
+            lease_heartbeat(
+                conv_id,
+                lease_token,
+                ttl_seconds=ttl,
+                interval_seconds=interval,
+                max_failures=settings.session_lease_max_heartbeat_failures,
+            )
+        )
+        failed = False
+        try:
+            async for chunk_text, is_final, result in run_agent_stream(
+                session=session,
+                user=user,
+                question=question,
+                llm=chat_model,
+                channel=channel,
+                conversation_id=conv_id,
+                im_user_id=im_user_id,
+            ):
+                # run_agent_stream 内部捕获 LLM 错误后产出 decision="error" 终局结果并提前
+                # return（不走 save_message）——视为失败，触发回填，保证历史不断裂。
+                if is_final and result is not None and result.decision == "error":
+                    failed = True
+                yield chunk_text, is_final, result
+        except Exception:
+            failed = True
+            raise
+        finally:
+            heartbeat.cancel()
+            # 失败回填（持租约）：user 消息 + system 失败条目，历史永不断裂。
+            if failed:
+                _backfill_on_failure(conv_id, question)
     finally:
-        ctx.__exit__(None, None, None)
+        if lease_token is not None:
+            release_turn_lease(conv_id, lease_token)
+        # 流式 session 提交（异常路径下 session 可能处于非法状态，提交失败不影响已回填历史）。
+        try:
+            ctx.__exit__(None, None, None)
+        except Exception:
+            logger.warning("流式 session 提交失败（可能因异常导致），已忽略", exc_info=True)
 
 
 def _no_model_result_static(channel: str = ""):
@@ -279,6 +373,47 @@ def _no_model_result_static(channel: str = ""):
         role="",
         tool_calls=[],
     )
+
+
+def _busy_result():
+    """会话被租约占用（并发消息）时的提示结果——不执行治理链路，提示稍后重试。"""
+    from bycall.agent.runner import AgentResult
+
+    return AgentResult(
+        answer="上一条消息仍在处理中，请稍后再试。",
+        decision="busy",
+        knowledge_scope=[],
+        retrieved_chunks=0,
+        user_name="",
+        role="",
+        tool_calls=[],
+    )
+
+
+def _backfill_on_failure(conversation_id: int, question: str) -> None:
+    """失败回填：用独立 session 落 user 消息 + system 失败条目，保证历史不断裂。
+
+    在 turn 租约释放前调用（持租约 append）。用独立 session 而非流式 session——流式 session
+    可能因异常处于非法状态（flush 失败后不可再用），独立 session 避免回填被牵连失败。
+    幂等防重复：若最近一条已是相同内容的 user 消息（部分落库的罕见场景），只补 system 条目。
+    回填本身失败只记录日志，不向上抛（不应掩盖原始失败）。
+    """
+    from bycall.agent.session_store import load_message_history, save_message
+
+    try:
+        with session_scope() as session:
+            recent = load_message_history(session, conversation_id, limit=1)
+            already = bool(recent) and recent[-1].role == "user" and recent[-1].content == question
+            if not already:
+                save_message(session, conversation_id, "user", question)
+            save_message(
+                session,
+                conversation_id,
+                "system",
+                "⚠️ 处理失败：数字员工在处理这条消息时出错，已记录，请稍后重试。",
+            )
+    except Exception:
+        logger.exception("失败回填异常，历史可能不完整 conv=%s", conversation_id)
 
 
 __all__ = ["handle_im_message"]
