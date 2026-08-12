@@ -230,6 +230,55 @@ class TestUserMemory:
         assert update_resp.status_code == 200
         assert update_resp.json()["content"] == "更新后"
 
+    def test_create_memory_shows_source_and_active_status(self, client):
+        """admin 创建的记忆默认 source=admin / status=active，列表/详情可见 source。
+
+        S2：admin 需在管理视图区分谁写的记忆（admin / agent）。
+        """
+        c, _, _ = client
+        resp = c.post(
+            "/api/admin/users/2/memory",
+            json={"category": "preference", "content": "喜欢简洁回答"},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["source"] == "admin"
+        assert body["status"] == "active"
+        assert body["confidence"] == 1.0
+
+        mems = c.get("/api/admin/users/2/memory").json()
+        assert mems[0]["source"] == "admin"
+        assert mems[0]["status"] == "active"
+
+    def test_mark_memory_superseded(self, client):
+        """admin 可把记忆标记为 superseded（已纠正/作废），列表仍可见（管理全量视图）。"""
+        c, _, _ = client
+        create_resp = c.post(
+            "/api/admin/users/2/memory",
+            json={"category": "fact", "content": "已过时的事实"},
+        )
+        mem_id = create_resp.json()["id"]
+
+        resp = c.put(f"/api/admin/memory/{mem_id}", json={"status": "superseded"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "superseded"
+        # 管理列表仍能看到（superseded 只是不再注入，不删除）
+        mems = c.get("/api/admin/users/2/memory").json()
+        assert any(m["id"] == mem_id and m["status"] == "superseded" for m in mems)
+
+    def test_invalid_status_on_update_rejected(self, client):
+        """PUT 带非法 status → 400（status 白名单 active / superseded）。"""
+        c, _, _ = client
+        create_resp = c.post(
+            "/api/admin/users/2/memory",
+            json={"category": "note", "content": "原始"},
+        )
+        mem_id = create_resp.json()["id"]
+
+        resp = c.put(f"/api/admin/memory/{mem_id}", json={"status": "bogus"})
+        assert resp.status_code == 400
+        assert "status" in resp.json()["detail"]
+
     def test_delete_memory(self, client):
         """删除记忆条目。"""
         c, _, _ = client

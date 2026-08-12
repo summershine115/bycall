@@ -18,7 +18,8 @@ def build_runtime_context(
     tools: Sequence[ToolSpec],
     has_history: bool,
     has_summary: bool,
-    memory_count: int,
+    admin_memory_count: int,
+    agent_memory_count: int,
 ) -> str:
     """构造本轮可信事实；只枚举已授权能力，不接收用户输入或提示词正文。"""
     display_name = user.display_name.strip() or user.name
@@ -39,7 +40,8 @@ def build_runtime_context(
         f"- 会话模式：{'多轮会话' if conversation_id is not None else '单轮请求'}",
         f"- 近期对话历史：{'可用' if has_history else '暂无'}",
         f"- 历史摘要：{'可用' if has_summary else '暂无'}",
-        f"- 管理员维护的用户长期记忆：{memory_count} 条",
+        # 区分信任层级：admin 维护（可信，system）与 agent 自动记录（不可信，user）。
+        f"- 用户长期记忆：管理员维护 {admin_memory_count} 条、自动记录 {agent_memory_count} 条",
         "",
         "### 本轮可执行工具",
     ]

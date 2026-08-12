@@ -119,7 +119,8 @@ def execute_tool_loop_step(
         tools=allowed_specs,
         has_history=False,
         has_summary=False,
-        memory_count=len(user_memories),
+        admin_memory_count=len(user_memories),
+        agent_memory_count=0,  # S1a Step 执行走 build_rag_messages，不注入 agent 记忆
     )
 
     # 3. 拼 messages（system + skill + knowledge + step goal；S1a 无独立 RAG，知识靠工具）。

@@ -3034,6 +3034,14 @@ def update_user_memory(
         mem.category = payload.category
     if payload.content is not None:
         mem.content = payload.content.strip()
+    # S2：admin 可标记记忆为 superseded（已纠正/作废，不再注入）或恢复 active。
+    if payload.status is not None:
+        if payload.status not in ("active", "superseded"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="status 必须是 active / superseded 之一",
+            )
+        mem.status = payload.status
     session.add(mem)
     session.commit()
     session.refresh(mem)

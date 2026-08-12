@@ -163,6 +163,21 @@ def _ensure_schema_compatibility() -> None:
                     )
                 )
 
+    # usermemory: 补 source / confidence / status 列（S2 记忆层 Phase 1）。存量记忆均为
+    # admin 维护、可信、有效，默认值（'admin' / 1.0 / 'active'）对齐现状，补列零成本。
+    if "usermemory" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("usermemory")}
+        memory_migrations = [
+            ("source", "VARCHAR NOT NULL DEFAULT 'admin'"),
+            ("confidence", "FLOAT NOT NULL DEFAULT 1.0"),
+            ("status", "VARCHAR NOT NULL DEFAULT 'active'"),
+        ]
+        missing = [(name, ddl) for name, ddl in memory_migrations if name not in columns]
+        if missing:
+            with engine.begin() as connection:
+                for name, ddl in missing:
+                    connection.execute(text(f'ALTER TABLE usermemory ADD COLUMN "{name}" {ddl}'))
+
 
 def _migrate_plaintext_secrets() -> None:
     """把升级前的明文模型/系统密钥原地迁移为 enc:v1 密文。"""
