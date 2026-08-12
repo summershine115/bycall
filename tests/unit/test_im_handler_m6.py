@@ -621,6 +621,9 @@ def test_im_user_id_reaches_run_agent_stream():
         captured["im_user_id"] = im_user_id
         yield "", True, _answered_result()
 
+    async def _noop_beat() -> None:
+        return
+
     msg = InboundMessage(
         channel="wecom",
         im_user_id="wecom_uid_abc123",
@@ -631,18 +634,16 @@ def test_im_user_id_reaches_run_agent_stream():
 
     with (
         _handler_env(user_id=7),
-        patch(
-            "bycall.llm.resolver.get_chat_model",
-            return_value=(MagicMock(), MagicMock()),
-        ),
+        patch("bycall.llm.resolver.get_chat_model", return_value=(MagicMock(), MagicMock())),
         patch(
             "bycall.agent.session_store.get_or_create_conversation",
             return_value=MagicMock(id=42),
         ),
-        patch(
-            "bycall.agent.runner.run_agent_stream",
-            fake_run_agent_stream,
-        ),
+        # _run_stream 现依赖会话租约层（M3 稳健性地基）：桩掉获取/释放/心跳，聚焦 im_user_id 传播。
+        patch("bycall.agent.session_lease.acquire_turn_lease", return_value="lease-token"),
+        patch("bycall.agent.session_lease.release_turn_lease"),
+        patch("bycall.agent.session_lease.lease_heartbeat", return_value=_noop_beat()),
+        patch("bycall.agent.runner.run_agent_stream", fake_run_agent_stream),
     ):
         asyncio.run(handle_im_message(msg, sender))
 

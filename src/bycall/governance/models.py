@@ -456,8 +456,10 @@ class ApprovalRequest(SQLModel, table=True):
         """按 Step 列审批请求（任务内审批：approve/reject 后恢复任务用）。"""
         from sqlmodel import select
 
-        return select(ApprovalRequest).where(ApprovalRequest.step_id == step_id).order_by(
-            ApprovalRequest.id
+        return (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.step_id == step_id)
+            .order_by(ApprovalRequest.id)
         )
 
     @staticmethod
@@ -764,6 +766,67 @@ class UserMemory(SQLModel, table=True):
         from sqlmodel import select
 
         return select(UserMemory).where(UserMemory.user_id == user_id).order_by(UserMemory.id)
+
+
+# ============ IdempotencyRecord：入站消息幂等去重（参考 QM IdempotencyStore）============
+
+
+class IdempotencyRecord(SQLModel, table=True):
+    """已处理过的入站消息键——防企微重连/重发导致同一条消息重复执行。
+
+    企微长连接重连或事件重试会让同一条消息（同一 ``MsgId``）重复投递，若不去重会
+    产生双回答 / 双 LLM 费用 / 双审计。本表记录「已处理完毕」的幂等键；进程内正在
+    处理中的键由 ``agent.idempotency`` 的 inflight 集合去重（详见该模块）。
+
+    幂等键 = ``{channel}:{msg_id}``（含渠道前缀，避免不同渠道 ID 空间碰撞）。
+    按 ``created_at`` 建索引，供 retention 定时清理过期记录（默认 14 天），避免表无限增长。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    key: str = Field(unique=True, index=True)  # f"{channel}:{msg_id}"
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc, index=True)
+    )
+
+    @staticmethod
+    def select_by_key(key: str):
+        """按幂等键查（判定是否已处理过）。"""
+        from sqlmodel import select
+
+        return select(IdempotencyRecord).where(IdempotencyRecord.key == key)
+
+
+# ============ SessionLease：会话租约（参考 QM postgres-session-store）============
+
+
+class SessionLease(SQLModel, table=True):
+    """会话租约——同一会话同一时刻只有一个 holder，串行化对历史的 append。
+
+    同一会话并发消息会竞争历史读写、导致消息乱序或压缩并发写 summary 损坏状态。本表
+    为每个 ``conversation_id`` 维护一行租约：holder（turn/compaction）持随机 token 所有权，
+    ``expires_at`` 过期后可被抢占（应对进程死亡：心跳停止 → TTL 到期 → 自动释放）。
+
+    原子获取用单条 ``INSERT ... ON CONFLICT(conversation_id) DO UPDATE ... WHERE
+    expires_at <= now``（SQLite 3.24+ 与 PostgreSQL 均支持），避免读-改-写的 TOCTOU 竞争。
+    释放/续租都校验 token，只有持有者能操作。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    # 一个会话同时只有一个租约：conversation_id 唯一，也是 ON CONFLICT 的目标列。
+    conversation_id: int = Field(unique=True, index=True)
+    holder: str  # "turn"（一轮对话）/ "compaction"（后台压缩）
+    token: str  # 随机所有权 token（secrets.token_hex），释放/续租须匹配
+    acquired_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    expires_at: datetime = Field(sa_column=Column(DateTime, default=_now_utc, index=True))
+
+    @staticmethod
+    def select_by_conversation(conversation_id: int):
+        """按会话查当前租约（判定谁持有、何时过期）。"""
+        from sqlmodel import select
+
+        return select(SessionLease).where(SessionLease.conversation_id == conversation_id)
 
 
 # ============ SystemSetting：可编辑运行时配置 ============

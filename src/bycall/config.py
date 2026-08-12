@@ -201,6 +201,13 @@ class AppConfig(BaseSettings):
     secret_encryption_key: SecretStr = SecretStr("")
     # 仅首次生产启动且 DB 尚无 admin 时使用；创建成功后可从环境移除。
     bootstrap_admin_password: SecretStr = SecretStr("")
+    # 会话稳健性地基（M3）：会话租约 + 消息幂等去重。前缀 BYCALL_SESSION_/BYCALL_IDEMPOTENCY_。
+    # 租约 TTL：持有一轮对话（turn）的最长时间；心跳每 TTL/3 续租一次，进程死亡后到期自动释放。
+    session_lease_ttl_seconds: int = 60
+    # 心跳续租失败多少次后停止续租（租约将自然过期，视为进程死亡）。参考 QM worker 的连续 3 次。
+    session_lease_max_heartbeat_failures: int = 3
+    # 幂等去重记录保留天数：超期记录定时清理，避免表无限增长（参考 QM 的 14 天 retention）。
+    idempotency_retention_days: int = 14
 
     # default_factory 让子模型每次按当前环境变量构造，而非 import 时固化。
     llm: LLMConfig = Field(default_factory=LLMConfig)
