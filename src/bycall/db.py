@@ -87,7 +87,7 @@ def _ensure_schema_compatibility() -> None:
     # auditlog: 补 before / after / tool_results 列
     if "auditlog" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("auditlog")}
-        missing = {"before", "after", "tool_results"} - columns
+        missing = {"before", "after", "tool_results", "context_trace"} - columns
         if missing:
             with engine.begin() as connection:
                 for column in sorted(missing):
@@ -135,14 +135,10 @@ def _ensure_schema_compatibility() -> None:
         # S1b：补 task_id / step_id 列（任务内审批 → approve/reject 后恢复任务）
         if "task_id" not in columns:
             with engine.begin() as connection:
-                connection.execute(
-                    text("ALTER TABLE approvalrequest ADD COLUMN \"task_id\" INTEGER")
-                )
+                connection.execute(text('ALTER TABLE approvalrequest ADD COLUMN "task_id" INTEGER'))
         if "step_id" not in columns:
             with engine.begin() as connection:
-                connection.execute(
-                    text("ALTER TABLE approvalrequest ADD COLUMN \"step_id\" INTEGER")
-                )
+                connection.execute(text('ALTER TABLE approvalrequest ADD COLUMN "step_id" INTEGER'))
 
     # skill: 补 disclosure 列（渐进式披露：always / on_demand）
     if "skill" in inspector.get_table_names():
@@ -150,7 +146,21 @@ def _ensure_schema_compatibility() -> None:
         if "disclosure" not in columns:
             with engine.begin() as connection:
                 connection.execute(
-                    text("ALTER TABLE skill ADD COLUMN \"disclosure\" VARCHAR NOT NULL DEFAULT 'always'")
+                    text(
+                        "ALTER TABLE skill ADD COLUMN \"disclosure\" VARCHAR NOT NULL DEFAULT 'always'"
+                    )
+                )
+
+    # conversation: 补 summary_covered_count 列（压缩指针：summary 已覆盖的最旧消息数）
+    if "conversation" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("conversation")}
+        if "summary_covered_count" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        'ALTER TABLE conversation ADD COLUMN "summary_covered_count" '
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
                 )
 
 

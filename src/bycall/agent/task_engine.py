@@ -110,7 +110,7 @@ def execute_tool_loop_step(
     # 2. filter tools（脱敏包装在 to_langchain_tools 内部按 cap 闭包注入）。
     allowed_specs = filter_tools(cap.allowed_tools)
     langchain_tools = to_langchain_tools(allowed_specs, cap)
-    user_memories = load_user_memory(session, user.id) if user.id is not None else []
+    user_memories = load_user_memory(session, user.id, question=goal) if user.id is not None else []
     runtime_context = build_runtime_context(
         user=user,
         capability=cap,
@@ -408,7 +408,10 @@ def run_task(
                         type="step_completed",
                         task_id=task.id,
                         step_id=step.id,
-                        payload={"reason": "approval_passed", "approval_ids": [a.id for a in approvals]},
+                        payload={
+                            "reason": "approval_passed",
+                            "approval_ids": [a.id for a in approvals],
+                        },
                     )
                 )
                 continue
@@ -539,7 +542,7 @@ def resume_pending_tasks(
 
 _PLAN_SYSTEM_PROMPT = (
     "你是企业数字员工的任务规划器。把用户的目标拆成可逐步执行的任务计划。"
-    "输出必须是 JSON 数组，每个元素形如 {\"goal\": \"这一步要做什么\", \"kind\": \"tool_loop\"}。"
+    '输出必须是 JSON 数组，每个元素形如 {"goal": "这一步要做什么", "kind": "tool_loop"}。'
     "约束：\n"
     "- kind 只能是 tool_loop（工具回路一步）或 approval_wait（需要管理员审批的一步）；\n"
     "- 简单目标（一问一答、单次检索）只拆 1 步，不要过度拆分；\n"

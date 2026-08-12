@@ -156,6 +156,8 @@ class TestACLPrefiltering:
         _login(client)
         monkeypatch.setenv("BYCALL_ENV", "prod")
         monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
+        # prod 校验要求 session_secret 非默认（worktree/CI 无 .env 时测试须自包含）。
+        monkeypatch.setenv("BYCALL_SESSION_SECRET", "t" * 48)
         get_settings.cache_clear()
         resp = client.post("/api/admin/act-as", params={"target_user_id": 999})
         assert resp.status_code in (403, 404)

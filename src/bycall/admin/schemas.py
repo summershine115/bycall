@@ -214,7 +214,12 @@ class AuditOut(BaseModel):
     answer: str
     before: str = ""
     after: str = ""
+    tool_results: str = ""
+    # 本轮拼给 LLM 的上下文快照（JSON）：system 正文/RAG/记忆/summary/历史。
+    # admin 排障用——重建「模型那一轮看到了什么」。各段已截断。
+    context_trace: str = ""
     created_at: datetime
+
 
 class AuditPage(BaseModel):
     """审计日志分页响应。"""
@@ -223,6 +228,7 @@ class AuditPage(BaseModel):
     total: int
     page: int
     page_size: int
+
 
 # ============ 运行时设置（LLM/IM 凭证）============
 

@@ -8,7 +8,7 @@
      标注软隔离）。
    - **user 角色**：summary（LLM 从历史生成，不可信）+ RAG（外部文档，不可信）+ 历史
      + 当前问题——不可信内容统一降权到 user，硬隔离防注入。
-   超阈值时 ``compress_history`` 把旧消息压缩成增量摘要。
+   滑出窗口的旧消息由 ``compress_conversation`` 按指针折叠进增量摘要（不静默丢失）。
 
 设计参考：
 - **Hermes Agent** 的 session_key = ``agent:main:{platform}:{chat_type}:{chat_id}`` →
@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 from langchain_core.language_models import BaseChatModel
@@ -37,14 +38,14 @@ from bycall.llm.base import Message as LLMMessage
 logger = logging.getLogger(__name__)
 
 # 滑窗：拼 prompt 时取最近 N 条消息（含 user+assistant 各一条算一轮）。
+# 同时是压缩边界——summary 概括这 N 条之前的全部消息，无重叠、无缺口。
 _HISTORY_LIMIT = 20
 
-# 压缩阈值：历史消息 token 粗估总和超过此值时触发压缩。
-# 粗估 = sum(len(content) // 4)；M3 不接 tiktoken，粗估够用。
-_COMPRESS_THRESHOLD_TOKENS = 4000
 
-# 压缩后保留最近 N 条消息（不被压缩进 summary）。
-_KEEP_RECENT = 6
+# 用户记忆注入预算（TAM §2.1 的轻量版：条数 + 字符双上限）：
+# 防记忆增长后全量注入撑爆上下文（旧实现全量、无排序）。
+_MEMORY_MAX_ITEMS = 8
+_MEMORY_MAX_CHARS = 1500
 
 
 def _estimate_tokens(text: str) -> int:
@@ -118,9 +119,50 @@ def save_message(
     return msg
 
 
-def load_user_memory(session: Session, user_id: int) -> list[UserMemory]:
-    """取用户全部长期记忆（拼 prompt 时注入 system message）。"""
-    return list(session.exec(UserMemory.select_by_user(user_id)).all())
+def _term_set(text: str) -> set[str]:
+    """粗分词：中文双字组合 + 英文/数字词。不引分词库，够用于相关性打分。"""
+    import re
+
+    cn_chars = re.findall(r"[\u4e00-\u9fff]", text)
+    terms: set[str] = {cn_chars[i] + cn_chars[i + 1] for i in range(len(cn_chars) - 1)}
+    terms.update(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+    return terms
+
+
+def _memory_score(mem: UserMemory, q_terms: set[str]) -> int:
+    """记忆与问题的关键词重叠度（越大越相关）。"""
+    return len(_term_set(mem.content) & q_terms)
+
+
+def load_user_memory(session: Session, user_id: int, question: str = "") -> list[UserMemory]:
+    """取用户长期记忆（拼 prompt 时注入 system message）。
+
+    context engineering 预算（TAM §2.1 轻量版）：条数 + 字符双上限 + 关键词相关性
+    排序——旧实现全量注入、无排序，记忆增长后必然撑爆上下文。完整版（BM25+向量
+    +RRF 混合召回）属 M3 记忆层（S2），这里先落地零依赖的第一步。
+    无 question 时退化为按 id 顺序取前 N 条（保序、可预算）。
+    """
+    memories = list(session.exec(UserMemory.select_by_user(user_id)).all())
+    if not memories:
+        return []
+    if question:
+        q_terms = _term_set(question)
+        if q_terms:
+            memories = sorted(
+                memories,
+                key=lambda m: (-_memory_score(m, q_terms), m.id or 0),
+            )
+    picked: list[UserMemory] = []
+    used_chars = 0
+    for m in memories:
+        cost = len(m.content)
+        if used_chars + cost > _MEMORY_MAX_CHARS:
+            continue  # 超字符预算：跳过（高相关项已在前，宁可少注入也不超）
+        picked.append(m)
+        used_chars += cost
+        if len(picked) >= _MEMORY_MAX_ITEMS:
+            break
+    return picked
 
 
 def build_conversation_messages(
@@ -229,43 +271,86 @@ def build_conversation_messages(
     return messages
 
 
-def should_compress(
-    history: list[Message], threshold_tokens: int = _COMPRESS_THRESHOLD_TOKENS
-) -> bool:
-    """判断是否需要压缩：历史消息 token 粗估总和超阈值。
-
-    只在历史足够长时压缩（至少 keep_recent * 2 条，否则没有可压缩的中间消息）。
-    """
-    if len(history) < _KEEP_RECENT * 2:
-        return False
-    total_tokens = sum(m.token_count for m in history)
-    return total_tokens > threshold_tokens
-
-
-def compress_history(
-    llm: BaseChatModel,
+def build_context_trace(
+    *,
+    raw_messages: list[LLMMessage],
+    retrieved: list,
+    user_memories: list[UserMemory],
+    summary: str,
     history: list[Message],
-    previous_summary: str,
-    keep_recent: int = _KEEP_RECENT,
 ) -> str:
-    """压缩旧历史为摘要，保留最近 N 条。
+    """构造本轮上下文快照（JSON 字符串），供审计事后排查。
 
-    参考 Hermes ContextCompressor.compress()：
-    1. 取 history[:-keep_recent] 作为待压缩的中间消息
-    2. 附带 previous_summary 让 LLM 增量更新（不是从头重写）
-    3. 用 LLM 生成新 summary
+    context engineering 的可观测基础：记录「模型这一轮实际看到了什么」——
+    system 指令正文（截断）、RAG 命中来源与预览、注入的用户记忆、summary、
+    历史条数与 token 粗估。出现 poisoning（摘要/记忆带毒）、distraction
+    （上下文过载）、clash（摘要与历史矛盾）时，这是重建现场的唯一入口。
 
-    返回新 summary 字符串。LLM 调用失败时返回 previous_summary（降级，不丢已有摘要）。
+    各段截断防爆库。不可信内容（RAG/记忆）也照录——审计是排障命脉，敏感由
+    上层把关（RAG 已过 ACL 预过滤，记忆为 admin 管控的可信配置）。
     """
-    if len(history) <= keep_recent:
+    system_text = ""
+    for msg in raw_messages:
+        if msg.role == "system":
+            system_text = msg.content
+            break
+
+    def _cap(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        head = limit // 2
+        return f"{text[:head]}…[截断 {len(text) - limit} 字]…{text[-head:]}"
+
+    rag_sources: list[str] = []
+    rag_texts: list[str] = []
+    for r in retrieved:
+        fields = getattr(r, "fields", None) or {}
+        rag_sources.append(str(fields.get("source") or fields.get("title") or "?"))
+        rag_texts.append(str(getattr(r, "text", "") or ""))
+
+    trace = {
+        "system_chars": len(system_text),
+        "system_text": _cap(system_text, 3000),
+        "rag_chunks": len(retrieved),
+        "rag_sources": rag_sources[:20],
+        "rag_preview": _cap("\n---\n".join(rag_texts), 1500),
+        "memory_count": len(user_memories),
+        "memory_items": [
+            {"category": m.category, "content": _cap(m.content, 200)} for m in user_memories[:20]
+        ],
+        "summary_chars": len(summary),
+        "summary_preview": _cap(summary, 800),
+        "history_count": len(history),
+        "history_token_est": sum(getattr(m, "token_count", 0) or 0 for m in history),
+    }
+    try:
+        return json.dumps(trace, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+
+
+def should_compress(*, message_count: int, summary_covered_count: int) -> bool:
+    """判断是否需要压缩：有消息滑出窗口但尚未进 summary。
+
+    指针模型（杜绝旧上下文静默丢失）：summary 概括最旧的 ``summary_covered_count``
+    条，prompt 取最近 ``_HISTORY_LIMIT`` 条。当总数超过窗口、且"窗口之外"还有
+    未进 summary 的消息时触发——不再用 token 阈值（旧实现下低密度对话会让旧消息
+    滑过窗口却从未被压缩，永久从模型视野消失）。
+    """
+    return (
+        message_count > _HISTORY_LIMIT and (message_count - _HISTORY_LIMIT) > summary_covered_count
+    )
+
+
+def compress_history(llm: BaseChatModel, messages: list[Message], previous_summary: str) -> str:
+    """把一批消息增量折叠进摘要（纯函数：调用方决定折叠哪些消息）。
+
+    附带 previous_summary 让 LLM 增量更新（不从头重写）。LLM 调用失败时返回
+    previous_summary（降级，不丢已有摘要）。
+    """
+    if not messages:
         return previous_summary
-
-    # 待压缩的中间消息
-    to_compress = history[:-keep_recent] if keep_recent > 0 else history
-
-    # 构造压缩 prompt：让 LLM 增量更新摘要
-    conversation_text = "\n".join(f"{m.role}: {m.content}" for m in to_compress)
-
+    conversation_text = "\n".join(f"{m.role}: {m.content}" for m in messages)
     prompt_parts = [
         "请将以下对话历史压缩成简洁的摘要，保留关键信息（用户意图、已确认的事实、未解决的问题）。",
         "如果已有之前的摘要，请在它基础上增量更新——添加新信息、更新已变化的部分、移除过时内容。",
@@ -274,35 +359,63 @@ def compress_history(
         prompt_parts.append(f"\n## 之前的摘要\n{previous_summary}")
     prompt_parts.append(f"\n## 待压缩的对话\n{conversation_text}")
     prompt_parts.append("\n请输出更新后的摘要（纯文本，不超过 500 字）：")
-
     try:
-        # M3：对话模型已是 LangChain BaseChatModel（ChatOpenAI），调用契约是
-        # .invoke(messages) -> AIMessage，取 .content 作文本。直接传 HumanMessage。
         from langchain_core.messages import HumanMessage
 
         from bycall.agent.graph import _content_to_text
 
         resp = llm.invoke([HumanMessage(content="\n".join(prompt_parts))])
-        # content 可能是内容块 list（推理/兼容模型），归一成 str 再截断（防 .strip 崩）。
         new_summary = _content_to_text(resp.content).strip()[:2000]
         if new_summary:
             logger.info(
-                "会话压缩完成: %d 条消息 → summary %d 字符",
-                len(to_compress),
-                len(new_summary),
+                "会话压缩完成: %d 条消息 → summary %d 字符", len(messages), len(new_summary)
             )
             return new_summary
     except Exception as e:
         logger.warning("会话压缩失败，保留旧摘要: %s", e)
-
     return previous_summary
 
 
+def load_message_range(
+    session: Session, conversation_id: int, offset: int, limit: int
+) -> list[Message]:
+    """按 id 顺序取一段消息（压缩用：取滑出窗口、尚未进 summary 的那批）。"""
+    return list(session.exec(Message.select_range(conversation_id, offset, limit)).all())
+
+
+def compress_conversation(session: Session, conversation_id: int, llm: BaseChatModel) -> bool:
+    """压缩指定会话：把"滑出窗口、尚未进 summary"的消息折进 summary 并推进指针。
+
+    幂等且自包含——后台任务与单测均可直接调。返回是否实际推进了指针。
+    """
+    conv = session.get(Conversation, conversation_id)
+    if conv is None:
+        return False
+    if not should_compress(
+        message_count=conv.message_count, summary_covered_count=conv.summary_covered_count
+    ):
+        return False
+    start = conv.summary_covered_count
+    end = conv.message_count - _HISTORY_LIMIT  # 窗口之外的最新边界
+    to_fold = load_message_range(session, conversation_id, offset=start, limit=end - start)
+    if not to_fold:
+        return False
+    new_summary = compress_history(llm, to_fold, conv.summary)
+    if new_summary and new_summary != conv.summary:
+        conv.summary = new_summary
+    conv.summary_covered_count = end
+    session.add(conv)
+    logger.info("会话 %s 压缩：指针 %d→%d，折叠 %d 条", conversation_id, start, end, len(to_fold))
+    return True
+
+
 __all__ = [
+    "build_context_trace",
     "build_conversation_messages",
-    "compress_history",
+    "compress_conversation",
     "get_or_create_conversation",
     "load_message_history",
+    "load_message_range",
     "load_user_memory",
     "save_message",
     "should_compress",

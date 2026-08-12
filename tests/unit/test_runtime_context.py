@@ -85,7 +85,9 @@ def test_shared_message_preparation_keeps_sync_and_stream_context_identical(monk
         knowledge_scope_text="只可访问 public",
     )
     session = MagicMock()
-    monkeypatch.setattr("bycall.agent.runner.load_user_memory", lambda session, user_id: [])
+    monkeypatch.setattr(
+        "bycall.agent.runner.load_user_memory", lambda session, user_id, question="": []
+    )
 
     first = _prepare_agent_messages(
         session=session,

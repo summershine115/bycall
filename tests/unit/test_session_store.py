@@ -13,14 +13,18 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from sqlmodel import Session, create_engine
 
 from bycall.agent.session_store import (
+    build_context_trace,
     build_conversation_messages,
+    compress_conversation,
     compress_history,
     get_or_create_conversation,
     load_message_history,
@@ -230,44 +234,20 @@ class TestBuildConversationMessages:
 
 
 class TestShouldCompress:
-    def test_short_history_no_compress(self):
-        """短历史不压缩。"""
-        from bycall.governance.models import Message as Msg
+    def test_within_window_no_compress(self):
+        """消息数不超过窗口（20）不压缩。"""
+        assert should_compress(message_count=20, summary_covered_count=0) is False
+        assert should_compress(message_count=10, summary_covered_count=0) is False
 
-        history = [Msg(conversation_id=1, role="user", content="短", token_count=1)]
-        assert should_compress(history) is False
+    def test_caught_up_no_compress(self):
+        """指针已追平窗口边界（窗口外已全进 summary）不压缩。"""
+        assert should_compress(message_count=30, summary_covered_count=10) is False
 
-    def test_below_threshold_no_compress(self):
-        """token 总和低于阈值不压缩。"""
-        from bycall.governance.models import Message as Msg
-
-        # 12 条消息，每条 token_count=1，远低于 4000 阈值
-        history = [
-            Msg(
-                conversation_id=1,
-                role="user" if i % 2 == 0 else "assistant",
-                content="短",
-                token_count=1,
-            )
-            for i in range(12)
-        ]
-        assert should_compress(history) is False
-
-    def test_above_threshold_triggers_compress(self):
-        """token 总和超阈值 + 足够长时触发压缩。"""
-        from bycall.governance.models import Message as Msg
-
-        # 20 条消息，每条 token_count=300 → 总 6000 > 4000 阈值
-        history = [
-            Msg(
-                conversation_id=1,
-                role="user" if i % 2 == 0 else "assistant",
-                content="x" * 900,
-                token_count=300,
-            )
-            for i in range(20)
-        ]
-        assert should_compress(history) is True
+    def test_aged_out_triggers_compress(self):
+        """有消息滑出窗口未进 summary → 触发（即便 token 很少：修旧 bug 的核心）。"""
+        # 旧实现按 token 阈值，低密度对话会让旧消息滑过窗口却从未压缩、永久消失。
+        assert should_compress(message_count=24, summary_covered_count=0) is True
+        assert should_compress(message_count=30, summary_covered_count=5) is True
 
 
 # ============ compress_history ============
@@ -275,27 +255,18 @@ class TestShouldCompress:
 
 class TestCompressHistory:
     def test_compress_returns_summary(self):
-        """压缩返回 LLM 生成的摘要。"""
+        """折叠一批消息返回 LLM 生成的摘要。"""
         from langchain_core.messages import AIMessage
 
         from bycall.governance.models import Message as Msg
 
         mock_llm = MagicMock()
-        # M3：对话模型是 LangChain BaseChatModel，invoke 返回 AIMessage。
-        mock_llm.invoke.return_value = AIMessage(content="用户讨论了报价流程和审批步骤。")
-
-        history = [
-            Msg(
-                conversation_id=1,
-                role="user" if i % 2 == 0 else "assistant",
-                content=f"内容{i}" * 100,
-            )
-            for i in range(20)
+        mock_llm.invoke.return_value = AIMessage(content="用户讨论了报价流程。")
+        messages = [
+            Msg(conversation_id=1, role="user" if i % 2 == 0 else "assistant", content=f"内容{i}")
+            for i in range(4)
         ]
-
-        result = compress_history(mock_llm, history, previous_summary="")
-        assert result == "用户讨论了报价流程和审批步骤。"
-        # LLM 被调用了一次
+        assert compress_history(mock_llm, messages, previous_summary="") == "用户讨论了报价流程。"
         mock_llm.invoke.assert_called_once()
 
     def test_compress_with_previous_summary(self):
@@ -306,48 +277,131 @@ class TestCompressHistory:
 
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = AIMessage(content="更新后的摘要")
-
-        history = [
-            Msg(
-                conversation_id=1,
-                role="user" if i % 2 == 0 else "assistant",
-                content=f"内容{i}" * 100,
-            )
-            for i in range(20)
-        ]
-
-        compress_history(mock_llm, history, previous_summary="之前的摘要")
-        # 验证 LLM 收到的 prompt 里包含之前的摘要
-        call_args = mock_llm.invoke.call_args
-        messages = call_args[0][0]
-        assert "之前的摘要" in messages[0].content
+        messages = [Msg(conversation_id=1, role="user", content="x")]
+        compress_history(mock_llm, messages, previous_summary="之前的摘要")
+        prompt = mock_llm.invoke.call_args[0][0]
+        assert "之前的摘要" in prompt[0].content
 
     def test_compress_failure_returns_previous(self):
-        """LLM 调用失败时返回 previous_summary（降级，不丢已有摘要）。"""
+        """LLM 失败时返回 previous_summary（降级，不丢已有摘要）。"""
         from bycall.governance.models import Message as Msg
 
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = Exception("LLM 不可用")
+        messages = [Msg(conversation_id=1, role="user", content="x")]
+        assert compress_history(mock_llm, messages, previous_summary="已有摘要") == "已有摘要"
 
-        history = [
-            Msg(
-                conversation_id=1,
-                role="user" if i % 2 == 0 else "assistant",
-                content=f"内容{i}" * 100,
-            )
-            for i in range(20)
-        ]
-
-        result = compress_history(mock_llm, history, previous_summary="已有摘要")
-        assert result == "已有摘要"
-
-    def test_short_history_no_compress(self):
-        """历史短于 keep_recent 时直接返回 previous_summary。"""
+    def test_empty_batch_returns_previous(self):
+        """空批次直接返回 previous_summary，不调 LLM。"""
         mock_llm = MagicMock()
-        history = []  # 空历史
-        result = compress_history(mock_llm, history, previous_summary="旧摘要")
-        assert result == "旧摘要"
+        assert compress_history(mock_llm, [], previous_summary="旧摘要") == "旧摘要"
         mock_llm.invoke.assert_not_called()
+
+
+class TestCompressConversation:
+    """指针模型端到端：折叠滑出窗口的消息、推进指针、杜绝静默丢失。"""
+
+    def test_compress_advances_pointer_and_summary(self, db: Session):
+        from langchain_core.messages import AIMessage
+
+        from bycall.governance.models import Conversation
+        from bycall.governance.models import Message as Msg
+
+        conv = Conversation(user_id=1, channel="api", session_key="api:1", message_count=0)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        for i in range(24):  # 窗口(20)外有 4 条待压缩
+            db.add(
+                Msg(
+                    conversation_id=conv.id,
+                    role="user" if i % 2 == 0 else "assistant",
+                    content=f"内容{i}",
+                    token_count=2,
+                )
+            )
+        conv.message_count = 24
+        db.add(conv)
+        db.commit()
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = AIMessage(content="早期对话摘要")
+        assert compress_conversation(db, conv.id, mock_llm) is True
+        db.commit()
+        db.refresh(conv)
+        assert conv.summary == "早期对话摘要"
+        assert conv.summary_covered_count == 4  # 24 - 20
+
+    def test_no_compress_within_window(self, db: Session):
+        """窗口内（≤20）不压缩，指针不动。"""
+        from bycall.governance.models import Conversation
+        from bycall.governance.models import Message as Msg
+
+        conv = Conversation(user_id=1, channel="api", session_key="api:1", message_count=15)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        for i in range(15):
+            db.add(Msg(conversation_id=conv.id, role="user", content=f"x{i}"))
+        db.commit()
+        mock_llm = MagicMock()
+        assert compress_conversation(db, conv.id, mock_llm) is False
+        mock_llm.invoke.assert_not_called()
+
+    def test_pointer_idempotent_no_redo(self, db: Session):
+        """指针已追平 → 再次调用不重复压缩（不烧 LLM、不漂移）。"""
+        from bycall.governance.models import Conversation
+        from bycall.governance.models import Message as Msg
+
+        conv = Conversation(
+            user_id=1,
+            channel="api",
+            session_key="api:1",
+            message_count=24,
+            summary_covered_count=4,
+            summary="已摘要",
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        for i in range(24):
+            db.add(Msg(conversation_id=conv.id, role="user", content=f"x{i}"))
+        db.commit()
+        mock_llm = MagicMock()
+        assert compress_conversation(db, conv.id, mock_llm) is False
+        mock_llm.invoke.assert_not_called()
+
+    def test_incremental_catches_up_after_growth(self, db: Session):
+        """对话继续增长后新滑出窗口的消息被折叠、指针继续推进（不丢）。"""
+        from langchain_core.messages import AIMessage
+
+        from bycall.governance.models import Conversation
+        from bycall.governance.models import Message as Msg
+
+        conv = Conversation(
+            user_id=1,
+            channel="api",
+            session_key="api:1",
+            message_count=24,
+            summary_covered_count=4,
+            summary="第一批摘要",
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        for i in range(28):  # 又长 4 条 → 窗口外再增 4 条
+            db.add(Msg(conversation_id=conv.id, role="user", content=f"x{i}"))
+        conv.message_count = 28
+        db.add(conv)
+        db.commit()
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = AIMessage(content="更新摘要")
+        assert compress_conversation(db, conv.id, mock_llm) is True
+        db.commit()
+        db.refresh(conv)
+        # 折叠 messages[4:8]，指针 4→8
+        assert conv.summary_covered_count == 8
 
 
 # ============ UserMemory ============
@@ -364,3 +418,120 @@ class TestUserMemory:
         mems = load_user_memory(db, user_id=1)
         assert len(mems) == 2
         assert all(m.user_id == 1 for m in mems)
+
+    def test_memory_item_budget_capped(self, db: Session):
+        """条数预算：超过 _MEMORY_MAX_ITEMS 的记忆只取前 N 条。"""
+        for i in range(12):
+            db.add(UserMemory(user_id=1, category="fact", content=f"记忆内容{i}"))
+        db.commit()
+
+        mems = load_user_memory(db, user_id=1)
+        assert len(mems) == 8  # _MEMORY_MAX_ITEMS
+
+    def test_memory_char_budget_enforced(self, db: Session):
+        """字符预算：注入总字符不超过上限（超长记忆被跳过，不半截注入）。"""
+        long_content = "长" * 900  # 单条 900 字符
+        for _ in range(4):
+            db.add(UserMemory(user_id=1, category="fact", content=long_content))
+        db.add(UserMemory(user_id=1, category="note", content="短记忆"))
+        db.commit()
+
+        mems = load_user_memory(db, user_id=1)
+        assert sum(len(m.content) for m in mems) <= 1500  # _MEMORY_MAX_CHARS
+        assert mems  # 至少注入一部分（不因单条超预算而全空）
+
+    def test_memory_relevance_ranking(self, db: Session):
+        """带 question 时按关键词相关性排序，相关记忆排前面。"""
+        db.add(UserMemory(user_id=1, category="fact", content="喜欢喝咖啡，午休健身"))
+        db.add(UserMemory(user_id=1, category="fact", content="负责华东区销售数据"))
+        db.add(UserMemory(user_id=1, category="fact", content="常用报销系统提交差旅报销"))
+        db.commit()
+
+        mems = load_user_memory(db, user_id=1, question="华东区这个月的销售数据怎么样")
+        assert mems[0].content == "负责华东区销售数据"
+
+    def test_memory_without_question_keeps_id_order(self, db: Session):
+        """无 question 时退化为 id 顺序（保序），且仍受条数预算约束。"""
+        for i in range(10):
+            db.add(UserMemory(user_id=1, category="fact", content=f"顺序记忆{i}"))
+        db.commit()
+
+        mems = load_user_memory(db, user_id=1)
+        assert [m.content for m in mems] == [f"顺序记忆{i}" for i in range(8)]
+
+
+# ============ build_context_trace（context engineering 可观测） ============
+
+
+class TestBuildContextTrace:
+    def test_trace_captures_assembled_context(self):
+        """trace 记录 system 正文/RAG/记忆/历史，可重建模型那一轮所见。"""
+        from bycall.governance.models import Message as Msg
+
+        history = [Msg(conversation_id=1, role="user", content="历史问题", token_count=2)]
+        mems = [UserMemory(user_id=1, category="fact", content="负责华东区")]
+        retrieved = [SimpleNamespace(text="报销流程正文", fields={"source": "hr"})]
+
+        raw = build_conversation_messages(
+            system_prompt="你是数字员工",
+            rag_context="[hr] 报销流程正文",
+            question="报销怎么走",
+            history=history,
+            summary="之前聊过请假",
+            user_memories=mems,
+        )
+        trace = json.loads(
+            build_context_trace(
+                raw_messages=raw,
+                retrieved=retrieved,
+                user_memories=mems,
+                summary="之前聊过请假",
+                history=history,
+            )
+        )
+        assert "你是数字员工" in trace["system_text"]
+        assert trace["rag_chunks"] == 1
+        assert trace["rag_sources"] == ["hr"]
+        assert trace["memory_count"] == 1
+        assert trace["memory_items"][0]["content"] == "负责华东区"
+        assert trace["summary_chars"] == len("之前聊过请假")
+        assert trace["history_count"] == 1
+
+    def test_trace_truncates_long_system_text(self):
+        """超长 system 正文截断，不爆库。"""
+        long_prompt = "X" * 5000
+        raw = build_conversation_messages(
+            system_prompt=long_prompt,
+            rag_context="",
+            question="q",
+            history=[],
+            summary="",
+        )
+        trace = json.loads(
+            build_context_trace(
+                raw_messages=raw, retrieved=[], user_memories=[], summary="", history=[]
+            )
+        )
+        assert trace["system_chars"] >= 5000  # system 消息含追加的行为规则段
+        assert "截断" in trace["system_text"]
+        assert len(trace["system_text"]) < trace["system_chars"]
+
+    def test_trace_handles_empty_context(self):
+        """空上下文也安全产出结构化 trace。"""
+        raw = build_conversation_messages(
+            system_prompt="你是助手",
+            rag_context="",
+            question="hi",
+            history=[],
+            summary="",
+        )
+        trace = json.loads(
+            build_context_trace(
+                raw_messages=raw, retrieved=[], user_memories=[], summary="", history=[]
+            )
+        )
+        assert trace["rag_chunks"] == 0
+        assert trace["memory_count"] == 0
+        assert trace["history_count"] == 0
+        assert "你是助手" in trace["system_text"]  # system 消息含 prompt + 行为规则段
+        assert trace["system_text"]  # 非空（至少含行为规则段）

@@ -78,11 +78,11 @@ PersonaMem（长期交互后能否正确运用用户信息）从 48%→76%（+59
 
 **TAM 做法**：召回结果经条数 + 字符 + 超时三重上限，`maxResults / scoreThreshold / strategy=hybrid`。
 
-**Bycall 现状**：`load_user_memory` 返回**全部**用户记忆注入 system message，记忆增长后必然撑爆
-上下文，且无相关性排序。
+**Bycall 现状**：✅ 已落地轻量版（2026-08 context engineering 硬化）：`load_user_memory`
+加条数（8）+ 字符（1500）双上限 + 关键词相关性排序，不再全量注入。
 
-**改造点**：无需治理化改造，纯收益。加 `maxResults` + 字符预算 + 混合排序。**应作为 M3 记忆层
-的第一个落地项。**
+**改造点**：无需治理化改造，纯收益。完整版（BM25+向量+RRF 混合排序）仍属 M3 记忆层（S2）
+的第一个落地项。
 
 ### 2.2 L0-L3 分层结构 + 混合召回（P0，落实红线 #4）
 

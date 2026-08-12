@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -309,3 +310,28 @@ class TestUserMemory:
         )
         assert resp.status_code == 201
         assert resp.json()["user_id"] == 99999
+
+
+# ============ 上下文 trace（context engineering 可观测） ============
+
+
+class TestContextTrace:
+    def test_chat_records_context_trace(self, client):
+        """一轮对话后审计记录含 context_trace——重建「模型那一轮看到了什么」的排障入口。"""
+        c, _, _ = client
+        resp = c.post("/chat", json={"question": "报销流程是什么"})
+        assert resp.status_code == 200
+
+        audit = c.get("/api/admin/audit").json()
+        items = audit["items"] if isinstance(audit, dict) else audit
+        chat_logs = [
+            a for a in items if a.get("action") == "chat" and a.get("decision") == "answered"
+        ]
+        assert chat_logs, "应有 answered 的 chat 审计记录"
+
+        trace = json.loads(chat_logs[0]["context_trace"])
+        # system 消息含默认系统提示词（数字员工人格）
+        assert "数字员工" in trace["system_text"]
+        # 第一轮：无历史、有结构化字段
+        assert trace["history_count"] == 0
+        assert "rag_chunks" in trace and "memory_count" in trace
