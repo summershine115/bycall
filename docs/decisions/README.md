@@ -22,7 +22,7 @@
 
 | 决策 | 状态 | 位置 |
 |------|------|------|
-| QM 工程化借鉴五件套：消息幂等去重 / 会话租约 / operator error log / 成本预算 / 推送 outbox | ✅ 已正式化进路线图（未落地） | `product-design.md` §6.1、`qm-benchmark.md` §6 |
+| QM 工程化借鉴五件套：消息幂等去重 / 会话租约 / 压缩异步化已落地（2026-08-12，merge 56605ba）；operator error log / 成本预算 / 推送 outbox 未落地 | ✅ 部分落地 | `product-design.md` §6.1、`qm-benchmark.md` §6 |
 | 群聊共同授权（audience floor：交集放行/并集拒绝） | 📋 已规划（M3 多用户会话） | `qm-benchmark.md` §2.1、`product-design.md` §2.4 |
 | HITL 审批授权三档（once/session/always） | 📋 已规划（M4） | `product-design.md` §6.1 |
 | 安全姿态分级（strict/auto/dangerous，org 为地板） | 📋 已规划（P1） | `qm-benchmark.md` §2.2、§4 |

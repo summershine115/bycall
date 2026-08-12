@@ -41,6 +41,7 @@ from bycall.agent.session_store import (
     build_context_trace,
     build_conversation_messages,
     compress_conversation,
+    load_agent_memory,
     load_message_history,
     load_user_memory,
     save_message,
@@ -374,6 +375,8 @@ def _prepare_agent_messages(
     user_memories = (
         load_user_memory(session, user.id, question=question) if user.id is not None else []
     )
+    # agent 自动记录记忆（不可信，user 角色硬隔离）——与 admin 记忆分开加载。
+    agent_memories = load_agent_memory(session, user.id) if user.id is not None else []
     if conversation_id is not None:
         conv = session.get(Conversation, conversation_id)
         summary = conv.summary if conv is not None else ""
@@ -387,7 +390,8 @@ def _prepare_agent_messages(
         tools=allowed_tool_specs,
         has_history=bool(history),
         has_summary=bool(summary),
-        memory_count=len(user_memories),
+        admin_memory_count=len(user_memories),
+        agent_memory_count=len(agent_memories),
     )
     if conversation_id is not None:
         rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
@@ -398,6 +402,7 @@ def _prepare_agent_messages(
             history=history,
             summary=summary,
             user_memories=user_memories,
+            agent_memories=agent_memories,
             skill_markdown=cap.skill_markdown,
             knowledge_scope_text=cap.knowledge_scope_text,
             runtime_context=runtime_context,
@@ -416,6 +421,7 @@ def _prepare_agent_messages(
         raw_messages=raw_messages,
         retrieved=retrieved,
         user_memories=user_memories,
+        agent_memories=agent_memories,
         summary=summary,
         history=history,
     )

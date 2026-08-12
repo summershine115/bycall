@@ -663,10 +663,15 @@ class MemoryCreate(BaseModel):
 
 
 class MemoryUpdate(BaseModel):
-    """更新记忆条目（PATCH 语义）。"""
+    """更新记忆条目（PATCH 语义）。
+
+    ``status`` 供 admin 标记记忆为 ``superseded``（已被纠正/作废，不再注入）或恢复为
+    ``active``。category/content 沿用原 CRUD；source/confidence 由写入方决定，admin 不可改。
+    """
 
     category: str | None = None
     content: str | None = None
+    status: str | None = None
 
 
 class MemoryOut(BaseModel):
@@ -678,6 +683,10 @@ class MemoryOut(BaseModel):
     user_id: int
     category: str
     content: str
+    # S2：暴露来源，让 admin 在管理视图区分谁写的（admin / agent）。
+    source: str
+    status: str
+    confidence: float
     created_at: datetime
     updated_at: datetime
 

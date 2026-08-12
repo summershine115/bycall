@@ -34,7 +34,8 @@ def test_runtime_context_describes_identity_environment_and_filtered_tools():
         tools=[allowed],
         has_history=True,
         has_summary=False,
-        memory_count=1,
+        admin_memory_count=1,
+        agent_memory_count=0,
     )
 
     assert "用户名：alice" in context
@@ -43,7 +44,7 @@ def test_runtime_context_describes_identity_environment_and_filtered_tools():
     assert "渠道：wecom" in context
     assert "多轮会话" in context
     assert "近期对话历史：可用" in context
-    assert "管理员维护的用户长期记忆：1 条" in context
+    assert "用户长期记忆：管理员维护 1 条、自动记录 0 条" in context
     assert "`calculator`：执行算术计算；执行前需要管理员审批" in context
     assert "sales-playbook" in context
     assert "system_prompt" not in context
@@ -61,7 +62,8 @@ def test_runtime_context_does_not_invent_unavailable_capabilities():
         tools=[],
         has_history=False,
         has_summary=False,
-        memory_count=0,
+        admin_memory_count=0,
+        agent_memory_count=0,
     )
 
     assert "本轮可执行工具\n- 无" in context
@@ -88,6 +90,7 @@ def test_shared_message_preparation_keeps_sync_and_stream_context_identical(monk
     monkeypatch.setattr(
         "bycall.agent.runner.load_user_memory", lambda session, user_id, question="": []
     )
+    monkeypatch.setattr("bycall.agent.runner.load_agent_memory", lambda session, user_id: [])
 
     first = _prepare_agent_messages(
         session=session,

@@ -771,12 +771,25 @@ class UserMemory(SQLModel, table=True):
     非指令）。M3 起 agent 可自主提炼记忆草稿，但须经发布门（admin 审，复用 ApprovalRequest）
     才成已发布资产；**agent 生成的记忆召回时降权进 user 角色**（红线 #7 硬隔离），admin 手写
     记忆仍进 system。详见 ADR-0006 与 docs/tencent-agent-memory-benchmark.md。
+
+    S2 记忆层 Phase 1（本扩展）：按 ``source`` 区分谁写的（admin / agent），按 ``status``
+    管控生命周期（``active`` 注入 / ``superseded`` 作废不注入），``confidence`` 记录置信度。
+    存量均为 admin 维护、可信，故三字段默认值（admin / 1.0 / active）对齐现状，迁移零成本。
     """
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(index=True)  # User.id
-    category: str = Field(index=True)  # "preference" / "fact" / "note"
+    category: str = Field(
+        index=True
+    )  # "preference" / "fact" / "note"（S2 按需扩展 relationship / goal）
     content: str  # 记忆内容
+    # 记忆来源：admin（控制面维护，可信，进 system 软隔离）/ agent（LLM 提炼，不可信，
+    # 进 user 硬隔离——红线 #7）。存量均为 admin，默认 "admin" 兼容现状。
+    source: str = Field(default="admin", index=True)
+    # 置信度：admin 管控即默认可信（1.0）；agent 写入时由 Phase 2 提取逻辑给定。
+    confidence: float = Field(default=1.0)
+    # 生命周期：active（注入）/ superseded（已被纠正/作废，不再注入）。admin 可标记。
+    status: str = Field(default="active", index=True)
     created_at: datetime = Field(
         default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
     )
@@ -787,10 +800,28 @@ class UserMemory(SQLModel, table=True):
 
     @staticmethod
     def select_by_user(user_id: int):
-        """按 user_id 查全部记忆。"""
+        """按 user_id 查全部记忆（含 superseded，供 admin 管理视图全量展示）。"""
         from sqlmodel import select
 
         return select(UserMemory).where(UserMemory.user_id == user_id).order_by(UserMemory.id)
+
+    @staticmethod
+    def select_active_by_user(user_id: int, source: str | None = None):
+        """按 user_id 查有效（status=active）记忆；可选按 source 过滤。
+
+        superseded 记忆已被纠正/作废，绝不注入，故召回统一走本查询。admin 全量视图
+        仍用 ``select_by_user``。source 过滤让注入端按信任层级分两组取数（admin→system，
+        agent→user）。
+        """
+        from sqlmodel import select
+
+        stmt = select(UserMemory).where(
+            UserMemory.user_id == user_id,
+            UserMemory.status == "active",
+        )
+        if source is not None:
+            stmt = stmt.where(UserMemory.source == source)
+        return stmt.order_by(UserMemory.id)
 
 
 # ============ IdempotencyRecord：入站消息幂等去重（参考 QM IdempotencyStore）============

@@ -191,9 +191,41 @@ class TestMemoryInjection:
         assert "角色：role_carol" in sys_text
         assert "渠道：api" in sys_text
         assert "会话模式：多轮会话" in sys_text
-        assert "管理员维护的用户长期记忆：0 条" in sys_text
+        assert "用户长期记忆：管理员维护 0 条、自动记录 0 条" in sys_text
         assert "本轮可执行工具\n- 无" in sys_text
         assert "自然地体现你认识对方" in sys_text
+
+    def test_superseded_memory_not_injected(self, client):
+        """admin 标记 superseded 的记忆不再注入 system（已纠正/作废即收回）。
+
+        S2 治理：superseded = 已被纠正/作废。标记后从注入召回中剔除，防止过时
+        信息继续误导 agent。
+        """
+        c, call_log = client
+        uid = _make_test_user(c, "dana")
+
+        create_resp = c.post(
+            f"/api/admin/users/{uid}/memory",
+            json={"category": "fact", "content": "已过时的办公地点信息"},
+        )
+        mem_id = create_resp.json()["id"]
+
+        # 先确认 active 时注入
+        c.post("/api/admin/act-as", params={"target_user_id": uid})
+        c.post("/chat", json={"question": "你好"})
+        c.post("/api/admin/clear-act-as")
+        assert "已过时的办公地点信息" in _system_text(call_log[0])
+
+        # admin 标记为 superseded
+        resp = c.put(f"/api/admin/memory/{mem_id}", json={"status": "superseded"})
+        assert resp.status_code == 200 and resp.json()["status"] == "superseded"
+
+        # 再对话：该记忆不再注入 system
+        c.post("/api/admin/act-as", params={"target_user_id": uid})
+        c.post("/chat", json={"question": "办公地点在哪"})
+        c.post("/api/admin/clear-act-as")
+        sys_text = _system_text(call_log[1])
+        assert "已过时的办公地点信息" not in sys_text
 
 
 # ============ B. 多用户隔离（安全/隐私核心断言，此前零覆盖）============
@@ -284,4 +316,4 @@ class TestSingleTurnMemory:
         assert result.decision == "answered"
         full_text = "".join(getattr(m, "content", "") for m in captured[0])
         assert "[preference] 偏好简洁回答" in full_text
-        assert "管理员维护的用户长期记忆：1 条" in full_text
+        assert "用户长期记忆：管理员维护 1 条、自动记录 0 条" in full_text
