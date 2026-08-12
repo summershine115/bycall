@@ -259,6 +259,11 @@ class AuditLog(SQLModel, table=True):
     # result 是脱敏**后**的工具返回值（与进 LLM 上下文的一致，已截断防爆），
     # 对应 product-design 支柱 3「调用后审计落库」+ 支柱 4 第二条泄漏面。
     tool_results: str = ""
+    # 数据面上下文 trace（context engineering）：本轮拼给 LLM 的上下文快照（JSON）——
+    # system 消息正文（截断）、RAG 命中来源与预览、注入记忆、summary、历史条数与 token 估算。
+    # 用于事后排查 poisoning/distraction/clash——重建「模型那一轮实际看到了什么」。
+    # 各段截断防爆库，与 tool_results 同为 capped JSON。
+    context_trace: str = ""
     created_at: datetime = Field(
         default_factory=_now_utc,
         sa_column=Column(DateTime, default=_now_utc, index=True),
@@ -456,8 +461,10 @@ class ApprovalRequest(SQLModel, table=True):
         """按 Step 列审批请求（任务内审批：approve/reject 后恢复任务用）。"""
         from sqlmodel import select
 
-        return select(ApprovalRequest).where(ApprovalRequest.step_id == step_id).order_by(
-            ApprovalRequest.id
+        return (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.step_id == step_id)
+            .order_by(ApprovalRequest.id)
         )
 
     @staticmethod
@@ -657,6 +664,10 @@ class Conversation(SQLModel, table=True):
     model_id: int | None = Field(default=None)  # per-session 模型（空→全局激活）
     summary: str = ""  # 压缩摘要（增量更新，非从头重写）
     message_count: int = 0  # 消息总数
+    # 压缩指针：summary 已覆盖的最旧消息数（按 id 顺序计）。
+    # 不变量：summary 概括 messages[0:summary_covered_count]，prompt 取最近 _HISTORY_LIMIT 条。
+    # 压缩把"滑出窗口但尚未进 summary"的那批折进 summary 并推进指针——杜绝旧上下文静默丢失。
+    summary_covered_count: int = 0
     last_message_at: datetime = Field(
         default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
     )
@@ -733,6 +744,22 @@ class Message(SQLModel, table=True):
             select(Message)
             .where(Message.conversation_id == conversation_id)
             .order_by(Message.created_at)
+        )
+
+    @staticmethod
+    def select_range(conversation_id: int, offset: int, limit: int):
+        """按 id 顺序取一段消息（压缩用：取滑出窗口、尚未进 summary 的那批）。
+
+        offset/limit 语义同 SQL：跳过 offset 条、取 limit 条，按 id（插入顺序）正序。
+        """
+        from sqlmodel import select
+
+        return (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id)
+            .offset(offset)
+            .limit(limit)
         )
 
 

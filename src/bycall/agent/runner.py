@@ -23,9 +23,12 @@ M3 工具治理（见 ADR-0002）：
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from langchain_core.language_models import BaseChatModel
@@ -35,13 +38,14 @@ from sqlmodel import Session
 from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
 from bycall.agent.runtime_context import build_runtime_context
 from bycall.agent.session_store import (
+    build_context_trace,
     build_conversation_messages,
-    compress_history,
+    compress_conversation,
     load_message_history,
     load_user_memory,
     save_message,
-    should_compress,
 )
+from bycall.db import session_scope
 from bycall.governance.capability import CapabilitySet, compute_capability_set
 from bycall.governance.models import AuditLog, Conversation, KnowledgeBase, User
 from bycall.llm.base import Message as LLMMessage
@@ -52,6 +56,55 @@ from bycall.tools.gateway import filter_tools, to_langchain_tools
 from bycall.tools.registry import get_tool
 
 logger = logging.getLogger(__name__)
+
+
+# ============ 后台压缩（context engineering：压缩不阻塞请求） ============
+
+# 测试置 True → 同步压缩（确定性好断言）；生产保持 False（后台线程）。
+_COMPACTION_SYNC = False
+_compactor_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compaction")
+_compactor_locks: dict[int, threading.Lock] = {}
+_compactor_locks_guard = threading.Lock()
+atexit.register(_compactor_executor.shutdown, wait=False)
+
+
+def _compactor_lock_for(conversation_id: int) -> threading.Lock:
+    with _compactor_locks_guard:
+        lock = _compactor_locks.get(conversation_id)
+        if lock is None:
+            lock = threading.Lock()
+            _compactor_locks[conversation_id] = lock
+        return lock
+
+
+def _run_compaction(conversation_id: int) -> None:
+    """后台压缩一个会话（自包含：开自己的 session + 取 chat model + 压缩 + 提交）。"""
+    from bycall.llm import resolver
+
+    lock = _compactor_lock_for(conversation_id)
+    if not lock.acquire(blocking=False):
+        return  # 该会话已在压缩，跳过；下一轮 should_compress 会再追
+    try:
+        with session_scope() as session:
+            try:
+                _model, chat_model = resolver.get_chat_model(session)
+            except Exception as e:  # 取不到模型（如未配置）→ 跳过，不阻断
+                logger.warning("压缩取模型失败 conv=%s: %s", conversation_id, e)
+                return
+            compress_conversation(session, conversation_id, chat_model)
+    except Exception:
+        logger.exception("后台压缩失败 conv=%s", conversation_id)
+    finally:
+        lock.release()
+
+
+def schedule_compaction(conversation_id: int) -> None:
+    """异步压缩会话历史（不阻塞用户回复）。幂等可重入；指针模型保证不丢、不重复。"""
+    if _COMPACTION_SYNC:
+        _run_compaction(conversation_id)
+        return
+    _compactor_executor.submit(_run_compaction, conversation_id)
+
 
 _tracer = get_tracer()
 
@@ -146,7 +199,7 @@ def run_agent(
         )
 
     # 3-4. 工具过滤 + 运行时上下文 + 消息构造（同步/流式共用，防行为漂移）。
-    _allowed_tool_specs, langchain_tools, messages = _prepare_agent_messages(
+    _allowed_tool_specs, langchain_tools, messages, context_trace = _prepare_agent_messages(
         session=session,
         user=user,
         cap=cap,
@@ -209,20 +262,8 @@ def run_agent(
         save_message(session, conversation_id, "user", question)
         save_message(session, conversation_id, "assistant", answer)
 
-        # 压缩检查：历史 + 新消息超阈值时压缩旧消息为 summary。
-        full_history = load_message_history(session, conversation_id)
-        if should_compress(full_history):
-            conv = session.get(Conversation, conversation_id)
-            if conv is not None:
-                new_summary = compress_history(
-                    llm=llm,
-                    history=full_history,
-                    previous_summary=conv.summary,
-                )
-                if new_summary != conv.summary:
-                    conv.summary = new_summary
-                    session.add(conv)
-                    logger.info("会话 %s 压缩完成，summary 已更新", conversation_id)
+        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
+        schedule_compaction(conversation_id)
 
     # 7. 审计落库（含工具调用记录）。
     # detail 保留工具名/skill 名摘要（快速扫），tool_results 存结构化明细 [{name,args,result}]
@@ -241,6 +282,7 @@ def run_agent(
         f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
         answer[:500],
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
+        context_trace=context_trace,
     )
 
     return _result(
@@ -285,6 +327,7 @@ def _audit(
     detail: str,
     answer: str,
     tool_results: str = "",
+    context_trace: str = "",
 ) -> None:
     """写一条审计日志（append-only）。
 
@@ -302,6 +345,7 @@ def _audit(
             detail=detail,
             answer=answer[:500],
             tool_results=tool_results,
+            context_trace=context_trace,
         )
     )
     session.commit()
@@ -316,7 +360,7 @@ def _prepare_agent_messages(
     channel: str,
     conversation_id: int | None,
     retrieved: list,
-) -> tuple[list, list, list[BaseMessage]]:
+) -> tuple[list, list, list[BaseMessage], str]:
     """按本轮治理结果统一准备工具和消息，供同步与流式入口共用。"""
     allowed_tool_specs = filter_tools(cap.allowed_tools)
     if cap.on_demand_skills:
@@ -327,7 +371,9 @@ def _prepare_agent_messages(
 
     history = []
     summary = ""
-    user_memories = load_user_memory(session, user.id) if user.id is not None else []
+    user_memories = (
+        load_user_memory(session, user.id, question=question) if user.id is not None else []
+    )
     if conversation_id is not None:
         conv = session.get(Conversation, conversation_id)
         summary = conv.summary if conv is not None else ""
@@ -366,7 +412,14 @@ def _prepare_agent_messages(
             user_memories=user_memories,
             runtime_context=runtime_context,
         )
-    return allowed_tool_specs, langchain_tools, _to_langchain_messages(raw_messages)
+    context_trace = build_context_trace(
+        raw_messages=raw_messages,
+        retrieved=retrieved,
+        user_memories=user_memories,
+        summary=summary,
+        history=history,
+    )
+    return allowed_tool_specs, langchain_tools, _to_langchain_messages(raw_messages), context_trace
 
 
 def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
@@ -522,7 +575,7 @@ async def run_agent_stream(
         return
 
     # 3-4. 工具过滤 + 运行时上下文 + 消息构造（与同步入口共享）。
-    _allowed_tool_specs, langchain_tools, messages = _prepare_agent_messages(
+    _allowed_tool_specs, langchain_tools, messages, context_trace = _prepare_agent_messages(
         session=session,
         user=user,
         cap=cap,
@@ -607,19 +660,8 @@ async def run_agent_stream(
     if conversation_id is not None:
         save_message(session, conversation_id, "user", question)
         save_message(session, conversation_id, "assistant", answer)
-        full_history = load_message_history(session, conversation_id)
-        if should_compress(full_history):
-            conv = session.get(Conversation, conversation_id)
-            if conv is not None:
-                new_summary = compress_history(
-                    llm=llm,
-                    history=full_history,
-                    previous_summary=conv.summary,
-                )
-                if new_summary != conv.summary:
-                    conv.summary = new_summary
-                    session.add(conv)
-                    logger.info("会话 %s 压缩完成，summary 已更新", conversation_id)
+        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
+        schedule_compaction(conversation_id)
 
     # 7. 审计。
     tool_detail = ""
@@ -636,6 +678,7 @@ async def run_agent_stream(
         f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
         answer[:500],
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
+        context_trace=context_trace,
     )
 
     result = _result(

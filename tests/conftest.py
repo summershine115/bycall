@@ -18,6 +18,10 @@ def _reset_settings():
     from bycall.tools.registry import clear_registry
 
     clear_registry()
+    # 压缩改同步（确定性 + 防后台线程挂起 pytest）。
+    from bycall.agent import runner as _runner
+
+    _runner._COMPACTION_SYNC = True
     yield
     get_settings.cache_clear()
     clear_registry()
@@ -29,6 +33,7 @@ def _reset_settings():
     from bycall.governance.capability import clear_capability_cache
 
     clear_capability_cache()
+    _runner._COMPACTION_SYNC = False
 
 
 @pytest.fixture
