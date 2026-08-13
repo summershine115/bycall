@@ -208,15 +208,16 @@ export const admin = {
 // ============ 数据面 /chat ============
 
 export const chat = {
-  ask: (question) => http.post('/chat', { question }).then((r) => r.data),
+  ask: (question, conversationId) =>
+    http.post('/chat', { question, conversation_id: conversationId }).then((r) => r.data),
   // 流式对话（SSE）：POST 无法用 EventSource（仅 GET），改用 fetch + ReadableStream
   // 逐帧解析 event:/data:，分发到回调。不走 axios 拦截（401 单独处理跳登录）。
-  stream: async (question, { onToken, onFlush, onDone, onError } = {}) => {
+  stream: async (question, conversationId, { onToken, onFlush, onDone, onError } = {}) => {
     const resp = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, conversation_id: conversationId }),
     })
     if (resp.status === 401) {
       if (!window.location.hash.includes('/login')) window.location.hash = '#/login'
@@ -249,10 +250,13 @@ export const chat = {
       onError?.(e)
     }
   },
-  // 当前用户 api 会话的历史消息（对话测试页加载用）
-  history: () => http.get('/chat/history').then((r) => r.data),
-  // 重置当前用户 api 会话（清空消息，保留会话）
-  reset: () => http.post('/chat/reset').then((r) => r.data),
+  // 当前用户的全部 api 会话（侧栏列表）
+  conversations: () => http.get('/chat/conversations').then((r) => r.data),
+  // 某会话的消息历史（切换会话时加载）
+  conversationMessages: (convId) =>
+    http.get(`/chat/conversations/${convId}/messages`).then((r) => r.data),
+  // 删除某会话（消息 + 会话记录）
+  deleteConversation: (convId) => http.delete(`/chat/conversations/${convId}`),
 }
 
 // SSE 帧解析：event:/data: 行 → { type, data }

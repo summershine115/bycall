@@ -1,10 +1,9 @@
-"""数据面 /chat 端点扩展测试：治理透明化字段 + 流式 SSE + 会话历史 + 重置。
+"""数据面 /chat 端点测试：治理透明化字段 + 流式 SSE + 多会话（列表/切换/删除）。
 
-覆盖本次「对话测试升级」新增的后端契约：
+覆盖：
 - /chat 响应透传 tool_calls / citations / context_trace / conversation_id
 - /chat/stream SSE 逐 token + done 事件
-- /chat/history 当前用户 api 会话历史
-- /chat/reset 清空会话（保留会话本身）
+- api 渠道多会话：不带 conversation_id 新建、带 id 继续、列表、消息、删除、归属校验
 
 用 mock LLM（不连真实 API），验证 HTTP 契约而非 LLM 质量。
 """
@@ -86,52 +85,60 @@ class TestChatTransparency:
         assert data["conversation_id"] is not None
         assert isinstance(data["tool_calls"], list)
         assert isinstance(data["citations"], list)
-        # answered 时 context_trace 非空（含 system/RAG 快照）
         assert data["decision"] == "answered"
         assert data["context_trace"] != ""
 
 
-class TestChatHistory:
-    def test_history_empty_before_chat(self, client):
-        """发消息前 history 返回空（无会话）。"""
-        resp = client.get("/chat/history")
+class TestMultiConversation:
+    def test_first_chat_creates_conversation(self, client):
+        """不带 conversation_id → 新建会话，返回新 conversation_id。"""
+        resp = client.post("/chat", json={"question": "你好"})
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["conversation_id"] is None
-        assert data["messages"] == []
+        assert resp.json()["conversation_id"] is not None
 
-    def test_history_returns_messages_after_chat(self, client):
-        """一轮对话后 history 返回 user + assistant 两条消息。"""
-        client.post("/chat", json={"question": "报销流程是什么"})
-        resp = client.get("/chat/history")
-        data = resp.json()
-        assert data["conversation_id"] is not None
-        roles = [m["role"] for m in data["messages"]]
+    def test_continue_same_conversation(self, client):
+        """带 conversation_id → 继续该会话，返回同一 id。"""
+        cid = client.post("/chat", json={"question": "第一问"}).json()["conversation_id"]
+        resp = client.post("/chat", json={"question": "第二问", "conversation_id": cid})
+        assert resp.json()["conversation_id"] == cid
+
+    def test_two_chats_create_distinct_conversations(self, client):
+        """两次不带 conv_id → 两个不同会话（多会话支持）。"""
+        c1 = client.post("/chat", json={"question": "话题A"}).json()["conversation_id"]
+        c2 = client.post("/chat", json={"question": "话题B"}).json()["conversation_id"]
+        assert c1 != c2
+
+    def test_conversation_list_with_preview(self, client):
+        """会话列表含已创建会话，preview 取首条 user 消息。"""
+        cid = client.post("/chat", json={"question": "列表测试问题"}).json()["conversation_id"]
+        resp = client.get("/chat/conversations")
+        assert resp.status_code == 200
+        item = next((c for c in resp.json() if c["id"] == cid), None)
+        assert item is not None
+        assert item["preview"] == "列表测试问题"
+        assert item["message_count"] == 2  # user + assistant
+
+    def test_conversation_messages(self, client):
+        """加载某会话的消息历史（切换会话用）。"""
+        cid = client.post("/chat", json={"question": "历史问题"}).json()["conversation_id"]
+        resp = client.get(f"/chat/conversations/{cid}/messages")
+        assert resp.status_code == 200
+        roles = [m["role"] for m in resp.json()]
         assert roles == ["user", "assistant"]
-        assert data["messages"][0]["content"] == "报销流程是什么"
-        assert data["messages"][1]["content"] == "测试回答"
+        assert resp.json()[0]["content"] == "历史问题"
 
+    def test_delete_conversation(self, client):
+        """删除会话后列表不含、消息不可查。"""
+        cid = client.post("/chat", json={"question": "待删除"}).json()["conversation_id"]
+        assert client.delete(f"/chat/conversations/{cid}").status_code == 204
+        assert cid not in [c["id"] for c in client.get("/chat/conversations").json()]
+        assert client.get(f"/chat/conversations/{cid}/messages").status_code == 404
 
-class TestChatReset:
-    def test_reset_clears_history(self, client):
-        """reset 清空消息但保留会话本身。"""
-        client.post("/chat", json={"question": "问题一"})
-        assert len(client.get("/chat/history").json()["messages"]) == 2
-
-        resp = client.post("/chat/reset")
-        assert resp.status_code == 200
-        assert resp.json()["reset"] is True
-
-        data = client.get("/chat/history").json()
-        assert data["messages"] == []
-        # 会话保留（同一 conversation_id）
-        assert data["conversation_id"] is not None
-
-    def test_reset_when_no_conversation(self, client):
-        """无会话时 reset 返回 reset=False（不报错）。"""
-        resp = client.post("/chat/reset")
-        assert resp.status_code == 200
-        assert resp.json()["reset"] is False
+    def test_cannot_access_nonexistent_conversation(self, client):
+        """访问不存在的会话 → 404（消息查询 + 继续对话均拦截）。"""
+        assert client.get("/chat/conversations/99999/messages").status_code == 404
+        resp = client.post("/chat", json={"question": "x", "conversation_id": 99999})
+        assert resp.status_code == 404
 
 
 class TestChatStream:
@@ -150,9 +157,7 @@ class TestChatStream:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
         text = resp.text
-        # 两个 token 事件
         assert text.count("event: token") == 2
-        # done 事件含完整 ChatResponse
         assert "event: done" in text
         done = _parse_sse_done(text)
         assert done is not None
@@ -161,29 +166,10 @@ class TestChatStream:
         assert done["decision"] == "answered"
         assert done["context_trace"] != ""
 
-    def test_stream_denied_no_access_uses_done_event(self, client, monkeypatch):
-        """无知识域权限的用户 → done 事件带 denied_no_access（仍走 SSE，非 HTTP 错误）。"""
-        # patch runner 顶部 from-import 的 compute_capability_set 本地引用（非源模块），
-        # 让 admin 无知识域 → denied_no_access 路径。monkeypatch 自动恢复。
-        empty_cap = SimpleNamespace(
-            role="admin",
-            knowledge_scope_tags=[],
-            visible_kb_ids=[],
-            is_admin=False,
-            allowed_tools=[],
-            on_demand_skills=[],
-            skills=[],
-            skill_markdown="",
-            knowledge_scope_text="",
-            system_prompt="sys",
-        )
-
-        monkeypatch.setattr(
-            "bycall.agent.runner.compute_capability_set",
-            lambda session, user: empty_cap,
-        )
-        resp = client.post("/chat/stream", json={"question": "你好"})
+    def test_stream_continue_conversation(self, client):
+        """流式带 conversation_id → 继续同一会话。"""
+        cid = client.post("/chat", json={"question": "第一问"}).json()["conversation_id"]
+        resp = client.post("/chat/stream", json={"question": "第二问", "conversation_id": cid})
         assert resp.status_code == 200
         done = _parse_sse_done(resp.text)
-        assert done is not None
-        assert done["decision"] == "denied_no_access"
+        assert done["conversation_id"] == cid

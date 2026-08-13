@@ -85,6 +85,7 @@ class TestMultiTurnChat:
 
         # 第一轮
         resp1 = c.post("/chat", json={"question": "你好，我是张三"})
+        cid = resp1.json()["conversation_id"]
         assert resp1.status_code == 200
         assert len(call_log) == 1
         # 第一轮消息：system + rag + user（无历史）
@@ -92,7 +93,7 @@ class TestMultiTurnChat:
         assert msgs1[-1].content == "你好，我是张三"
 
         # 第二轮
-        resp2 = c.post("/chat", json={"question": "我叫什么名字？"})
+        resp2 = c.post("/chat", json={"question": "我叫什么名字？", "conversation_id": cid})
         assert resp2.status_code == 200
         assert len(call_log) == 2
         # 第二轮消息应包含第一轮的历史
@@ -105,17 +106,12 @@ class TestMultiTurnChat:
     def test_messages_persisted_to_db(self, client):
         """两轮对话后 DB 里有 4 条消息（2 user + 2 assistant）。"""
         c, _, _ = client
-        c.post("/chat", json={"question": "问题1"})
-        c.post("/chat", json={"question": "问题2"})
+        cid = c.post("/chat", json={"question": "问题1"}).json()["conversation_id"]
+        c.post("/chat", json={"question": "问题2", "conversation_id": cid})
 
-        # 查会话列表
-        convs = c.get("/api/admin/conversations").json()
-        assert len(convs) >= 1
-        conv_id = convs[0]["id"]
-
-        # 查消息
-        msgs = c.get(f"/api/admin/conversations/{conv_id}/messages").json()
-        assert len(msgs) == 4  # 2 user + 2 assistant
+        # 同一会话两轮 → 4 条消息（2 user + 2 assistant）
+        msgs = c.get(f"/api/admin/conversations/{cid}/messages").json()
+        assert len(msgs) == 4
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant", "user", "assistant"]
 

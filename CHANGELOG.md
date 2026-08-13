@@ -44,10 +44,14 @@
   agent 自动记录记忆的分层注入与纠正机制打底。
 - 对话测试页全面升级：流式输出（逐 token，复用 ``run_agent_stream`` 经新增 ``/chat/stream`` SSE
   端点）、助手消息 Markdown 渲染（代码块/表格/列表）、每轮治理决策内联展开（工具调用记录的
-  参数与结果、RAG 引用来源卡片、上下文快照 ``context_trace`` 排障视图）、会话历史持久化
-  （``/chat/history`` 首屏加载、刷新不丢）与一键重置（``/chat/reset``）。治理透明化的三类数据
+  参数与结果、RAG 引用来源卡片、上下文快照 ``context_trace`` 排障视图）。治理透明化的三类数据
   （``tool_calls`` / ``citations`` / ``context_trace``）此前已由后端产出但未透传给前端，现经
   ``ChatResponse`` 一并暴露。
+- 对话测试页支持多会话：左侧历史会话列表，可新建 / 切换 / 删除独立会话，进入页面自动恢复
+  最近一次会话。api 渠道由「单会话」升级为「多会话」——新增 ``/chat/conversations`` 列表、
+  ``/chat/conversations/{id}/messages`` 历史、``DELETE /chat/conversations/{id}`` 删除端点；
+  ``/chat`` 与 ``/chat/stream`` 支持 ``conversation_id`` 参数（不传新建、传则继续，校验归属防
+  越权恢复他人会话）。IM 渠道单会话语义不变。
 - S2 记忆层 Phase 2：数字员工自动记录用户长期记忆——在调用工具的对话轮次后，LLM 从对话中
   提炼明确、高置信、持久的事实（偏好/身份/职责/关系/目标），经代码层保守闸门（置信度阈值
   默认 0.85 可调、排除时间敏感信息、category 与长度校验）与归一化去重后写入用户私有记忆，

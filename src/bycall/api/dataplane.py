@@ -3,24 +3,26 @@
 核心逻辑在 ``agent/runner.py`` 的 ``run_agent``——控制面(本端点)和数据面(IM 渠道)共用。
 这里只做：会话认证 → 取当前用户 → 调 run_agent → 包装成 HTTP 响应。
 
-除同步 ``/chat`` 外，提供流式 ``/chat/stream``（SSE 逐 token）、会话历史
-``/chat/history``、会话重置 ``/chat/reset``——让控制台「对话测试」页能逐 token
-观察治理决策，并把后端已产出的工具调用记录、RAG 引用来源、上下文快照完整呈现。
+api 渠道支持多会话：一个用户可同时持有多个「对话测试」会话，互不干扰。
+- 不传 ``conversation_id`` → 新建会话（唯一 session_key，不影响 IM 渠道单会话语义）。
+- 传 ``conversation_id`` → 继续该会话（校验归属 + 渠道）。
+IM 渠道仍由 ``get_or_create_conversation`` 按 ``{channel}:{user_id}`` 单会话管理，不受影响。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from bycall.agent.graph import TOOL_ROUND_FLUSH
 from bycall.agent.runner import run_agent, run_agent_stream
-from bycall.agent.session_store import get_or_create_conversation, load_message_history
+from bycall.agent.session_store import load_message_history
 from bycall.config import get_settings
 from bycall.db import get_session, session_scope
 from bycall.governance.auth import load_session_cookie
@@ -39,9 +41,13 @@ MAX_QUESTION_LEN = 4000
 
 
 class ChatRequest(BaseModel):
-    """数据面对话请求。question 来自用户输入。"""
+    """数据面对话请求。
+
+    ``conversation_id`` 为空 → 新建 api 会话；非空 → 继续该会话（校验归属）。
+    """
 
     question: str
+    conversation_id: int | None = None
 
 
 class ChatResponse(BaseModel):
@@ -71,11 +77,13 @@ class ChatMessageOut(BaseModel):
     content: str
 
 
-class ChatHistoryResponse(BaseModel):
-    """当前用户 api 会话的历史消息 + 会话 id。"""
+class ConversationSummary(BaseModel):
+    """会话列表项：当前用户的一个 api 会话摘要。"""
 
-    conversation_id: int | None = None
-    messages: list[ChatMessageOut]
+    id: int
+    message_count: int
+    last_message_at: str  # ISO 字符串，前端按需格式化
+    preview: str  # 首条 user 消息预览（对话主题），无消息则占位
 
 
 def _current_user(request: Request, session: Session) -> User:
@@ -122,6 +130,39 @@ def _check_rate_limit(user: User) -> None:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
 
 
+def _new_api_conversation(session: Session, user: User) -> Conversation:
+    """新建一个 api 渠道会话。
+
+    api 渠道支持多会话：每次新建用唯一 session_key（``api:{uid}:{rand}``），
+    不与 IM 渠道的 ``{channel}:{uid}`` 单会话查找冲突。
+    """
+    conv = Conversation(
+        user_id=user.id,  # type: ignore[arg-type]
+        channel="api",
+        session_key=f"api:{user.id}:{uuid.uuid4().hex[:8]}",
+    )
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+    logger.info("新建 api 会话: conv_id=%s user=%s", conv.id, user.name)
+    return conv
+
+
+def _get_owned_conversation(session: Session, user: User, conv_id: int) -> Conversation:
+    """取当前用户的一个 api 会话（校验归属 + 渠道，防越权恢复他人/IM 会话）。"""
+    conv = session.get(Conversation, conv_id)
+    if conv is None or conv.user_id != user.id or conv.channel != "api":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在或无权访问")
+    return conv
+
+
+def _resolve_conversation(session: Session, user: User, conv_id: int | None) -> Conversation:
+    """按 conversation_id 决定新建或继续（/chat 与 /chat/stream 共用）。"""
+    if conv_id is not None:
+        return _get_owned_conversation(session, user, conv_id)
+    return _new_api_conversation(session, user)
+
+
 def _to_response(result, conv_id: int | None) -> ChatResponse:
     """AgentResult → ChatResponse（同步 / 流式 done 共用）。"""
     return ChatResponse(
@@ -151,8 +192,7 @@ def chat(
 ) -> ChatResponse:
     """数据面对话：委托 run_agent 执行完整治理链路。
 
-    LLM/EmbedModel 从 DB 激活的 Model 实体解析（admin 控制台管理）。
-    RAG 检索由 run_agent 内部查 KB 路由（不再从外部传 vector_store）。
+    conversation_id 为空 → 新建 api 会话；非空 → 继续（校验归属）。
     """
     if len(body.question) > MAX_QUESTION_LEN:
         raise HTTPException(
@@ -163,9 +203,8 @@ def chat(
     user = _current_user(request, session)
     chat_model = _resolve_chat_model(session)
     _check_rate_limit(user)
+    conv = _resolve_conversation(session, user, body.conversation_id)
 
-    # 多轮会话：按 (user_id, channel) 查/建会话，传入 run_agent 启用历史。
-    conv = get_or_create_conversation(session, user.id, "api")
     result = run_agent(
         session=session,
         user=user,
@@ -206,7 +245,7 @@ async def chat_stream(
         user = _current_user(request, session)
         chat_model = _resolve_chat_model(session)
         _check_rate_limit(user)
-        conv = get_or_create_conversation(session, user.id, "api")
+        conv = _resolve_conversation(session, user, body.conversation_id)
         conv_id = conv.id
     except BaseException:
         ctx.__exit__(None, None, None)
@@ -243,50 +282,65 @@ async def chat_stream(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.get("/chat/history", response_model=ChatHistoryResponse)
-def chat_history(
+@router.get("/chat/conversations", response_model=list[ConversationSummary])
+def chat_conversations(
     request: Request,
     session: Session = Depends(get_session),
-) -> ChatHistoryResponse:
-    """当前用户 api 会话的历史消息（对话测试页加载用）。
+) -> list[ConversationSummary]:
+    """当前用户的全部 api 会话（按最后消息时间倒序）。
 
-    只查不建——无会话时返回空列表（首次进入页面尚未发过消息）。
+    每个会话带首条 user 消息预览作为标题，便于在侧栏区分。
     """
     user = _current_user(request, session)
-    session_key = f"api:{user.id}"
-    conv = session.exec(Conversation.select_by_session_key(session_key)).first()
-    if conv is None:
-        return ChatHistoryResponse(conversation_id=None, messages=[])
+    convs = session.exec(
+        select(Conversation)
+        .where(Conversation.user_id == user.id, Conversation.channel == "api")
+        .order_by(Conversation.last_message_at.desc())
+    ).all()
+    result = []
+    for conv in convs:
+        first_user = session.exec(
+            select(Message)
+            .where(Message.conversation_id == conv.id, Message.role == "user")
+            .order_by(Message.id)
+            .limit(1)
+        ).first()
+        preview = (first_user.content[:40] if first_user else "") or "（新对话）"
+        result.append(
+            ConversationSummary(
+                id=conv.id,
+                message_count=conv.message_count,
+                last_message_at=conv.last_message_at.isoformat(),
+                preview=preview,
+            )
+        )
+    return result
+
+
+@router.get("/chat/conversations/{conv_id}/messages", response_model=list[ChatMessageOut])
+def chat_conversation_messages(
+    conv_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> list[ChatMessageOut]:
+    """某会话的消息历史（切换会话时加载，校验归属）。"""
+    user = _current_user(request, session)
+    conv = _get_owned_conversation(session, user, conv_id)
     rows = load_message_history(session, conv.id, limit=100)
-    return ChatHistoryResponse(
-        conversation_id=conv.id,
-        messages=[ChatMessageOut(role=m.role, content=m.content) for m in rows],
-    )
+    return [ChatMessageOut(role=m.role, content=m.content) for m in rows]
 
 
-@router.post("/chat/reset")
-def chat_reset(
+@router.delete("/chat/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+def chat_delete_conversation(
+    conv_id: int,
     request: Request,
     session: Session = Depends(get_session),
-) -> dict:
-    """重置当前用户 api 会话：清空消息 + summary + 压缩指针，保留会话本身。
-
-    与 admin ``/conversations/{id}/reset`` 同语义，但面向当前数据面用户自服务
-    （对话测试页「新对话」按钮）。额外重置 ``summary_covered_count``——
-    admin 侧遗漏了压缩指针归零，此处做对，避免重置后压缩指针错乱。
-    """
+) -> None:
+    """删除当前用户的一个 api 会话（消息 + 会话记录，校验归属）。"""
     user = _current_user(request, session)
-    session_key = f"api:{user.id}"
-    conv = session.exec(Conversation.select_by_session_key(session_key)).first()
-    if conv is None:
-        return {"conversation_id": None, "reset": False}
-
+    conv = _get_owned_conversation(session, user, conv_id)
     msgs = session.exec(Message.select_by_conversation(conv.id)).all()
     for msg in msgs:
         session.delete(msg)
-    conv.summary = ""
-    conv.message_count = 0
-    conv.summary_covered_count = 0
-    session.add(conv)
+    session.delete(conv)
     session.commit()
-    return {"conversation_id": conv.id, "reset": True}
