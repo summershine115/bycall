@@ -160,7 +160,8 @@ class TestTaskScheduleCRUD:
         assert any(r["id"] == sid for r in rows)
 
         updated = client.patch(
-            f"/api/admin/task-schedules/{sid}", json={"is_enabled": False, "cron_expr": "0 10 * * *"}
+            f"/api/admin/task-schedules/{sid}",
+            json={"is_enabled": False, "cron_expr": "0 10 * * *"},
         ).json()
         assert updated["is_enabled"] is False
         assert updated["cron_expr"] == "0 10 * * *"
@@ -211,9 +212,7 @@ class TestEventEntry:
                 "user_id": uid,
             },
         )
-        resp = client.post(
-            "/api/events/webhook-orders", json={"payload": {"order_id": "A100"}}
-        )
+        resp = client.post("/api/events/webhook-orders", json={"payload": {"order_id": "A100"}})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["status"] in ("completed", "failed")

@@ -91,7 +91,14 @@ class TestSkillMarkdownRoundtrip:
 class TestSkillZipRoundtrip:
     def test_export_import_roundtrip(self, db_session):
         with session_scope() as s:
-            s.add(Skill(name="alpha-skill", description="Alpha 描述", content="Alpha 内容", disclosure="always"))
+            s.add(
+                Skill(
+                    name="alpha-skill",
+                    description="Alpha 描述",
+                    content="Alpha 内容",
+                    disclosure="always",
+                )
+            )
             s.add(
                 Skill(
                     name="beta-skill",
@@ -105,7 +112,9 @@ class TestSkillZipRoundtrip:
 
         with session_scope() as s:
             skills = s.exec(
-                select(Skill).where(Skill.name.in_(["alpha-skill", "beta-skill"])).order_by(Skill.name)
+                select(Skill)
+                .where(Skill.name.in_(["alpha-skill", "beta-skill"]))
+                .order_by(Skill.name)
             ).all()
 
             buf = io.BytesIO()
@@ -132,6 +141,7 @@ class TestSkillZipRoundtrip:
         buf.seek(0)
 
         import zipfile
+
         zf = zipfile.ZipFile(buf, "r")
         assert len(zf.namelist()) == 0
         zf.close()

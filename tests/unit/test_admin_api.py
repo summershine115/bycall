@@ -290,9 +290,7 @@ def test_list_audit_paginates_and_filters_by_user(client: TestClient):
     assert len(body["items"]) == 1
     assert body["items"][0]["user_id"] == 11
 
-    second_page = client.get(
-        "/api/admin/audit", params={"page": 2, "page_size": 1, "user_id": 11}
-    )
+    second_page = client.get("/api/admin/audit", params={"page": 2, "page_size": 1, "user_id": 11})
     assert second_page.json()["items"][0]["user_id"] == 11
 
 

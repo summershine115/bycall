@@ -63,8 +63,20 @@ def _make_role_with_skills(session, name: str, skills: list[str]) -> Role:
     return role
 
 
-def _make_skill(session, name: str, content: str = "领域知识内容", enabled: bool = True, disclosure: str = "always") -> Skill:
-    skill = Skill(name=name, description=f"{name} 描述", content=content, is_enabled=enabled, disclosure=disclosure)
+def _make_skill(
+    session,
+    name: str,
+    content: str = "领域知识内容",
+    enabled: bool = True,
+    disclosure: str = "always",
+) -> Skill:
+    skill = Skill(
+        name=name,
+        description=f"{name} 描述",
+        content=content,
+        is_enabled=enabled,
+        disclosure=disclosure,
+    )
     session.add(skill)
     session.flush()
     return skill
@@ -212,7 +224,6 @@ class TestSkillCapabilityDispatch:
         assert "Z内容" in cap.skill_markdown
         # 注入 markdown 同样保持配置顺序：zeta 段在 alpha 段之前。
         assert cap.skill_markdown.index("Z内容") < cap.skill_markdown.index("A内容")
-
 
 
 class TestProgressiveDisclosure:

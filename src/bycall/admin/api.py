@@ -747,7 +747,9 @@ def list_skills(
 
 @router.get("/skills/export")
 def export_skills(
-    names: list[str] | None = Query(default=None, description="要导出的 skill name 列表，不传=全部"),
+    names: list[str] | None = Query(
+        default=None, description="要导出的 skill name 列表，不传=全部"
+    ),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ):
@@ -765,7 +767,9 @@ def export_skills(
         skills = [s for s in skills if s.name in names]
         missing = set(names) - {s.name for s in skills}
         if missing:
-            raise HTTPException(status_code=404, detail=f"Skill 不存在: {', '.join(sorted(missing))}")
+            raise HTTPException(
+                status_code=404, detail=f"Skill 不存在: {', '.join(sorted(missing))}"
+            )
     else:
         skills = list(session.exec(Skill.select_all()).all())
 
@@ -784,7 +788,9 @@ def export_skills(
 def import_skills(
     file: UploadFile,
     request: Request,
-    on_conflict: str = Query(default="skip", description="冲突策略：skip=跳过已有 / overwrite=覆盖"),
+    on_conflict: str = Query(
+        default="skip", description="冲突策略：skip=跳过已有 / overwrite=覆盖"
+    ),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ):
@@ -814,7 +820,9 @@ def import_skills(
         existing = session.exec(Skill.select_by_name(name)).first()
         if existing is not None:
             if on_conflict == "skip":
-                result.items.append(SkillImportItem(name=name, status="skipped", message="名称已存在"))
+                result.items.append(
+                    SkillImportItem(name=name, status="skipped", message="名称已存在")
+                )
                 result.total_skipped += 1
                 continue
             # overwrite
@@ -846,11 +854,15 @@ def import_skills(
         request,
         "import_skills",
         f"{len(parsed.get('skills', []))} skills from zip (on_conflict={on_conflict})",
-        after={"created": result.total_created, "updated": result.total_updated, "skipped": result.total_skipped, "errors": len(result.errors)},
+        after={
+            "created": result.total_created,
+            "updated": result.total_updated,
+            "skipped": result.total_skipped,
+            "errors": len(result.errors),
+        },
     )
     session.commit()
     return result
-
 
 
 @router.get("/skills/{name}", response_model=SkillOut)
@@ -943,8 +955,6 @@ def delete_skill(
     _audit_admin(session, request, "delete_skill", f"Skill({name})", before=before_snapshot)
 
 
-
-
 # ============ 审计 ============
 
 
@@ -954,7 +964,9 @@ def list_audit(
     page_size: int = Query(default=20, ge=1, le=100, description="每页条数"),
     user_id: int | None = Query(default=None, ge=1, description="按用户 ID 筛选"),
     decision: str | None = Query(default=None, description="按决策筛选"),
-    limit: int | None = Query(default=None, ge=1, le=500, description="兼容旧客户端：返回最近 N 条数组"),
+    limit: int | None = Query(
+        default=None, ge=1, le=500, description="兼容旧客户端：返回最近 N 条数组"
+    ),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> AuditPage | list[AuditLog]:

@@ -88,9 +88,7 @@ class TestPlanTaskGoal:
         """LLM 偶尔输出 Markdown 围栏包裹的 JSON → 剥离后正常解析。"""
         from bycall.agent.task_engine import plan_task_goal
 
-        llm = _FakeChatModel(
-            content='```json\n[{"goal": "单步任务", "kind": "tool_loop"}]\n```'
-        )
+        llm = _FakeChatModel(content='```json\n[{"goal": "单步任务", "kind": "tool_loop"}]\n```')
         assert plan_task_goal(llm, "目标") == [{"goal": "单步任务", "kind": "tool_loop"}]
 
     def test_garbage_falls_back_to_single_step(self, engine):

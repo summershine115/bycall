@@ -35,9 +35,7 @@ def _tick_seconds() -> int:
 
     try:
         with session_scope() as session:
-            row = session.exec(
-                SystemSetting.select_by_key("task.scheduler_tick_seconds")
-            ).first()
+            row = session.exec(SystemSetting.select_by_key("task.scheduler_tick_seconds")).first()
             if row is not None and row.value:
                 return max(5, int(row.value))
     except Exception:  # DB 未就绪等场景 → 用默认值，不让调度器崩
@@ -124,9 +122,7 @@ class TaskScheduler:
                     sched.last_fired_at = datetime.now(UTC)
                     session.add(sched)
                     session.commit()
-                    logger.info(
-                        "调度 #%s (%s) 触发 → Task #%s", sched.id, sched.name, task.id
-                    )
+                    logger.info("调度 #%s (%s) 触发 → Task #%s", sched.id, sched.name, task.id)
                 except Exception:
                     # 触发失败：不更新 last_fired_at，下次 tick 自动重试。
                     logger.exception("调度 #%s (%s) 触发失败", sched.id, sched.name)

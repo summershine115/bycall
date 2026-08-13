@@ -92,6 +92,6 @@
 | `docs/architecture.md` | 随实现演进 | 分层架构 + 9 条红线（当前约束，不可违背） |
 | `docs/qm-benchmark.md` | 调研记录（已采纳） | QM 对标；借鉴项映射见 product-design §6.1 |
 | `docs/tencent-agent-memory-benchmark.md` | 调研记录（已采纳） | TAM 对标；已升华为 ADR-0007 |
-| `docs/specs/agent-framework-upgrade.md` | 已采纳 | S1a 已落地；S1b–S4 待排期（切片见 §8） |
+| `docs/specs/agent-framework-upgrade.md` | 已采纳 | S1 执行层（a+b）已落地；S2 记忆层 Phase 1 已落地（agent 写路径未落地）；S3–S4 待排期（切片见 §8） |
 | `tasks/plan.md` / `tasks/todo.md` | 随任务状态 | S1a 实施计划与任务清单，**已完成** |
 | `CHANGELOG.md` | 版本记录 | 用户可见变更流水账，不承载「为什么」 |

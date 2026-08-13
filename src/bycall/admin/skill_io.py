@@ -76,7 +76,7 @@ def parse_skill_md(content: str) -> dict:
         is_enabled = True
 
     # body 是第二个 ``---`` 之后的内容（跳过 ``\n---\n`` 四个字符）
-    body = content[end_idx + 5:]
+    body = content[end_idx + 5 :]
 
     return {
         "name": name.strip(),
