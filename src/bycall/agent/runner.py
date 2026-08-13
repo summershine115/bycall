@@ -23,6 +23,7 @@ M3 工具治理（见 ADR-0002）：
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import json
 import logging
@@ -36,6 +37,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from sqlmodel import Session
 
 from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
+from bycall.agent.memory_writer import maybe_extract_and_save_memory
 from bycall.agent.runtime_context import build_runtime_context
 from bycall.agent.session_store import (
     build_context_trace,
@@ -286,6 +288,10 @@ def run_agent(
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
         context_trace=context_trace,
     )
+    # 8. agent 记忆提取（保守可写，红线 #7）：仅 answered+工具调用 轮触发——纯闲聊/拒绝/
+    # 失败不调提取 LLM（省成本）。提取写入用独立 session，失败不影响主流程。
+    if graph_result.tool_calls_made:
+        maybe_extract_and_save_memory(llm=llm, user_id=user.id, question=question, answer=answer)
 
     return _result(
         answer=answer,
@@ -690,6 +696,16 @@ async def run_agent_stream(
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
         context_trace=context_trace,
     )
+    # 8. agent 记忆提取（保守可写）：仅 answered+工具调用 轮触发。放独立线程跑同步提取，
+    # 不阻塞事件循环；答案已流式送出（用户在读），提取期间用户无感。
+    if graph_result.tool_calls_made:
+        await asyncio.to_thread(
+            maybe_extract_and_save_memory,
+            llm=llm,
+            user_id=user.id,
+            question=question,
+            answer=answer,
+        )
 
     result = _result(
         answer=answer,
@@ -767,6 +783,8 @@ def _run_as_task(
         f"task={task.id},status={task.status},steps={len(plan)}",
         answer[:500],
     )
+    # 任务执行路径同样触发 agent 记忆提取（spec：执行任务后提炼高置信新事实）。
+    maybe_extract_and_save_memory(llm=llm, user_id=user.id, question=question, answer=answer)
     return _result(answer=answer, decision="task", scope=[], retrieved=0, user=user)
 
 

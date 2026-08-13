@@ -48,6 +48,13 @@
   （``/chat/history`` 首屏加载、刷新不丢）与一键重置（``/chat/reset``）。治理透明化的三类数据
   （``tool_calls`` / ``citations`` / ``context_trace``）此前已由后端产出但未透传给前端，现经
   ``ChatResponse`` 一并暴露。
+- S2 记忆层 Phase 2：数字员工自动记录用户长期记忆——在调用工具的对话轮次后，LLM 从对话中
+  提炼明确、高置信、持久的事实（偏好/身份/职责/关系/目标），经代码层保守闸门（置信度阈值
+  默认 0.85 可调、排除时间敏感信息、category 与长度校验）与归一化去重后写入用户私有记忆，
+  跨会话「记住」用户。触发仅限调用了工具的轮次（纯闲聊/拒绝/失败不调提取 LLM，控成本）；
+  提取写入用独立事务、失败不影响主流程。agent 记忆按红线 #7 降权进 user 角色注入（不进
+  system），admin 记忆为权威不被覆盖；admin 可在控制面标记已纠正/已作废。默认启用，
+  ``memory.agent_extract_enabled`` 与 ``memory.agent_confidence_threshold`` 可在控制台运行时调整。
 
 ### 变更
 

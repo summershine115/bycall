@@ -329,6 +329,16 @@ def _seed_defaults() -> None:
             session, "im.wecom_reconnect_interval_ms", "1000", "重连基础延迟（毫秒，指数退避）"
         )
         _seed_setting(session, "im.wecom_heartbeat_interval_ms", "30000", "心跳间隔（毫秒）")
+        # S2 记忆层 Phase 2：agent 自动记录记忆的开关与保守阈值（控制台可调，保存即时生效）。
+        _seed_setting(
+            session, "memory.agent_extract_enabled", "true", "是否启用 agent 自动记忆提取"
+        )
+        _seed_setting(
+            session,
+            "memory.agent_confidence_threshold",
+            "0.85",
+            "agent 记忆提取置信阈值（0~1，低于此值不写）",
+        )
         # 解析引擎配置与 IM 凭证同机制：控制台可编辑、保存即时生效
         # （DB > .env 环境变量 > 代码默认）。已部署环境从 .env 回填默认值。
         _seed_parse_settings(session)
