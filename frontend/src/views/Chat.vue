@@ -27,16 +27,22 @@
         </div>
         <div v-loading="convListLoading" class="conv-list">
           <button
-            v-for="c in conversations"
+            v-for="c in displayItems"
             :key="c.id"
             type="button"
             class="conv-item"
-            :class="{ 'conv-item--active': c.id === currentConvId }"
-            :aria-current="c.id === currentConvId ? 'true' : undefined"
-            @click="selectConversation(c.id)"
+            :class="{
+              'conv-item--active': c.isNew || c.id === currentConvId,
+              'conv-item--new': c.isNew,
+            }"
+            :aria-current="c.isNew || c.id === currentConvId ? 'true' : undefined"
+            @click="c.isNew || selectConversation(c.id)"
           >
-            <div class="conv-item__preview">{{ c.preview }}</div>
-            <div class="conv-item__meta">
+            <div class="conv-item__preview">
+              <el-icon v-if="c.isNew" :size="12"><EditPen /></el-icon>
+              {{ c.preview }}
+            </div>
+            <div v-if="!c.isNew" class="conv-item__meta">
               <span>{{ c.message_count }} 条</span>
               <span>{{ formatConvTime(c.last_message_at) }}</span>
               <el-icon
@@ -228,7 +234,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus,
@@ -242,6 +248,7 @@ import {
   Promotion,
   Delete,
   Refresh,
+  EditPen,
 } from '@element-plus/icons-vue'
 import { admin, chat } from '../api'
 import { formatTime } from '../utils/format'
@@ -253,6 +260,13 @@ const question = ref('')
 const loading = ref(false)
 const conversations = ref([]) // 当前用户的 api 会话列表（倒序）
 const currentConvId = ref(null) // null = 新会话模式（发首条消息时后端新建）
+// 列表展示项：新建态时顶部插一个虚拟「新对话」指示项（非真实会话，不可删除）
+const displayItems = computed(() => {
+  if (currentConvId.value === null) {
+    return [{ id: '__new__', preview: '新对话', isNew: true }, ...conversations.value]
+  }
+  return conversations.value
+})
 const chatHistory = ref([]) // [{role, content, meta?, govOpen?}]
 const streaming = ref(false)
 const streamText = ref('')
@@ -520,6 +534,16 @@ function roleLabel(r) {
 .conv-item--active {
   background: var(--bc-primary-1);
   border-color: var(--bc-primary-2);
+}
+.conv-item--new {
+  border-style: dashed;
+}
+.conv-item--new .conv-item__preview {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  color: var(--bc-primary-6);
+  font-weight: var(--bc-weight-medium);
 }
 .conv-item__preview {
   font-size: var(--bc-text-sm);
