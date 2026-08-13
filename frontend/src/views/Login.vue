@@ -142,7 +142,7 @@ async function onLogin() {
   background: var(--bc-bg-page);
 }
 
-/* ============ 左侧品牌区（深青绿实色，不渐变堆砌） ============ */
+/* ============ 左侧品牌区（mono 主题下为纯黑；evergreen 保留深青绿） ============ */
 .login__brand {
   flex: 1.1;
   background: var(--bc-primary-9);
@@ -170,6 +170,28 @@ async function onLogin() {
   max-width: 480px;
   margin-top: var(--bc-space-8);
 }
+/* 品牌区内容逐行淡入上移（入场动画） */
+.brand__mark,
+.brand__headline,
+.brand__lede,
+.brand__points,
+.brand__foot {
+  animation: login-rise var(--bc-duration-slow) var(--bc-ease-out) both;
+}
+.brand__headline { animation-delay: 80ms; }
+.brand__lede { animation-delay: 160ms; }
+.brand__points { animation-delay: 240ms; }
+.brand__foot { animation-delay: 320ms; }
+@keyframes login-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 .brand__mark {
   display: flex;
   align-items: center;
@@ -196,7 +218,7 @@ async function onLogin() {
   font-size: 40px;
   font-weight: var(--bc-weight-bold);
   line-height: 1.2;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: var(--bc-on-dark-1);
 }
 .brand__lede {
@@ -239,6 +261,31 @@ async function onLogin() {
   color: var(--bc-primary-5);
 }
 
+/* mono 主题：品牌区文字层级用灰阶而非彩色 */
+:root[data-theme='mono'] .brand__lede {
+  color: rgba(255, 255, 255, 0.6);
+}
+:root[data-theme='mono'] .brand__point-icon {
+  color: rgba(255, 255, 255, 0.5);
+}
+:root[data-theme='mono'] .brand__point-title {
+  color: rgba(255, 255, 255, 0.92);
+}
+:root[data-theme='mono'] .brand__point-desc {
+  color: rgba(255, 255, 255, 0.45);
+}
+:root[data-theme='mono'] .brand__foot {
+  color: rgba(255, 255, 255, 0.35);
+}
+:root[data-theme='mono'] .brand__logo {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+:root[data-theme='mono'] .brand__name {
+  color: #fff;
+}
+
 /* ============ 右侧表单区 ============ */
 .login__panel {
   flex: 1;
@@ -252,6 +299,7 @@ async function onLogin() {
 .panel {
   width: 100%;
   max-width: 380px;
+  animation: login-rise var(--bc-duration-slow) var(--bc-ease-out) 120ms both;
 }
 .panel__head {
   margin-bottom: var(--bc-space-8);

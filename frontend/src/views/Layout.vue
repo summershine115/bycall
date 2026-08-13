@@ -66,6 +66,17 @@
           <span class="topbar__page">{{ pageTitle }}</span>
         </div>
         <div class="topbar__actions">
+          <!-- 主题切换：mono（黑白）/ evergreen（常绿） -->
+          <button
+            class="topbar__theme"
+            type="button"
+            :aria-label="`切换主题，当前：${theme === 'mono' ? '黑白' : '常绿'}`"
+            :title="theme === 'mono' ? '切换到常绿主题' : '切换到黑白主题'"
+            @click="setTheme(theme === 'mono' ? 'evergreen' : 'mono')"
+          >
+            <span class="topbar__theme-swatch" :class="`topbar__theme-swatch--${theme}`" aria-hidden="true" />
+            <span class="topbar__theme-label">{{ theme === 'mono' ? '黑白' : '常绿' }}</span>
+          </button>
           <span class="topbar__env">{{ envLabel }}</span>
           <el-dropdown trigger="click" @command="onUserCommand">
             <button class="topbar__user" type="button" aria-label="账户菜单">
@@ -86,7 +97,9 @@
 
       <main class="content">
         <router-view v-slot="{ Component }">
-          <component :is="Component" :key="route.fullPath" />
+          <transition name="page" mode="out-in">
+            <component :is="Component" :key="route.fullPath" />
+          </transition>
         </router-view>
       </main>
     </div>
@@ -97,6 +110,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
+import { useTheme } from '../composables/useTheme'
 import {
   ChatDotRound, ChatLineRound, Collection, Connection, Cpu, DataLine,
   Document, DocumentChecked, Files, Key, List, MagicStick, Setting, User,
@@ -105,6 +119,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
+const { theme, setTheme } = useTheme()
 
 // 导航分组：治理 / 知识 / 能力 / 系统 —— 与产品心智模型一致
 const navGroups = [
@@ -193,14 +208,14 @@ async function onUserCommand(cmd) {
   background: var(--bc-bg-page);
 }
 
-/* ============ 侧边栏（浅色，细边框分隔，不用深色块） ============ */
+/* ============ 侧边栏（主题化：mono 为纯黑锚点，evergreen 为浅色） ============ */
 .sidebar {
   width: var(--bc-sidebar-width);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bc-bg-surface);
-  border-right: 1px solid var(--bc-border);
+  background: var(--bc-sidebar-bg);
+  border-right: 1px solid var(--bc-sidebar-border);
   position: sticky;
   top: 0;
   height: 100vh;
@@ -217,7 +232,7 @@ async function onUserCommand(cmd) {
   gap: var(--bc-space-3);
   padding: 0 var(--bc-space-5);
   height: var(--bc-header-height);
-  border-bottom: 1px solid var(--bc-border);
+  border-bottom: 1px solid var(--bc-sidebar-border);
   flex-shrink: 0;
   overflow: hidden;
 }
@@ -225,8 +240,8 @@ async function onUserCommand(cmd) {
   width: 32px;
   height: 32px;
   border-radius: var(--bc-radius-md);
-  background: var(--bc-primary-6);
-  color: var(--bc-bg-surface);
+  background: var(--bc-sidebar-text-strong);
+  color: var(--bc-sidebar-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -241,13 +256,13 @@ async function onUserCommand(cmd) {
 .sidebar__name {
   font-size: var(--bc-text-md);
   font-weight: var(--bc-weight-bold);
-  color: var(--bc-text-1);
+  color: var(--bc-sidebar-text-strong);
   letter-spacing: 0.01em;
   line-height: 1.2;
 }
 .sidebar__sub {
   font-size: var(--bc-text-xs);
-  color: var(--bc-text-3);
+  color: var(--bc-sidebar-text);
   line-height: 1.2;
   margin-top: 1px;
 }
@@ -263,15 +278,16 @@ async function onUserCommand(cmd) {
 }
 .nav-group__label {
   font-size: var(--bc-text-xs);
-  color: var(--bc-text-4);
+  color: var(--bc-sidebar-text);
+  opacity: 0.7;
   font-weight: var(--bc-weight-medium);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   padding: var(--bc-space-2) var(--bc-space-3);
   user-select: none;
 }
 .nav-group__divider {
   height: 1px;
-  background: var(--bc-border);
+  background: var(--bc-sidebar-border);
   margin: var(--bc-space-2) var(--bc-space-2);
 }
 .nav-item {
@@ -280,7 +296,7 @@ async function onUserCommand(cmd) {
   gap: var(--bc-space-3);
   padding: var(--bc-space-2) var(--bc-space-3);
   border-radius: var(--bc-radius-md);
-  color: var(--bc-text-2);
+  color: var(--bc-sidebar-text);
   text-decoration: none;
   font-size: var(--bc-text-sm);
   font-weight: var(--bc-weight-medium);
@@ -292,19 +308,23 @@ async function onUserCommand(cmd) {
   white-space: nowrap;
 }
 .nav-item:hover {
-  background: var(--bc-gray-2);
-  color: var(--bc-text-1);
+  background: var(--bc-sidebar-hover);
+  color: var(--bc-sidebar-text-strong);
 }
 .nav-item--active {
-  background: var(--bc-primary-1);
-  color: var(--bc-primary-8);
+  background: var(--bc-sidebar-active);
+  color: var(--bc-sidebar-text-strong);
 }
 .nav-item--active .nav-item__icon {
-  color: var(--bc-primary-6);
+  color: var(--bc-sidebar-text-strong);
 }
 .nav-item__icon {
   flex-shrink: 0;
-  color: var(--bc-text-3);
+  color: var(--bc-sidebar-text);
+  transition: color var(--bc-duration-fast) var(--bc-ease-out);
+}
+.nav-item:hover .nav-item__icon {
+  color: var(--bc-sidebar-text-strong);
 }
 .sidebar--collapsed .nav-item {
   justify-content: center;
@@ -312,7 +332,7 @@ async function onUserCommand(cmd) {
 }
 
 .sidebar__footer {
-  border-top: 1px solid var(--bc-border);
+  border-top: 1px solid var(--bc-sidebar-border);
   padding: var(--bc-space-2) var(--bc-space-3);
   flex-shrink: 0;
 }
@@ -325,7 +345,7 @@ async function onUserCommand(cmd) {
   border: none;
   background: transparent;
   border-radius: var(--bc-radius-md);
-  color: var(--bc-text-3);
+  color: var(--bc-sidebar-text);
   font-size: var(--bc-text-sm);
   cursor: pointer;
   font-family: inherit;
@@ -334,11 +354,22 @@ async function onUserCommand(cmd) {
     color var(--bc-duration-fast) var(--bc-ease-out);
 }
 .sidebar__collapse:hover {
-  background: var(--bc-gray-2);
-  color: var(--bc-text-1);
+  background: var(--bc-sidebar-hover);
+  color: var(--bc-sidebar-text-strong);
 }
 .sidebar--collapsed .sidebar__collapse {
   justify-content: center;
+}
+
+/* evergreen 主题的侧栏激活态保留品牌色 */
+:root[data-theme='evergreen'] .nav-item--active {
+  color: var(--bc-primary-8);
+}
+:root[data-theme='evergreen'] .nav-item--active .nav-item__icon {
+  color: var(--bc-primary-6);
+}
+:root[data-theme='evergreen'][data-mode='dark'] .nav-item--active {
+  color: var(--bc-primary-6);
 }
 
 /* ============ 顶栏 ============ */
@@ -355,7 +386,9 @@ async function onUserCommand(cmd) {
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--bc-space-6);
-  background: var(--bc-bg-surface);
+  background: var(--bc-topbar-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
   border-bottom: 1px solid var(--bc-border);
   position: sticky;
   top: 0;
@@ -410,13 +443,48 @@ async function onUserCommand(cmd) {
   width: 26px;
   height: 26px;
   border-radius: var(--bc-radius-full);
-  background: var(--bc-primary-6);
+  background: var(--bc-text-1);
   color: var(--bc-bg-surface);
   font-size: var(--bc-text-xs);
   font-weight: var(--bc-weight-semibold);
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 主题切换器 */
+.topbar__theme {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  padding: var(--bc-space-1) var(--bc-space-2);
+  border-radius: var(--bc-radius-md);
+  transition:
+    background var(--bc-duration-fast) var(--bc-ease-out),
+    color var(--bc-duration-fast) var(--bc-ease-out);
+}
+.topbar__theme:hover {
+  background: var(--bc-gray-2);
+  color: var(--bc-text-1);
+}
+.topbar__theme-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--bc-radius-full);
+  border: 1px solid var(--bc-border-strong);
+  transition: background var(--bc-duration-fast) var(--bc-ease-out);
+}
+.topbar__theme-swatch--mono {
+  background: linear-gradient(135deg, #000 50%, #fff 50%);
+}
+.topbar__theme-swatch--evergreen {
+  background: linear-gradient(135deg, #0e7a5c 50%, #f0faf7 50%);
 }
 
 /* ============ 内容区 ============ */
@@ -436,6 +504,23 @@ async function onUserCommand(cmd) {
   transition: opacity var(--bc-duration-normal) var(--bc-ease-out);
 }
 .fade-enter-from {
+  opacity: 0;
+}
+
+/* 路由切换：新页面从下方 8px 淡入上移 */
+.page-enter-active {
+  transition:
+    opacity var(--bc-duration-normal) var(--bc-ease-out),
+    transform var(--bc-duration-normal) var(--bc-ease-out);
+}
+.page-leave-active {
+  transition: opacity calc(var(--bc-duration-normal) / 2) var(--bc-ease-out);
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.page-leave-to {
   opacity: 0;
 }
 </style>

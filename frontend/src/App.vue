@@ -10,6 +10,10 @@
 // 根组件：router-view 出口 + 窄屏表格堆叠标签注入。
 import { onMounted, onBeforeUnmount } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import { useTheme } from './composables/useTheme'
+
+// 主题系统（mono 黑白默认 / evergreen 备选，light/dark 模式）
+useTheme()
 
 // 窄屏下表格退化为堆叠行（见 styles/element-overrides.css），
 // 此处把每列表头文案写入对应单元格的 data-label，供 ::before 呈现列名。
