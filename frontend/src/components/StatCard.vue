@@ -5,7 +5,7 @@
     <div class="stat-card__body">
       <div class="stat-card__label">{{ label }}</div>
       <div class="stat-card__value">
-        <span class="stat-card__num">{{ displayValue }}</span>
+        <span class="stat-card__num">{{ renderedValue }}</span>
         <span v-if="unit" class="stat-card__unit">{{ unit }}</span>
       </div>
       <div v-if="hint" class="stat-card__hint">
@@ -22,6 +22,7 @@
 <script setup>
 import { computed } from 'vue'
 import { iconMap } from '../icons'
+import { useCountUp } from '../composables/useCountUp'
 
 // 统计卡公共组件。accent 语义：primary/success/warning/danger/info
 const props = defineProps({
@@ -47,9 +48,14 @@ const accentColor = computed(
     })[props.accent] || 'var(--bc-primary-6)',
 )
 
-const displayValue = computed(() => {
-  if (typeof props.value === 'number') return props.value.toLocaleString('zh-CN')
-  return props.value
+// 数字滚动：仅对数值生效；字符串值（如 '—'）原样返回
+const countDisplay = useCountUp(
+  computed(() => (typeof props.value === 'number' ? props.value : 0)),
+ 700,
+)
+const renderedValue = computed(() => {
+  if (typeof props.value !== 'number') return props.value
+  return Math.round(countDisplay.value).toLocaleString('zh-CN')
 })
 
 // 字符串图标名 → 组件（替代全局注册）
@@ -69,8 +75,8 @@ const resolvedHintIcon = computed(() => iconMap[props.hintIcon] || null)
   box-shadow: var(--bc-shadow-xs);
   transition:
     box-shadow var(--bc-duration-fast) var(--bc-ease-out),
-    border-color var(--bc-duration-fast) var(--bc-ease-out);
-  overflow: hidden;
+    border-color var(--bc-duration-fast) var(--bc-ease-out),
+    transform var(--bc-duration-fast) var(--bc-ease-out);
 }
 .stat-card--link {
   cursor: pointer;
@@ -78,6 +84,7 @@ const resolvedHintIcon = computed(() => iconMap[props.hintIcon] || null)
 .stat-card--link:hover {
   border-color: var(--bc-border-strong);
   box-shadow: var(--bc-shadow-sm);
+  transform: translateY(-2px);
 }
 .stat-card__accent {
   position: absolute;
@@ -103,10 +110,11 @@ const resolvedHintIcon = computed(() => iconMap[props.hintIcon] || null)
   gap: var(--bc-space-1);
 }
 .stat-card__num {
-  font-size: var(--bc-text-3xl);
-  font-weight: var(--bc-weight-semibold);
+  font-size: var(--bc-text-4xl);
+  font-weight: var(--bc-weight-light);
   color: var(--bc-text-1);
-  line-height: 1.1;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 .stat-card__unit {

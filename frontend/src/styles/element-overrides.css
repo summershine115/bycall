@@ -54,11 +54,26 @@ body {
 .el-button {
   font-weight: var(--bc-weight-medium);
   border-radius: var(--bc-radius-md);
-  transition: all var(--bc-duration-fast) var(--bc-ease-out);
+  transition:
+    background-color var(--bc-duration-fast) var(--bc-ease-out),
+    border-color var(--bc-duration-fast) var(--bc-ease-out),
+    color var(--bc-duration-fast) var(--bc-ease-out),
+    transform var(--bc-duration-fast) var(--bc-ease-out);
   --el-button-hover-bg-color: var(--bc-primary-7);
   --el-button-active-bg-color: var(--bc-primary-8);
 }
-.el-button--primary {
+/* 按压反馈：按下时微缩，模拟物理按压 */
+.el-button:active:not(.is-disabled) {
+  transform: scale(0.97);
+}
+.el-button.el-button--primary,
+.el-button.el-button--primary:hover,
+.el-button.el-button--primary:focus,
+.el-button.el-button--primary:active {
+  color: var(--bc-on-primary);
+  --el-button-text-color: var(--bc-on-primary);
+  --el-button-hover-text-color: var(--bc-on-primary);
+  --el-button-active-text-color: var(--bc-on-primary);
   --el-button-bg-color: var(--bc-primary-6);
   --el-button-border-color: var(--bc-primary-6);
   --el-button-hover-bg-color: var(--bc-primary-7);

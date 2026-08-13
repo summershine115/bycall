@@ -6,6 +6,18 @@
     <meta name="description" content="Bycall 数字员工治理控制台 —— 人格、能力、知识、权限、审计，策略活在代码层。" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <title>Bycall 控制台</title>
+    <script>
+      // 首帧前写入主题属性，避免主题闪烁（FOUC）；与 useTheme.js 保持一致
+      ;(function () {
+        var theme = localStorage.getItem('bycall.theme') || 'mono'
+        var mode = localStorage.getItem('bycall.mode') || 'light'
+        if (mode === 'auto') {
+          mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = theme
+        document.documentElement.dataset.mode = mode
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
