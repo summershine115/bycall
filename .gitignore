@@ -46,6 +46,7 @@ secrets/
 # ---- ZCode 工具内部 ----
 .zcode/
 .codegraph/
+.commandcode/
 
 # ---- 前端构建产物 ----
 frontend/node_modules/
