@@ -1,29 +1,53 @@
 /**
  * 全局基础样式：排版层级、通用工具类（页面骨架 / 工具行 / 弱化文本）。
  * 页面统一使用 .bc-page > PageHeader + 内容区 的结构。
+ * 设计取向：疏朗、克制；大标题 + 充足留白 + 极淡分隔，靠节奏而非边框分层。
  */
 
 /* ============ 排版层级 ============ */
-h1, h2, h3, h4 {
+h1,
+h2,
+h3,
+h4 {
   color: var(--bc-text-1);
   font-weight: var(--bc-weight-semibold);
   line-height: var(--bc-leading-tight);
   margin: 0;
+  letter-spacing: -0.015em;
 }
-h1 { font-size: var(--bc-text-2xl); }
-h2 { font-size: var(--bc-text-xl); }
-h3 { font-size: var(--bc-text-lg); }
-h4 { font-size: var(--bc-text-md); }
+h1 {
+  font-size: var(--bc-text-3xl);
+  font-weight: var(--bc-weight-semibold);
+}
+h2 {
+  font-size: var(--bc-text-xl);
+}
+h3 {
+  font-size: var(--bc-text-lg);
+}
+h4 {
+  font-size: var(--bc-text-md);
+}
 
-code, pre, .mono {
+/* 段落默认更舒展的行距 */
+p {
+  margin: 0;
+  line-height: var(--bc-leading-relaxed);
+}
+
+code,
+pre,
+.mono {
   font-family: var(--bc-font-mono);
-  font-size: 0.92em;
+  font-size: 0.9em;
 }
 
 /* ============ 页面骨架 ============ */
 .bc-page {
   max-width: var(--bc-content-max);
   margin: 0 auto;
+  /* 页面级垂直呼吸：顶部由内容区提供，底部留足留白收尾 */
+  padding-bottom: var(--bc-space-16);
 }
 
 /* 工具行：页面列表上方的筛选/操作条 */
@@ -32,34 +56,58 @@ code, pre, .mono {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--bc-space-3);
-  margin-bottom: var(--bc-space-4);
+  margin-bottom: var(--bc-space-5);
 }
-.bc-toolbar__spacer { flex: 1; }
+.bc-toolbar__spacer {
+  flex: 1;
+}
 
-/* 卡片式面板（表格/内容容器统一外观） */
+/* 卡片式面板（表格/内容容器统一外观）：柔和边界 + 弥散阴影 */
 .bc-panel {
   background: var(--bc-bg-surface);
   border: 1px solid var(--bc-border);
   border-radius: var(--bc-radius-lg);
-  box-shadow: var(--bc-shadow-xs);
+  box-shadow: var(--bc-shadow-sm);
   overflow: hidden;
+}
+/* 面板内自带内边距的内容容器（非表格场景） */
+.bc-panel--padded {
+  padding: var(--bc-space-6);
 }
 .bc-panel .el-table {
   border-radius: 0;
 }
 
+/* 区块间垂直节奏：堆叠多个面板/分区时统一间距 */
+.bc-page > * + * {
+  margin-top: var(--bc-space-6);
+}
+
 /* ============ 文本工具 ============ */
-.bc-muted { color: var(--bc-text-3); }
-.bc-text-sm { font-size: var(--bc-text-sm); }
-.bc-text-xs { font-size: var(--bc-text-xs); }
-.bc-strong { color: var(--bc-text-1); font-weight: var(--bc-weight-semibold); }
+.bc-muted {
+  color: var(--bc-text-3);
+}
+.bc-text-sm {
+  font-size: var(--bc-text-sm);
+}
+.bc-text-xs {
+  font-size: var(--bc-text-xs);
+}
+.bc-strong {
+  color: var(--bc-text-1);
+  font-weight: var(--bc-weight-semibold);
+}
+/* 等宽数字（统计/数值场景，避免跳动） */
+.bc-nums {
+  font-variant-numeric: tabular-nums;
+}
 
 /* 表单内帮助说明 */
 .bc-hint {
   font-size: var(--bc-text-xs);
   color: var(--bc-text-3);
   line-height: var(--bc-leading-normal);
-  margin-top: var(--bc-space-1);
+  margin-top: var(--bc-space-2);
 }
 
 /* 长文本截断单元格（表格内复用） */
@@ -81,16 +129,24 @@ code, pre, .mono {
 /* 状态点（不只靠颜色传达状态时配文字/图标使用） */
 .bc-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: var(--bc-radius-full);
   margin-right: var(--bc-space-2);
   vertical-align: 1px;
 }
-.bc-dot--ok { background: var(--bc-success); }
-.bc-dot--warn { background: var(--bc-warning); }
-.bc-dot--err { background: var(--bc-danger); }
-.bc-dot--idle { background: var(--bc-gray-4); }
+.bc-dot--ok {
+  background: var(--bc-success);
+}
+.bc-dot--warn {
+  background: var(--bc-warning);
+}
+.bc-dot--err {
+  background: var(--bc-danger);
+}
+.bc-dot--idle {
+  background: var(--bc-gray-4);
+}
 
 /* 统计键值对（详情区复用） */
 .bc-kv {
@@ -101,6 +157,7 @@ code, pre, .mono {
 .bc-kv__label {
   font-size: var(--bc-text-xs);
   color: var(--bc-text-3);
+  letter-spacing: 0.01em;
 }
 .bc-kv__value {
   font-size: var(--bc-text-md);
