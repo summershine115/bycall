@@ -20,18 +20,23 @@ defineProps({ title: { type: String, required: true } })
 
 <style scoped>
 .dash-section {
-  margin-top: var(--bc-space-8);
+  margin-top: var(--bc-space-12);
+}
+.dash-section:first-child {
+  margin-top: 0;
 }
 .dash-section__head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  margin-bottom: var(--bc-space-4);
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-5);
 }
 .dash-section__title {
-  font-size: var(--bc-text-lg);
+  font-size: var(--bc-text-xl);
   font-weight: var(--bc-weight-semibold);
   color: var(--bc-text-1);
+  letter-spacing: -0.015em;
 }
 .dash-section__extra {
   display: flex;

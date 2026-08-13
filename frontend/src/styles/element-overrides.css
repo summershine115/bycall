@@ -100,46 +100,68 @@ body {
 .el-card {
   --el-card-border-color: var(--bc-border);
   --el-card-border-radius: var(--bc-radius-lg);
-  --el-card-padding: var(--bc-space-5);
+  --el-card-padding: var(--bc-space-6);
   border: 1px solid var(--bc-border);
-  box-shadow: var(--bc-shadow-xs);
+  box-shadow: var(--bc-shadow-sm);
   background: var(--bc-bg-surface);
   color: var(--bc-text-2);
 }
 .el-card__header {
-  padding: var(--bc-space-4) var(--bc-space-5);
+  padding: var(--bc-space-5) var(--bc-space-6);
   border-bottom: 1px solid var(--bc-border);
   font-weight: var(--bc-weight-semibold);
   color: var(--bc-text-1);
   font-size: var(--bc-text-md);
 }
 
-/* ============ 表格 ============ */
+/* ============ 表格（苹果风：去竖线、行加高、表头淡标签、悬停柔和） ============ */
 .el-table {
   --el-table-border-color: var(--bc-border);
-  --el-table-header-bg-color: var(--bc-gray-2);
+  --el-table-header-bg-color: transparent;
   --el-table-header-text-color: var(--bc-text-3);
   --el-table-text-color: var(--bc-text-2);
-  --el-table-row-hover-bg-color: var(--bc-primary-1);
+  --el-table-row-hover-bg-color: var(--bc-gray-1);
   --el-table-tr-bg-color: var(--bc-bg-surface);
-  --el-table-border: 1px solid var(--bc-border);
-  border-radius: var(--bc-radius-lg);
+  --el-table-border: none;
   font-size: var(--bc-text-sm);
+}
+/* 行间只剩极淡横线，无竖线 */
+.el-table td.el-table__cell,
+.el-table th.el-table__cell.el-table__cell {
+  border-bottom: 1px solid var(--bc-border);
+  border-right: none;
 }
 .el-table th.el-table__cell {
   font-weight: var(--bc-weight-semibold);
-  font-size: var(--bc-text-xs);
-  letter-spacing: 0.02em;
-  height: 44px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bc-text-3);
+  height: 52px;
 }
 .el-table .el-table__cell {
-  padding: var(--bc-space-3) var(--bc-space-2);
+  padding: var(--bc-space-4) var(--bc-space-2);
 }
-/* 表格外层卡片化时去掉自带圆角冲突 */
+.el-table .el-table__row {
+  height: 56px;
+}
+/* 最后一行去底线，收尾干净 */
+.el-table tbody tr:last-child td.el-table__cell {
+  border-bottom: none;
+}
+/* 表头底部留一条略实的分隔 */
+.el-table thead th.el-table__cell {
+  border-bottom: 1px solid var(--bc-border-strong);
+}
+/* 去掉外层边框圆角冲突（表格嵌在 .bc-panel 内由面板提供容器外观） */
 .el-table--border,
 .el-table--border::before,
 .el-table--border::after {
-  border-radius: var(--bc-radius-lg);
+  border-radius: 0;
+}
+.el-table::before,
+.el-table::after {
+  display: none;
 }
 /* 窄容器内容超过列宽时允许横向滚动（fixed 列同步由 EP 内部处理） */
 .el-table .el-table__inner-wrapper {
@@ -266,18 +288,16 @@ body {
   background-color: rgba(23, 27, 25, 0.45);
   backdrop-filter: blur(2px);
 }
-
-/* ============ 表单 ============ */
-.el-form-item__label {
-  font-weight: var(--bc-weight-medium);
-  color: var(--bc-text-2);
-}
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner {
   border-radius: var(--bc-radius-md);
-  box-shadow: 0 0 0 1px var(--bc-border-strong) inset;
+  box-shadow: 0 0 0 1px var(--bc-border) inset;
   transition: box-shadow var(--bc-duration-fast) var(--bc-ease-out);
+  padding-left: var(--bc-space-3);
+}
+.el-input--large .el-input__wrapper {
+  padding-left: var(--bc-space-4);
 }
 .el-input__wrapper:hover,
 .el-select__wrapper:hover,

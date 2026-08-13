@@ -22,34 +22,44 @@ defineProps({
 <style scoped>
 .page-header {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: var(--bc-space-4);
-  margin-bottom: var(--bc-space-6);
+  gap: var(--bc-space-6);
+  /* hero 头部：充足下方留白，撑起整页的第一视觉层级 */
+  margin-bottom: var(--bc-space-10);
+}
+.page-header__main {
+  min-width: 0;
 }
 .page-header__title {
-  font-size: var(--bc-text-2xl);
+  font-size: var(--bc-text-3xl);
   font-weight: var(--bc-weight-semibold);
   color: var(--bc-text-1);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
 }
 .page-header__desc {
-  margin: var(--bc-space-2) 0 0;
-  font-size: var(--bc-text-sm);
+  margin: var(--bc-space-3) 0 0;
+  font-size: var(--bc-text-md);
   color: var(--bc-text-3);
-  line-height: var(--bc-leading-normal);
-  max-width: 640px;
+  line-height: var(--bc-leading-relaxed);
+  max-width: 620px;
 }
 .page-header__actions {
   display: flex;
   align-items: center;
   gap: var(--bc-space-3);
   flex-shrink: 0;
-  padding-top: var(--bc-space-1);
+  padding-bottom: var(--bc-space-1);
 }
 @media (max-width: 768px) {
   .page-header {
     flex-direction: column;
+    align-items: flex-start;
+    gap: var(--bc-space-4);
+  }
+  .page-header__actions {
+    padding-bottom: 0;
   }
 }
 </style>
