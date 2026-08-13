@@ -209,4 +209,63 @@ export const admin = {
 
 export const chat = {
   ask: (question) => http.post('/chat', { question }).then((r) => r.data),
+  // 流式对话（SSE）：POST 无法用 EventSource（仅 GET），改用 fetch + ReadableStream
+  // 逐帧解析 event:/data:，分发到回调。不走 axios 拦截（401 单独处理跳登录）。
+  stream: async (question, { onToken, onFlush, onDone, onError } = {}) => {
+    const resp = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ question }),
+    })
+    if (resp.status === 401) {
+      if (!window.location.hash.includes('/login')) window.location.hash = '#/login'
+      return
+    }
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      onError?.(new Error(`请求失败 (${resp.status}): ${detail}`))
+      return
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let idx
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const evt = _parseSse(buffer.slice(0, idx))
+          buffer = buffer.slice(idx + 2)
+          if (evt.type === 'token') onToken?.(evt.data.text)
+          else if (evt.type === 'flush') onFlush?.()
+          else if (evt.type === 'done') onDone?.(evt.data)
+          else if (evt.type === 'error') onError?.(new Error(evt.data.message))
+        }
+      }
+    } catch (e) {
+      onError?.(e)
+    }
+  },
+  // 当前用户 api 会话的历史消息（对话测试页加载用）
+  history: () => http.get('/chat/history').then((r) => r.data),
+  // 重置当前用户 api 会话（清空消息，保留会话）
+  reset: () => http.post('/chat/reset').then((r) => r.data),
+}
+
+// SSE 帧解析：event:/data: 行 → { type, data }
+function _parseSse(raw) {
+  let type = 'message'
+  let dataStr = ''
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event: ')) type = line.slice(7).trim()
+    else if (line.startsWith('data: ')) dataStr += line.slice(6)
+  }
+  try {
+    return { type, data: dataStr ? JSON.parse(dataStr) : {} }
+  } catch {
+    return { type, data: {} }
+  }
 }

@@ -42,6 +42,12 @@
 - S2 记忆层 Phase 1：admin 可标记用户记忆为「已纠正/已作废」（superseded），标记后该条
   记忆不再注入对话；管理视图新增记忆来源（admin 维护 / agent 自动记录）展示，为后续
   agent 自动记录记忆的分层注入与纠正机制打底。
+- 对话测试页全面升级：流式输出（逐 token，复用 ``run_agent_stream`` 经新增 ``/chat/stream`` SSE
+  端点）、助手消息 Markdown 渲染（代码块/表格/列表）、每轮治理决策内联展开（工具调用记录的
+  参数与结果、RAG 引用来源卡片、上下文快照 ``context_trace`` 排障视图）、会话历史持久化
+  （``/chat/history`` 首屏加载、刷新不丢）与一键重置（``/chat/reset``）。治理透明化的三类数据
+  （``tool_calls`` / ``citations`` / ``context_trace``）此前已由后端产出但未透传给前端，现经
+  ``ChatResponse`` 一并暴露。
 
 ### 变更
 

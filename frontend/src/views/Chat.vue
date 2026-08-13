@@ -2,7 +2,7 @@
   <div class="bc-page chat-page">
     <PageHeader
       title="对话测试"
-      description="在控制台直接走数据面 /chat 多轮对话；配合用户页的「扮演」验证目标角色的权限链路。"
+      description="在控制台直接走数据面 /chat 多轮对话；流式输出，逐轮展开治理决策，配合用户页「扮演」验证权限链路。"
     >
       <el-button :icon="Plus" @click="onNewConversation">新对话</el-button>
     </PageHeader>
@@ -20,13 +20,18 @@
       <!-- 消息流 -->
       <div ref="msgContainer" class="chat-stream">
         <EmptyState
-          v-if="!chatHistory.length && !loading"
+          v-if="!chatHistory.length && !streaming"
           icon="ChatDotRound"
           title="开始一轮测试对话"
-          description="问一个业务问题（如「我们技术部有哪些代码规范？」），观察下方治理决策面板如何判定。"
+          description="问一个业务问题（如「我们技术部有哪些代码规范？」），展开答案下的治理决策面板查看工具调用与引用来源。"
         />
         <template v-else>
-          <div v-for="(msg, i) in chatHistory" :key="i" class="msg" :class="`msg--${msg.role}`">
+          <div
+            v-for="(msg, i) in chatHistory"
+            :key="i"
+            class="msg"
+            :class="`msg--${msg.role}`"
+          >
             <div class="msg__avatar" aria-hidden="true">
               <el-icon :size="15">
                 <User v-if="msg.role === 'user'" />
@@ -35,16 +40,125 @@
             </div>
             <div class="msg__bubble">
               <div class="msg__role">{{ roleLabel(msg.role) }}</div>
-              <div class="msg__content">{{ msg.content }}</div>
+              <div v-if="msg.role === 'user'" class="msg__content">{{ msg.content }}</div>
+              <MarkdownBody v-else :content="msg.content" class="msg__content" />
+              <!-- 治理决策（仅实时对话的 assistant 消息携带 meta；历史消息无） -->
+              <button
+                v-if="msg.role === 'assistant' && msg.meta"
+                class="gov-trigger"
+                type="button"
+                :aria-expanded="msg.govOpen"
+                @click="toggleGov(i)"
+              >
+                <el-icon :size="12">
+                  <ArrowDown v-if="msg.govOpen" />
+                  <ArrowRight v-else />
+                </el-icon>
+                治理决策
+                <el-tag :type="decisionType(msg.meta.decision)" size="small">
+                  {{ msg.meta.decision }}
+                </el-tag>
+                <span v-if="msg.meta.tool_calls?.length" class="gov-trigger__chip">
+                  <el-icon :size="11"><Tools /></el-icon>{{ msg.meta.tool_calls.length }} 工具
+                </span>
+                <span v-if="dedupCitations(msg.meta.citations).length" class="gov-trigger__chip">
+                  <el-icon :size="11"><Link /></el-icon>{{ dedupCitations(msg.meta.citations).length }} 引用
+                </span>
+              </button>
+              <div v-if="msg.govOpen && msg.meta" class="gov-detail">
+                <div class="gov-grid">
+                  <div class="gov-item">
+                    <span class="gov-item__label">用户 / 角色</span>
+                    <span class="gov-item__value">{{ msg.meta.user }} · {{ msg.meta.role }}</span>
+                  </div>
+                  <div class="gov-item">
+                    <span class="gov-item__label">命中授权 chunk</span>
+                    <span class="gov-item__value bc-strong">{{ msg.meta.retrieved_chunks }}</span>
+                  </div>
+                  <div class="gov-item gov-item--wide">
+                    <span class="gov-item__label">知识域权限</span>
+                    <span class="gov-item__value">
+                      <el-tag
+                        v-for="t in msg.meta.knowledge_scope"
+                        :key="t"
+                        size="small"
+                        type="success"
+                      >{{ t }}</el-tag>
+                      <span v-if="!msg.meta.knowledge_scope?.length" class="bc-muted">
+                        无（默认隔离）
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- 工具调用记录 -->
+                <div v-if="msg.meta.tool_calls?.length" class="gov-section">
+                  <div class="gov-section__title">
+                    <el-icon :size="13"><Tools /></el-icon>工具调用（{{ msg.meta.tool_calls.length }}）
+                  </div>
+                  <div v-for="(tc, j) in msg.meta.tool_calls" :key="j" class="tool-call">
+                    <div class="tool-call__name">
+                      <el-icon :size="12"><Tools /></el-icon>{{ tc.name }}
+                    </div>
+                    <details class="tool-call__detail">
+                      <summary>参数 / 结果</summary>
+                      <div class="tool-call__block">
+                        <span class="bc-muted">参数</span>
+                        <pre>{{ formatJson(tc.args) }}</pre>
+                      </div>
+                      <div class="tool-call__block">
+                        <span class="bc-muted">结果</span>
+                        <pre>{{ tc.result }}</pre>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+
+                <!-- 引用来源卡片 -->
+                <div v-if="dedupCitations(msg.meta.citations).length" class="gov-section">
+                  <div class="gov-section__title">
+                    <el-icon :size="13"><Link /></el-icon>引用来源（{{ dedupCitations(msg.meta.citations).length }}）
+                  </div>
+                  <div class="citation-grid">
+                    <div
+                      v-for="(c, j) in dedupCitations(msg.meta.citations)"
+                      :key="j"
+                      class="citation"
+                    >
+                      <div class="citation__title">
+                        <a v-if="c.url" :href="c.url" target="_blank" rel="noopener">
+                          {{ c.title || c.source || c.url }}
+                        </a>
+                        <span v-else>{{ c.title || c.source || '未命名来源' }}</span>
+                      </div>
+                      <div v-if="c.source && c.source !== c.title" class="citation__source">
+                        {{ c.source }}
+                      </div>
+                      <div v-if="c.snippet" class="citation__snippet">{{ c.snippet }}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 上下文快照（排障级，默认折叠） -->
+                <div v-if="msg.meta.context_trace" class="gov-section">
+                  <details class="trace">
+                    <summary>上下文快照 context_trace（模型这一轮看到了什么）</summary>
+                    <pre>{{ formatTrace(msg.meta.context_trace) }}</pre>
+                  </details>
+                </div>
+              </div>
             </div>
           </div>
-          <div v-if="loading" class="msg msg--assistant">
+
+          <!-- 流式输出气泡 -->
+          <div v-if="streaming" class="msg msg--assistant">
             <div class="msg__avatar" aria-hidden="true">
               <el-icon :size="15"><MagicStick /></el-icon>
             </div>
             <div class="msg__bubble">
-              <div class="msg__role">助手</div>
-              <div class="msg__content msg__content--thinking">
+              <div class="msg__role">数字员工</div>
+              <MarkdownBody v-if="streamText" :content="streamText" class="msg__content" />
+              <div v-else class="msg__content msg__content--thinking">
                 <span class="thinking-dot" /><span class="thinking-dot" /><span class="thinking-dot" />
               </div>
             </div>
@@ -52,119 +166,196 @@
         </template>
       </div>
 
-      <!-- 输入区 -->
+      <!-- 输入区（多行：Enter 发送，Shift+Enter 换行） -->
       <div class="chat-composer">
         <el-input
           v-model="question"
-          placeholder="输入问题，回车发送..."
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 5 }"
+          resize="none"
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行"
           :disabled="loading"
+          @keydown.enter.exact.prevent="onAsk"
+        />
+        <el-button
+          type="primary"
           size="large"
-          @keyup.enter="onAsk"
-        >
-          <template #append>
-            <el-button type="primary" :loading="loading" @click="onAsk">发送</el-button>
-          </template>
-        </el-input>
-      </div>
-
-      <!-- 治理决策透明化面板 -->
-      <div v-if="lastResult" class="gov-panel">
-        <button class="gov-panel__toggle" type="button" @click="govOpen = !govOpen">
-          <el-icon :size="14" aria-hidden="true">
-            <ArrowDown v-if="govOpen" />
-            <ArrowRight v-else />
-          </el-icon>
-          治理决策（透明化）
-          <el-tag :type="lastResult.decision === 'answered' ? 'success' : 'danger'" size="small">
-            {{ lastResult.decision }}
-          </el-tag>
-        </button>
-        <div v-if="govOpen" class="gov-panel__body">
-          <div class="gov-item">
-            <span class="gov-item__label">当前用户</span>
-            <span class="gov-item__value bc-strong">{{ lastResult.user }}</span>
-          </div>
-          <div class="gov-item">
-            <span class="gov-item__label">角色</span>
-            <span class="gov-item__value">{{ lastResult.role }}</span>
-          </div>
-          <div class="gov-item">
-            <span class="gov-item__label">知识域权限</span>
-            <span class="gov-item__value">
-              <el-tag
-                v-for="t in lastResult.knowledge_scope"
-                :key="t"
-                size="small"
-                type="success"
-                class="gov-tag"
-              >
-                {{ t }}
-              </el-tag>
-              <span v-if="!lastResult.knowledge_scope.length" class="bc-muted">无（默认隔离）</span>
-            </span>
-          </div>
-          <div class="gov-item">
-            <span class="gov-item__label">命中授权 chunk</span>
-            <span class="gov-item__value bc-strong">{{ lastResult.retrieved_chunks }}</span>
-          </div>
-        </div>
+          :loading="loading"
+          :icon="Promotion"
+          @click="onAsk"
+        >发送</el-button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Plus, User, MagicStick, View, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
+import { ref, nextTick, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Plus,
+  User,
+  MagicStick,
+  View,
+  ArrowDown,
+  ArrowRight,
+  Tools,
+  Link,
+  Promotion,
+} from '@element-plus/icons-vue'
 import { admin, chat } from '../api'
 import PageHeader from '../components/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
+import MarkdownBody from '../components/MarkdownBody.vue'
 
 const question = ref('')
 const loading = ref(false)
-const chatHistory = ref([])
-const lastResult = ref(null)
+const chatHistory = ref([]) // [{role, content, meta?, govOpen?}]
+const streaming = ref(false)
+const streamText = ref('')
 const actAsInfo = ref('')
 const msgContainer = ref(null)
-const govOpen = ref(true)
+
+onMounted(loadHistory)
+
+async function loadHistory() {
+  // 页面加载时拉取当前用户 api 会话历史，刷新不丢。
+  try {
+    const data = await chat.history()
+    if (data.messages?.length) {
+      chatHistory.value = data.messages.map((m) => ({ role: m.role, content: m.content }))
+    }
+    await scrollToBottom()
+  } catch {
+    // 历史加载失败不阻塞对话
+  }
+}
 
 async function onAsk() {
-  if (!question.value.trim() || loading.value) return
-  const q = question.value
+  const q = question.value.trim()
+  if (!q || loading.value) return
   question.value = ''
-
-  // 先显示用户消息
   chatHistory.value.push({ role: 'user', content: q })
   await scrollToBottom()
 
   loading.value = true
+  streaming.value = true
+  streamText.value = ''
   try {
-    const result = await chat.ask(q)
-    lastResult.value = result
-    chatHistory.value.push({ role: 'assistant', content: result.answer })
-
-    if (result.decision === 'denied_no_access') {
-      ElMessage.warning('该用户无权访问相关知识（ACL 预过滤拦截）')
-    }
-
-    // 检测 act-as 状态
-    if (result.role !== 'admin' && !actAsInfo.value) {
-      actAsInfo.value = result.user
-    } else if (result.role === 'admin' && actAsInfo.value) {
-      actAsInfo.value = ''
-    }
-
-    await scrollToBottom()
+    await chat.stream(q, {
+      onToken: async (text) => {
+        streamText.value += text
+        await scrollToBottom()
+      },
+      onFlush: () => {
+        // 工具回合前导文本需丢弃，清空当前累积
+        streamText.value = ''
+      },
+      onDone: async (data) => {
+        chatHistory.value.push({
+          role: 'assistant',
+          content: data.answer || streamText.value,
+          meta: data,
+          govOpen: false,
+        })
+        streamText.value = ''
+        streaming.value = false
+        updateActAs(data)
+        if (data.decision === 'denied_no_access') {
+          ElMessage.warning('该用户无权访问相关知识（ACL 预过滤拦截）')
+        }
+        await scrollToBottom()
+      },
+      onError: (e) => {
+        streaming.value = false
+        // 已有部分流式内容则保留（避免丢字）
+        if (streamText.value) {
+          chatHistory.value.push({ role: 'assistant', content: streamText.value })
+          streamText.value = ''
+        }
+        ElMessage.error(e.message || '对话失败')
+      },
+    })
   } finally {
     loading.value = false
+    streaming.value = false
   }
 }
 
-function onNewConversation() {
+async function onNewConversation() {
+  // 重置后端会话（清空消息 + summary），不只是清前端显示。
+  try {
+    await ElMessageBox.confirm(
+      '确定开始新对话？将清空当前会话的全部历史消息（后端不可恢复）。',
+      '开始新对话',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await chat.reset()
   chatHistory.value = []
-  lastResult.value = null
-  ElMessage.info('已清空当前对话界面（后端会话历史仍保留，新问题会带上历史）')
+  streamText.value = ''
+  ElMessage.success('已开始新对话')
+}
+
+async function onClearActAs() {
+  await admin.clearActAs()
+  actAsInfo.value = ''
+  chatHistory.value = []
+  streamText.value = ''
+  ElMessage.success('已恢复 admin 身份')
+  await loadHistory()
+}
+
+function updateActAs(data) {
+  if (data.role !== 'admin' && !actAsInfo.value) {
+    actAsInfo.value = data.user
+  } else if (data.role === 'admin' && actAsInfo.value) {
+    actAsInfo.value = ''
+  }
+}
+
+function toggleGov(i) {
+  const msg = chatHistory.value[i]
+  if (msg) msg.govOpen = !msg.govOpen
+}
+
+// 引用来源去重：多个 chunk 可能同源（按 title/source 合并）
+function dedupCitations(citations) {
+  if (!citations?.length) return []
+  const seen = new Set()
+  const out = []
+  for (const c of citations) {
+    const key = c.title || c.source || c.url || ''
+    if (key && seen.has(key)) continue
+    if (key) seen.add(key)
+    out.push(c)
+  }
+  return out
+}
+
+function formatJson(v) {
+  try {
+    return typeof v === 'string' ? v : JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
+  }
+}
+
+function formatTrace(trace) {
+  try {
+    return JSON.stringify(JSON.parse(trace), null, 2)
+  } catch {
+    return trace
+  }
+}
+
+function decisionType(d) {
+  return (
+    { answered: 'success', denied_no_access: 'warning', denied: 'danger', error: 'danger', task: 'info' }[d] ||
+    'info'
+  )
 }
 
 async function scrollToBottom() {
@@ -172,14 +363,6 @@ async function scrollToBottom() {
   if (msgContainer.value) {
     msgContainer.value.scrollTop = msgContainer.value.scrollHeight
   }
-}
-
-async function onClearActAs() {
-  await admin.clearActAs()
-  actAsInfo.value = ''
-  chatHistory.value = []
-  lastResult.value = null
-  ElMessage.success('已恢复 admin 身份')
 }
 
 function roleLabel(r) {
@@ -232,7 +415,7 @@ function roleLabel(r) {
 .msg {
   display: flex;
   gap: var(--bc-space-3);
-  max-width: 82%;
+  max-width: 86%;
 }
 .msg--user {
   align-self: flex-end;
@@ -281,6 +464,7 @@ function roleLabel(r) {
 .msg--assistant .msg__content {
   border: 1px solid var(--bc-border);
   background: var(--bc-bg-surface);
+  white-space: normal;
 }
 .msg__content--thinking {
   display: flex;
@@ -295,59 +479,215 @@ function roleLabel(r) {
   background: var(--bc-text-4);
   animation: bc-think 1.2s infinite var(--bc-ease-out);
 }
-.thinking-dot:nth-child(2) { animation-delay: 0.15s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
 @keyframes bc-think {
-  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-3px); }
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
 }
 
-/* 输入区 */
-.chat-composer {
-  padding: var(--bc-space-4) var(--bc-space-6);
-  border-top: 1px solid var(--bc-border);
-  background: var(--bc-bg-surface);
-}
-
-/* 治理决策面板 */
-.gov-panel {
-  border-top: 1px solid var(--bc-border);
-  background: var(--bc-gray-1);
-}
-.gov-panel__toggle {
-  display: flex;
+/* 治理决策触发条（每条 assistant 消息内联） */
+.gov-trigger {
+  display: inline-flex;
   align-items: center;
   gap: var(--bc-space-2);
-  width: 100%;
-  padding: var(--bc-space-3) var(--bc-space-6);
-  border: none;
-  background: transparent;
+  margin-top: var(--bc-space-2);
+  padding: 4px var(--bc-space-2);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-md);
+  background: var(--bc-gray-1);
   font-family: inherit;
-  font-size: var(--bc-text-sm);
-  font-weight: var(--bc-weight-medium);
+  font-size: var(--bc-text-xs);
   color: var(--bc-text-2);
   cursor: pointer;
+  transition: background var(--bc-duration-fast) var(--bc-ease-out);
 }
-.gov-panel__body {
+.gov-trigger:hover {
+  background: var(--bc-gray-2);
+}
+.gov-trigger__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--bc-text-3);
+}
+
+/* 治理详情展开区 */
+.gov-detail {
+  margin-top: var(--bc-space-3);
+  padding: var(--bc-space-3) var(--bc-space-4);
+  background: var(--bc-gray-1);
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-md);
+  font-size: var(--bc-text-sm);
+}
+.gov-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--bc-space-4);
-  padding: 0 var(--bc-space-6) var(--bc-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--bc-space-3) var(--bc-space-4);
 }
 .gov-item {
   display: flex;
   flex-direction: column;
-  gap: var(--bc-space-1);
+  gap: 2px;
+}
+.gov-item--wide {
+  grid-column: 1 / -1;
 }
 .gov-item__label {
   font-size: var(--bc-text-xs);
   color: var(--bc-text-3);
 }
 .gov-item__value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.gov-section {
+  margin-top: var(--bc-space-4);
+  padding-top: var(--bc-space-3);
+  border-top: 1px dashed var(--bc-border);
+}
+.gov-section__title {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  margin-bottom: var(--bc-space-2);
+}
+
+/* 工具调用记录 */
+.tool-call {
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-sm);
+  background: var(--bc-bg-surface);
+  margin-bottom: var(--bc-space-2);
+}
+.tool-call__name {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  padding: var(--bc-space-2) var(--bc-space-3);
+  font-family: var(--bc-font-mono);
   font-size: var(--bc-text-sm);
+  font-weight: var(--bc-weight-medium);
   color: var(--bc-text-1);
 }
-.gov-tag {
-  margin-right: var(--bc-space-1);
+.tool-call__detail summary {
+  padding: var(--bc-space-1) var(--bc-space-3);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  cursor: pointer;
+}
+.tool-call__block {
+  padding: 0 var(--bc-space-3) var(--bc-space-2);
+}
+.tool-call__block span {
+  font-size: var(--bc-text-xs);
+}
+.tool-call__block pre {
+  margin: 2px 0 0;
+  padding: var(--bc-space-2);
+  background: var(--bc-gray-1);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* 引用来源卡片 */
+.citation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--bc-space-2);
+}
+.citation {
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-sm);
+  background: var(--bc-bg-surface);
+  padding: var(--bc-space-2) var(--bc-space-3);
+}
+.citation__title {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-size: var(--bc-text-sm);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-1);
+  word-break: break-word;
+}
+.citation__title a {
+  color: var(--bc-primary-6);
+  text-decoration: none;
+}
+.citation__title a:hover {
+  text-decoration: underline;
+}
+.citation__source {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  margin-top: 2px;
+}
+.citation__snippet {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  margin-top: var(--bc-space-1);
+  line-height: var(--bc-leading-normal);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* context_trace */
+.trace summary {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  cursor: pointer;
+}
+.trace pre {
+  margin: var(--bc-space-2) 0 0;
+  padding: var(--bc-space-3);
+  background: var(--bc-gray-1);
+  border-radius: var(--bc-radius-sm);
+  font-family: var(--bc-font-mono);
+  font-size: var(--bc-text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 输入区 */
+.chat-composer {
+  display: flex;
+  gap: var(--bc-space-3);
+  align-items: flex-end;
+  padding: var(--bc-space-4) var(--bc-space-6);
+  border-top: 1px solid var(--bc-border);
+  background: var(--bc-bg-surface);
+}
+.chat-composer .el-textarea {
+  flex: 1;
 }
 </style>

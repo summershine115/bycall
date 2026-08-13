@@ -122,6 +122,7 @@ class AgentResult:
     role: str
     tool_calls: list[dict]  # 本次触发的工具调用记录（name, args），审计透明化
     citations: list[dict] = field(default_factory=list)  # M6：RAG 引用元数据（来源卡片用）
+    context_trace: str = ""  # 本轮上下文快照 JSON（system/RAG/记忆/摘要），排障用
 
 
 @traced("bycall.run_agent")
@@ -294,6 +295,7 @@ def run_agent(
         user=user,
         tool_calls=graph_result.tool_calls_made,
         citations=_build_citations(retrieved),
+        context_trace=context_trace,
     )
 
 
@@ -306,6 +308,7 @@ def _result(
     user: User,
     tool_calls: list[dict] | None = None,
     citations: list[dict] | None = None,
+    context_trace: str = "",
 ) -> AgentResult:
     return AgentResult(
         answer=answer,
@@ -316,6 +319,7 @@ def _result(
         role=user.role,
         tool_calls=tool_calls or [],
         citations=citations or [],
+        context_trace=context_trace,
     )
 
 
@@ -695,6 +699,7 @@ async def run_agent_stream(
         user=user,
         tool_calls=graph_result.tool_calls_made,
         citations=_build_citations(retrieved),
+        context_trace=context_trace,
     )
     yield "", True, result
 
