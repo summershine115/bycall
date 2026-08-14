@@ -11,7 +11,7 @@
 | 2 | 会话键多租户预留 | `Conversation` 曾缺 `tenant_id`/`agent_id` 列 | 补 `tenant_id`/`agent_id` 预留列 + 迁移 + 红线条文对齐 | T1.5 | ✅ 已闭合（列就位；完整多租户运行时按 ADR-0004 后置） |
 | 3 | 模型绑定生效 | `Conversation.model_id` 已预留，运行时曾仍取全局激活 | `llm/resolver.py` 新增 `get_chat_model_for_conversation`，api/IM 两路按会话路由 | T1.3 | ✅ 已闭合 |
 | 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
-| 5 | 工具结果脱敏未平台化 | `tools/base.py`（redactor 字段）+ `tools/gateway.py`：靠单工具声明 redactor | 统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型 | T1.6 | ⬜ 未闭合 |
+| 5 | 工具结果脱敏平台化 | `tools/base.py` + `tools/gateway.py`：靠单工具声明 redactor、无大小上限 | 新增 `tools/redactor.py::sanitize_tool_result`（脱敏+截断），网关/审批共用 | T1.6 | ✅ 已闭合（统一管道+大小限制+默认截断）；字段分级/行级过滤待输出 schema |
 | 6 | 同步/流式治理链收敛 | `agent/runner.py`：`run_agent` / `run_agent_stream` 各自采集 | 抽共享 `_prepare_turn`（步骤1-4）+ `_finalize_turn`（步骤6-7） | T1.4 | ✅ 已闭合 |
 
 ## 逐条明细
@@ -47,7 +47,9 @@
 - **源码**：`governance/capability.py`、`api/dataplane.py`、`agent/runner.py`。
 
 ### 缝隙 #5：工具结果脱敏未平台化（T1.6）
-- **现状**：结果脱敏依赖单个工具声明 redactor，MCP server 主要靠 capability meta 自行鉴权。
+- **已闭合（T1.6）**：新增 `tools/redactor.py::sanitize_tool_result`（redactor 先跑 → 统一截断 `MAX_TOOL_RESULT_CHARS=4000` → 非 str 转 str）；`tools/gateway._wrap_with_redactor` 与 `tools/approval.execute_approved_tool` 共用该管道——无论是否声明 redactor 都过截断（默认裁剪），防超大工具返回撑爆上下文/费用 DoS。
+- **后置**：字段分级 / 行级过滤 / 默认拒绝未声明数据类型需工具声明输出 schema（数据模型尚无该概念），待后续。
+- **原现状**：结果脱敏依赖单个工具声明 redactor，MCP server 主要靠 capability meta 自行鉴权。
 - **风险**：未声明数据类型的工具返回可能带敏感字段直接进 LLM 上下文。
 - **目标**：统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型。
 - **源码**：`tools/redactor.py`（新）、`tools/base.py`、`tools/gateway.py`。

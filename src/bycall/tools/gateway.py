@@ -24,6 +24,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from bycall.tools.approval import make_approval_gated_func
 from bycall.tools.base import ToolSpec
+from bycall.tools.redactor import sanitize_tool_result
 from bycall.tools.registry import get_all_tools
 
 if TYPE_CHECKING:
@@ -102,14 +103,12 @@ def _wrap_with_redactor(spec: ToolSpec, cap: CapabilitySet):
     的值经 ``ToolNode`` 的 ``msg_content_output`` 原样（str）进 ``ToolMessage.content``，
     供下一轮 LLM 上下文 + 审计采集——LLM 与审计看到的都是脱敏后值。
     """
-    if spec.redactor is None:
-        return spec.func
-
     redactor = spec.redactor
     orig = spec.func
 
     def wrapped(**kwargs):
-        return redactor(orig(**kwargs), cap)
+        # 统一脱敏 + 截断管道（缝隙 #5）：无论是否声明 redactor 都过 sanitize_tool_result。
+        return sanitize_tool_result(orig(**kwargs), cap, redactor=redactor)
 
     return wrapped
 

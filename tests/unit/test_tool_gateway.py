@@ -273,3 +273,18 @@ class TestRedaction:
             CapabilitySet(user_id=2, user_name="a", role="admin", is_admin=True),
         )
         assert tools_admin[0].invoke({}) == "full"
+
+    def test_no_redactor_result_truncated(self):
+        """无 redactor 的工具结果也被统一截断（防超大返回撑爆上下文，缝隙 #5）。"""
+        register(
+            ToolSpec(
+                name="huge",
+                description="返回超大结果",
+                parameters={"type": "object", "properties": {}},
+                func=lambda: "x" * 10000,
+            )
+        )
+        tools = to_langchain_tools(filter_tools(["huge"]), _cap())
+        result = tools[0].invoke({})
+        assert "已截断" in result
+        assert len(result) < 5000
