@@ -26,6 +26,7 @@
 
 
 ### 新增
+- per-session 模型绑定生效（阶段 1 · T1.3）：会话 `model_id` 绑定后，api 与 IM 渠道均按会话路由到该模型（优先于全局激活）；未绑定或绑定失效时 fallback 全局激活。此前 `Conversation.model_id` 已预留但运行时未消费。
 - 完整 ABAC 闭环（阶段 1 · T1.1）：新增 `governance/policy.py` 统一策略接口（ADR-0005），把主体属性翻译成召回前过滤条件，检索不再手写 `source IN`。文档新增 `level` 密级字段（默认 0=公开），经 chunk ACL 写入向量库，检索按 `level <= user_level` 预过滤——机密文档（level≥1）对低职级用户召回前即被过滤、不进 LLM 不留痕；`FilterCondition`/zvec 支持范围比较（`<=`/`>=` 等）。dept 维度预留（schema 已建字段，待 `User.dept` 属性补齐）。
 - 会话稳健性地基（M3）：消息幂等去重 + 会话租约，提升企微长连接并发/重连下的可靠性。
   - 入站消息幂等去重：以企微 ``MsgId`` 为幂等键（进程内 inflight + DB 持久两层），同一条

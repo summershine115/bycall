@@ -9,7 +9,7 @@
 |---|------|------------------|----------|------|------|
 | 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 已闭合（level/密级；dept 待 User.dept 字段） |
 | 2 | 会话键单组织落地 | `governance/models.py`：`Conversation`/`Message` 主要是 `(user_id, channel)` | `(agent_id, channel, tenant_id, user_id)` 显式隔离 | T1.5 | ⬜ 未闭合 |
-| 3 | 模型绑定未生效 | `governance/models.py`（`Conversation.model_id` 可空外键）+ `llm/resolver.py` + `agent/runner.py`：运行时仍取全局激活 | per-session 模型纳入能力集并路由 | T1.3 | ⬜ 未闭合 |
+| 3 | 模型绑定生效 | `Conversation.model_id` 已预留，运行时曾仍取全局激活 | `llm/resolver.py` 新增 `get_chat_model_for_conversation`，api/IM 两路按会话路由 | T1.3 | ✅ 已闭合 |
 | 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
 | 5 | 工具结果脱敏未平台化 | `tools/base.py`（redactor 字段）+ `tools/gateway.py`：靠单工具声明 redactor | 统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型 | T1.6 | ⬜ 未闭合 |
 | 6 | 同步/流式治理链未收敛 | `agent/runner.py`（`run_agent` + `run_agent_stream`）+ `api/dataplane.py`：两套相似流程 | 抽共享 pipeline（策略准备→执行→后处理→审计） | T1.4 | ⬜ 未闭合 |
@@ -32,7 +32,8 @@
 - **源码**：`governance/models.py`、`db.py`。
 
 ### 缝隙 #3：模型绑定未生效（T1.3）
-- **现状**：`Conversation.model_id` 是正确预留，但运行时仍取全局激活 chat 模型。
+- **已闭合（T1.3）**：`llm/resolver.py` 新增 `get_chat_model_by_id` / `get_chat_model_for_conversation`；`api/dataplane.py` 与 `agent/im_handler.py` 两路改为「先解析会话 → 再按会话路由模型」，per-session 模型（`Conversation.model_id`）优先，空/失效 fallback 全局激活。补 `tests/unit/test_llm_factory.py::test_per_session_model_preferred`。
+- **原现状**：`Conversation.model_id` 是正确预留，但运行时仍取全局激活 chat 模型。
 - **风险**：per-session 模型策略、成本、数据驻留无法落地。
 - **目标**：模型选择纳入能力集 + 成本/驻留策略，runner 按会话绑定模型路由。
 - **源码**：`agent/runner.py`、`llm/resolver.py`、`governance/models.py`。
