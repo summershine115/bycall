@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlmodel import Session, create_engine
 
+from bycall.agent.context_budget import ContextBudget
 from bycall.agent.session_store import (
     build_context_trace,
     build_conversation_messages,
@@ -124,7 +125,7 @@ class TestMessagePersistence:
             save_message(db, conv.id, "assistant", f"回答{i}")
         db.commit()
 
-        history = load_message_history(db, conv.id, limit=5)
+        history = load_message_history(db, conv.id, budget=ContextBudget(history_limit=5))
         assert len(history) == 5
         # 应该是最后 5 条（最新 2 轮 + 1 条）
         assert "问题9" in history[-1].content or "回答9" in history[-1].content

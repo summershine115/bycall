@@ -22,7 +22,6 @@ from sqlmodel import Session, select
 
 from bycall.agent.graph import TOOL_ROUND_FLUSH
 from bycall.agent.runner import run_agent, run_agent_stream
-from bycall.agent.session_store import load_message_history
 from bycall.config import get_settings
 from bycall.db import get_session, session_scope
 from bycall.governance.auth import load_session_cookie
@@ -326,7 +325,8 @@ def chat_conversation_messages(
     """某会话的消息历史（切换会话时加载，校验归属）。"""
     user = _current_user(request, session)
     conv = _get_owned_conversation(session, user, conv_id)
-    rows = load_message_history(session, conv.id, limit=100)
+    # REST 历史端点取最近 100 条（API 上限，直接查 DB——与 LLM 上下文窗口解耦）
+    rows = list(reversed(session.exec(Message.select_recent(conv.id, limit=100)).all()))
     return [ChatMessageOut(role=m.role, content=m.content) for m in rows]
 
 

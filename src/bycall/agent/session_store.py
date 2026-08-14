@@ -33,25 +33,15 @@ import logging
 from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
+from bycall.agent.context_budget import DEFAULT_BUDGET, ContextBudget, ContextReport
 from bycall.governance.models import Conversation, Message, UserMemory
 from bycall.llm.base import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
 
-# 滑窗：拼 prompt 时取最近 N 条消息（含 user+assistant 各一条算一轮）。
-# 同时是压缩边界——summary 概括这 N 条之前的全部消息，无重叠、无缺口。
-_HISTORY_LIMIT = 20
-
-
-# 用户记忆注入预算（TAM §2.1 的轻量版：条数 + 字符双上限）：
-# 防记忆增长后全量注入撑爆上下文（旧实现全量、无排序）。
-_MEMORY_MAX_ITEMS = 8
-_MEMORY_MAX_CHARS = 1500
-
-# agent 自动记录记忆注入预算：独立且更小——agent 记忆不可信（红线 #7）、由 LLM 提取、
-# 噪声/重复风险高于 admin 人工维护，宁可少注入；且独立预算避免挤占 admin 记忆的注入额度。
-_AGENT_MEMORY_MAX_ITEMS = 4
-_AGENT_MEMORY_MAX_CHARS = 500
+# 上下文预算（历史滑窗 / 记忆注入条数+字符 / RAG 预算）默认值集中在
+# ``agent.context_budget.DEFAULT_BUDGET``；下方 load_* 接收 budget 参数按角色覆盖，
+# 不传则用默认（``ContextBudget`` 经 ``resolve_budget`` 从 ``RoleConfig.context_budget`` 派生）。
 
 
 def _estimate_tokens(text: str) -> int:
@@ -86,12 +76,14 @@ def get_or_create_conversation(session: Session, user_id: int, channel: str) -> 
 
 
 def load_message_history(
-    session: Session, conversation_id: int, limit: int = _HISTORY_LIMIT
+    session: Session, conversation_id: int, *, budget: ContextBudget | None = None
 ) -> list[Message]:
     """取最近 N 条消息（按时间倒序取，再正序返回用于拼 prompt）。
 
     返回的列表按时间正序排列（旧→新），可直接拼进 LLM messages。
+    N 由 ``budget.history_limit`` 决定（不传用默认）——滑窗宽度可按角色调（缺陷 4）。
     """
+    limit = (budget or DEFAULT_BUDGET).history_limit
     rows = session.exec(Message.select_recent(conversation_id, limit=limit)).all()
     return list(reversed(rows))
 
@@ -140,7 +132,9 @@ def _memory_score(mem: UserMemory, q_terms: set[str]) -> int:
     return len(_term_set(mem.content) & q_terms)
 
 
-def load_user_memory(session: Session, user_id: int, question: str = "") -> list[UserMemory]:
+def load_user_memory(
+    session: Session, user_id: int, question: str = "", *, budget: ContextBudget | None = None
+) -> list[UserMemory]:
     """取 admin 维护的用户长期记忆（source=admin，status=active），拼 prompt 时注入 system。
 
     context engineering 预算（TAM §2.1 轻量版）：条数 + 字符双上限 + 关键词相关性
@@ -149,7 +143,9 @@ def load_user_memory(session: Session, user_id: int, question: str = "") -> list
     无 question 时退化为按 id 顺序取前 N 条（保序、可预算）。
     只取 ``status="active"``（superseded 已作废，不注入）；只取 ``source="admin"``
     （admin 记忆进 system 软隔离；agent 记忆由 ``load_agent_memory`` 走 user 硬隔离）。
+    预算上限由 ``budget.memory_max_items / memory_max_chars`` 决定（不传用默认）——按角色可调（缺陷 4）。
     """
+    b = budget or DEFAULT_BUDGET
     memories = list(session.exec(UserMemory.select_active_by_user(user_id, source="admin")).all())
     if not memories:
         return []
@@ -164,16 +160,18 @@ def load_user_memory(session: Session, user_id: int, question: str = "") -> list
     used_chars = 0
     for m in memories:
         cost = len(m.content)
-        if used_chars + cost > _MEMORY_MAX_CHARS:
+        if used_chars + cost > b.memory_max_chars:
             continue  # 超字符预算：跳过（高相关项已在前，宁可少注入也不超）
         picked.append(m)
         used_chars += cost
-        if len(picked) >= _MEMORY_MAX_ITEMS:
+        if len(picked) >= b.memory_max_items:
             break
     return picked
 
 
-def load_agent_memory(session: Session, user_id: int) -> list[UserMemory]:
+def load_agent_memory(
+    session: Session, user_id: int, *, budget: ContextBudget | None = None
+) -> list[UserMemory]:
     """取 agent 自动记录的用户长期记忆（source=agent，status=active），注入 user 角色。
 
     信任定位：agent 记忆由 LLM 从对话中提炼，是不可信内容（红线 #7），召回时降权进
@@ -182,17 +180,19 @@ def load_agent_memory(session: Session, user_id: int) -> list[UserMemory]:
 
     预算（独立小额度）：条数 + 字符双上限。agent 记忆按 id 顺序取（提取阶段已做高置信
     过滤，这里不做二次相关性排序，保持简单）。superseded 不注入。
+    预算上限由 ``budget.agent_memory_max_items / agent_memory_max_chars`` 决定（不传用默认）。
     """
+    b = budget or DEFAULT_BUDGET
     memories = list(session.exec(UserMemory.select_active_by_user(user_id, source="agent")).all())
     picked: list[UserMemory] = []
     used_chars = 0
     for m in memories:
         cost = len(m.content)
-        if used_chars + cost > _AGENT_MEMORY_MAX_CHARS:
+        if used_chars + cost > b.agent_memory_max_chars:
             continue  # 超字符预算：跳过（不半截注入）
         picked.append(m)
         used_chars += cost
-        if len(picked) >= _AGENT_MEMORY_MAX_ITEMS:
+        if len(picked) >= b.agent_memory_max_items:
             break
     return picked
 
@@ -331,6 +331,7 @@ def build_context_trace(
     agent_memories: list[UserMemory] | None = None,
     summary: str,
     history: list[Message],
+    rag_report: ContextReport | None = None,
 ) -> str:
     """构造本轮上下文快照（JSON 字符串），供审计事后排查。
 
@@ -381,6 +382,9 @@ def build_context_trace(
         "summary_preview": _cap(summary, 800),
         "history_count": len(history),
         "history_token_est": sum(getattr(m, "token_count", 0) or 0 for m in history),
+        # context 预算反馈环（缺陷 3）：记录本轮 RAG 注入裁剪/去重/过滤/投毒统计。
+        # retrieved（上方 rag_*）反映召回全貌，context_report 反映注入处置——两者互补。
+        "context_report": rag_report.to_dict() if rag_report else None,
     }
     try:
         return json.dumps(trace, ensure_ascii=False)
@@ -392,12 +396,14 @@ def should_compress(*, message_count: int, summary_covered_count: int) -> bool:
     """判断是否需要压缩：有消息滑出窗口但尚未进 summary。
 
     指针模型（杜绝旧上下文静默丢失）：summary 概括最旧的 ``summary_covered_count``
-    条，prompt 取最近 ``_HISTORY_LIMIT`` 条。当总数超过窗口、且"窗口之外"还有
+    条，prompt 取最近 ``history_limit`` 条（压缩用全局默认窗口；per-role 仅影响前台 load
+    取多少条——两者不一致的最坏情况是 summary 折叠时机略偏，绝不丢消息）。当总数超过窗口、且"窗口之外"还有
     未进 summary 的消息时触发——不再用 token 阈值（旧实现下低密度对话会让旧消息
     滑过窗口却从未被压缩，永久从模型视野消失）。
     """
     return (
-        message_count > _HISTORY_LIMIT and (message_count - _HISTORY_LIMIT) > summary_covered_count
+        message_count > DEFAULT_BUDGET.history_limit
+        and (message_count - DEFAULT_BUDGET.history_limit) > summary_covered_count
     )
 
 
@@ -455,7 +461,7 @@ def compress_conversation(session: Session, conversation_id: int, llm: BaseChatM
     ):
         return False
     start = conv.summary_covered_count
-    end = conv.message_count - _HISTORY_LIMIT  # 窗口之外的最新边界
+    end = conv.message_count - DEFAULT_BUDGET.history_limit  # 窗口之外的最新边界
     to_fold = load_message_range(session, conversation_id, offset=start, limit=end - start)
     if not to_fold:
         return False

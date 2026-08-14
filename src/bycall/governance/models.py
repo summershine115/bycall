@@ -57,6 +57,10 @@ class RoleConfig(BaseModel):
       system prompt 的领域知识文档）。capability 引擎据此加载启用的 skill 内容，
       合并成 markdown 注入 system message。未注册/已禁用的 name 静默忽略（与
       ``allowed_tools`` 一致的容错语义）。admin 内置角色不走此字段（运维角色不注入 skill）。
+    - ``context_budget``：上下文预算覆盖（可选 dict，键 = ``ContextBudget`` 字段名）。
+      覆盖全局默认（``history_limit`` / ``memory_max_items`` / ``rag_topk`` /
+      ``rag_context_max_chars`` 等），让高价值角色配更大历史/记忆/RAG 预算。
+      空 dict = 全用默认（后向兼容）。详见 ``agent.context_budget``。
     """
 
     allowed_tools: list[str] = Field(default_factory=list)
@@ -64,6 +68,7 @@ class RoleConfig(BaseModel):
     level: int = 0
     system_prompt_version: int | None = None
     skills: list[str] = Field(default_factory=list)
+    context_budget: dict = Field(default_factory=dict)
 
 
 # ============ Role ============

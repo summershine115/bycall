@@ -127,7 +127,7 @@ def execute_tool_loop_step(
     raw_messages = build_rag_messages(
         cap.system_prompt,
         goal,
-        [],  # S1a：Step 不跑独立 RAG（多步任务的 RAG 在对话触发层做）
+        "",  # S1a：Step 不跑独立 RAG（rag_context 空串 = 无知识注入）
         skill_markdown=cap.skill_markdown,
         knowledge_scope_text=cap.knowledge_scope_text,
         runtime_context=runtime_context,

@@ -36,6 +36,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlmodel import Session
 
+from bycall.agent.context_budget import budget_and_format_rag, resolve_budget
 from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
 from bycall.agent.memory_writer import maybe_extract_and_save_memory
 from bycall.agent.runtime_context import build_runtime_context
@@ -304,6 +305,7 @@ def _prepare_agent_messages(
     retrieved: list,
 ) -> tuple[list, list, list[BaseMessage], str]:
     """按本轮治理结果统一准备工具和消息，供同步与流式入口共用。"""
+    budget = resolve_budget(cap.context_budget_overrides)
     allowed_tool_specs = filter_tools(cap.allowed_tools)
     if cap.on_demand_skills:
         loader = get_tool("load_skill")
@@ -314,14 +316,18 @@ def _prepare_agent_messages(
     history = []
     summary = ""
     user_memories = (
-        load_user_memory(session, user.id, question=question) if user.id is not None else []
+        load_user_memory(session, user.id, question=question, budget=budget)
+        if user.id is not None
+        else []
     )
     # agent 自动记录记忆（不可信，user 角色硬隔离）——与 admin 记忆分开加载。
-    agent_memories = load_agent_memory(session, user.id) if user.id is not None else []
+    agent_memories = (
+        load_agent_memory(session, user.id, budget=budget) if user.id is not None else []
+    )
     if conversation_id is not None:
         conv = session.get(Conversation, conversation_id)
         summary = conv.summary if conv is not None else ""
-        history = load_message_history(session, conversation_id)
+        history = load_message_history(session, conversation_id, budget=budget)
 
     runtime_context = build_runtime_context(
         user=user,
@@ -334,8 +340,10 @@ def _prepare_agent_messages(
         admin_memory_count=len(user_memories),
         agent_memory_count=len(agent_memories),
     )
+    # RAG 预算化（缺陷 1）：per-chunk 截断 + 跨 KB 去重 + 低相关过滤 + 相关性标注 +
+    # 投毒软降级。多轮/单轮两路共用同一预算化产物（消除旧的"裸拼接抄两份"缝隙）。
+    rag_context, rag_report = budget_and_format_rag(retrieved, budget)
     if conversation_id is not None:
-        rag_context = "\n\n".join(f"[{r.fields.get('source', '?')}] {r.text}" for r in retrieved)
         raw_messages = build_conversation_messages(
             system_prompt=cap.system_prompt,
             rag_context=rag_context,
@@ -352,7 +360,7 @@ def _prepare_agent_messages(
         raw_messages = build_rag_messages(
             cap.system_prompt,
             question,
-            retrieved,
+            rag_context=rag_context,
             skill_markdown=cap.skill_markdown,
             knowledge_scope_text=cap.knowledge_scope_text,
             user_memories=user_memories,
@@ -365,6 +373,7 @@ def _prepare_agent_messages(
         agent_memories=agent_memories,
         summary=summary,
         history=history,
+        rag_report=rag_report,
     )
     return allowed_tool_specs, langchain_tools, _to_langchain_messages(raw_messages), context_trace
 
@@ -405,6 +414,8 @@ def _retrieve_across_kbs(
     from bycall.observability.metrics import RAG_RETRIEVAL_DURATION, RAG_RETRIEVED_CHUNKS
     from bycall.rag.retrieve import retrieve_multi_kb
 
+    budget = resolve_budget(cap.context_budget_overrides)
+
     kbs = list(session.exec(KnowledgeBase.select_all()).all())
     if not cap.is_admin:
         visible_ids = set(cap.visible_kb_ids)
@@ -421,6 +432,7 @@ def _retrieve_across_kbs(
         kb_specs=kb_specs,
         question=question,
         knowledge_scope_tags=cap.knowledge_scope_tags,
+        topk=budget.rag_topk,
         level=cap.level,
         is_admin=cap.is_admin,
     )

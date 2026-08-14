@@ -90,6 +90,9 @@ class CapabilitySet:
       由 ``KnowledgeBase.visible_to_roles`` 派生，数据面 runner 检索前据此过滤 KB——
       角色不可见的 KB 根本不进入检索（红线 #1 的 KB 级形态）。
     - ``is_admin``：admin 内置角色标记，控制面特权判定用。
+    - ``context_budget_overrides``：从 ``RoleConfig.context_budget`` 透传的预算覆盖 dict。
+      runner 经 ``resolve_budget`` 合并进默认 ``ContextBudget``——历史/记忆/RAG 预算按角色可调。
+      admin 内置角色为空（用全局默认）。
     """
 
     user_id: int | None
@@ -105,6 +108,7 @@ class CapabilitySet:
     knowledge_scope_text: str = ""
     visible_kb_ids: list[int] = field(default_factory=list)
     is_admin: bool = False
+    context_budget_overrides: dict = field(default_factory=dict)
 
 
 def get_active_system_prompt(session: Session) -> str:
@@ -394,4 +398,5 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         ),
         visible_kb_ids=visible_kb_ids,
         is_admin=False,
+        context_budget_overrides=dict(config.context_budget),
     )

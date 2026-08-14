@@ -46,7 +46,7 @@ def test_runtime_context_describes_identity_environment_and_filtered_tools():
     assert "近期对话历史：可用" in context
     assert "用户长期记忆：管理员维护 1 条、自动记录 0 条" in context
     assert "`calculator`：执行算术计算；执行前需要管理员审批" in context
-    assert "sales-playbook" in context
+    assert "已配置领域能力" not in context  # skills 由 skill_markdown 段注入，不再重复（缺陷 2）
     assert "system_prompt" not in context
 
 
@@ -67,7 +67,7 @@ def test_runtime_context_does_not_invent_unavailable_capabilities():
     )
 
     assert "本轮可执行工具\n- 无" in context
-    assert "当前未配置领域 Skill" in context
+    assert "已配置领域能力" not in context  # skills 由 skill_markdown 统一负责（缺陷 2 去冗余）
     assert "单轮请求" in context
 
 
@@ -88,9 +88,12 @@ def test_shared_message_preparation_keeps_sync_and_stream_context_identical(monk
     )
     session = MagicMock()
     monkeypatch.setattr(
-        "bycall.agent.runner.load_user_memory", lambda session, user_id, question="": []
+        "bycall.agent.runner.load_user_memory",
+        lambda session, user_id, question="", budget=None: [],
     )
-    monkeypatch.setattr("bycall.agent.runner.load_agent_memory", lambda session, user_id: [])
+    monkeypatch.setattr(
+        "bycall.agent.runner.load_agent_memory", lambda session, user_id, budget=None: []
+    )
 
     first = _prepare_agent_messages(
         session=session,

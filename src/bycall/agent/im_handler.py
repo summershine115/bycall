@@ -398,11 +398,14 @@ def _backfill_on_failure(conversation_id: int, question: str) -> None:
     幂等防重复：若最近一条已是相同内容的 user 消息（部分落库的罕见场景），只补 system 条目。
     回填本身失败只记录日志，不向上抛（不应掩盖原始失败）。
     """
+    from bycall.agent.context_budget import ContextBudget
     from bycall.agent.session_store import load_message_history, save_message
 
     try:
         with session_scope() as session:
-            recent = load_message_history(session, conversation_id, limit=1)
+            recent = load_message_history(
+                session, conversation_id, budget=ContextBudget(history_limit=1)
+            )
             already = bool(recent) and recent[-1].role == "user" and recent[-1].content == question
             if not already:
                 save_message(session, conversation_id, "user", question)
