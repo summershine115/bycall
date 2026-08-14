@@ -1,7 +1,7 @@
 # Bycall 决策登记册（Decision Registry）
 
 > **本文件是项目所有架构/产品决策的唯一入口。** 查找决策先看这里；写新决策遵守 §4 流程。
-> 状态约定：✅ 已采纳（含已落地） · 🕐 提议中（proposed） · ⚠️ 待拍板（open） · 🚫 已否决 · ♻️ 已替代
+> 状态约定：✅ 已采纳（含已落地） · 🕐 提议中（proposed） · ⚠️ 待拍板（open） · 🚫 已否决 · ♻️ 已替代 · 🧊 已冻结 · ⏸ 后置
 
 ## 1. ADR 索引（正式决策记录）
 
@@ -31,24 +31,22 @@
 | 失败时保持授权状态（向量侧先行，失败不提交元数据/ACL 变更） | ✅ 已落地（红线 #6） | `architecture.md` 红线 #6 |
 | SKILL 信任定位：admin 管控的可信配置，合法注入 system（软隔离） | ✅ 已落地 | `product-design.md` §2.4、红线 #7 |
 | 下一阶段主方向：先收口（六条治理缝隙 + M5）→ 评测/发布门 → 行业试点；冻结 S3/S4 与新能力 | ✅ 已采纳（执行主方向） | `docs/execution-plan.md` |
+| 身份映射模式：邀请制（非自注册+待审批） | ✅ 已采纳（沿用现实现） | design §7 |
+| 未受邀员工接入：拒绝 + 引导联系管理员 | ✅ 已采纳（沿用现实现） | design §7 |
+| 权限缓存：会话级（绑定时算一次能力集） | ✅ 已采纳（沿用现实现） | design §7 |
+| Admin 认证：账号密码起步，SSO 落 T1.7 | ✅ 已排期 | execution-plan T1.7 |
+| per-session 模型：全局激活 + 会话覆盖，落 T1.3 | ✅ 已排期 | execution-plan T1.3 |
+| 首个付费行业 | ⏸ 后置（阶段 3 启动前必须拍板） | execution-plan 阶段 3 |
+| M5 收口 vs 行业试点顺序：先收口后试点（严格 0→1→2→3） | ✅ 已拍板（2026-08-13） | execution-plan 阶段总览 |
+| 冻结清单：S3/S4（含 Skill 晋升闸门、自动提议）、行业包资产化、前端视觉/主题打磨、成本预算/推送 outbox、群聊共同授权；恢复条件见 execution-plan §4 | 🧊 已冻结 | execution-plan §4 |
 
 ## 3. 开放决策清单（待拍板）
 
 合并自 `product-design.md` §7、`product-strategy.md` §8、`specs/agent-framework-upgrade.md` 假设。
 **拍板后移入 §1 或 §2**，不留悬念。
 
-| # | 决策 | 状态/当前倾向 | 来源 |
-|---|------|--------------|------|
-| 1 | 身份映射模式：邀请制 vs 自注册+待审批 | 倾向邀请制（代码已按此实现），待正式确认 | design §7 |
-| 2 | 未受邀员工接入行为：拒绝+引导 vs 自动建待审记录 | 倾向拒绝+引导（已实现），待正式确认 | design §7 |
-| 3 | 权限缓存：会话级 vs 每请求实时 | 会话级（已实现），待正式确认 | design §7 |
-| 4 | Admin 认证：账号密码（已实现）vs 企业 SSO | SSO 排入 M5，未排期 | design §7 / strategy §8 |
-| 5 | per-session 模型选择：全局激活+会话覆盖 | 结构已预留，运行时启用待排期（M3） | design §7 |
-| 6 | 首个付费行业：制造业设备运维/工业售后？ | 待定（有倾向，未拍板） | strategy §8-1 |
-| 7 | 行业包是否作为版本化、可导入导出的正式产品资产 | 待定 | strategy §8-5 |
-| 8 | M5 收口与行业试点之间的资源比例与验收门槛 | 待定 | strategy §8-6 |
-| 9 | Skill 晋升闸门复用 `ApprovalRequest`（草稿→审→晋升） | 倾向复用（S3 落地），待确认 | spec 假设 1 |
-| 10 | skill 自动提议「成功」判定：同序列重复 ≥ N 次（N 可配，默认 3） | 待定（S3） | spec 假设 6 |
+> **本清单已由阶段 0（2026-08-13）清空**：原 10 项待拍板全部处置完毕（已采纳 / 已排期 / 已冻结 / 后置），
+> 处置结果见 §2 新增行与 `docs/execution-plan.md`。新的待拍板项再在此新增（§4 流程不变）。
 
 **已由 ADR 拍板、从开放清单移出的**（历史决策点 → 决策记录）：
 
@@ -93,8 +91,8 @@
 | `docs/architecture.md` | 随实现演进 | 分层架构 + 9 条红线（当前约束，不可违背） |
 | `docs/qm-benchmark.md` | 调研记录（已采纳） | QM 对标；借鉴项映射见 product-design §6.1 |
 | `docs/tencent-agent-memory-benchmark.md` | 调研记录（已采纳） | TAM 对标；已升华为 ADR-0007 |
-| `docs/specs/agent-framework-upgrade.md` | 已采纳 | S1 执行层（a+b）已落地；S2 记忆层 Phase 1 已落地（agent 写路径未落地）；S3–S4 待排期（切片见 §8） |
-| `tasks/plan.md` / `tasks/todo.md` | 随任务状态 | S1a 实施计划与任务清单，**已完成** |
+| `docs/specs/agent-framework-upgrade.md` | 已采纳 | S1 执行层（a+b）已落地；S2 记忆层 Phase 1+2 已落地（含 agent 写路径）；S3–S4 已冻结（见 `docs/execution-plan.md` §4） |
+| `tasks/plan.md` / `tasks/todo.md` | 随任务状态 | S1（a+b）实施计划与任务清单，**已完成** |
 | `CHANGELOG.md` | 版本记录 | 用户可见变更流水账，不承载「为什么」 |
 | `docs/execution-plan.md` | **主方向（进行中）** | 下一阶段可执行计划（收口 M5 + 评测 + 试点，冻结 S3/S4）；取代默认「M7+/S3-S4 堆能力」 |
 | `docs/gaps.md` | 待建（阶段 0 产出） | 六条治理缝隙清单（战略 §3），owner + 源码定位 + 目标行为 |

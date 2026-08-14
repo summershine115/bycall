@@ -1,6 +1,6 @@
 # Spec：Agent 框架升级（受控自主 + 分层记忆 + skill 演化）
 
-> 状态：已采纳（S1 执行层 a+b 已落地，S2 记忆层 Phase 1 已落地（agent 写路径未落地），S3–S4 待排期，切片见 §8） · 更新：2026-08-12 · 关联：[决策登记册](decisions/README.md)
+> 状态：已采纳（S1 执行层 a+b 已落地，S2 记忆层 Phase 1+2 已落地（含 agent 写路径），S3–S4 已冻结（见 `docs/execution-plan.md` §4），切片见 §8） · 更新：2026-08-12 · 关联：[决策登记册](decisions/README.md)
 > 关联：ADR-0006（任务系统）、ADR-0005（ABAC Policy，后置）、`product-strategy.md` §4.3/§7
 > 参考：PI / pi.dev（执行 loop 原语）、OpenClaw（Skill Workshop 向上汇聚）、Hermes（5-pillar 自主学习）
 
