@@ -146,13 +146,11 @@ runner 按会话绑定模型调用。
 **Verify**：`make test-unit` + MCP 工具集成测试。
 **Dependencies**：None。**Files**：`tools/redactor.py`（新）、`tools/base.py`、`tools/gateway.py`。**Scope**：M。
 
-#### T1.7 SSO + 组织同步 + 离职撤权（M5 企业身份）
-**Description**：OIDC/SAML 登录 + 组织架构同步 + 离职即时撤权。
-**Acceptance**：
-- [ ] admin 走 SSO 登录（保留本地账号密码兼容）
-- [ ] 离职用户即时失去所有数据面能力
-**Verify**：`make test-unit` + 手动集成验证。
-**Dependencies**：None。**Files**：`admin/api.py`、`governance/auth.py`。**Scope**：M。
+#### T1.7 SSO + 组织同步 + 离职撤权（M5 企业身份）——已按现实收口
+**范围决策（2026-08-13）**：
+- ✅ **离职即时撤权已闭环**（既有机制）：`User.is_active=False` → `compute_capability_set` 抛 PermissionError（数据面拒绝）+ 登录/act-as/IM `select_by_im`/审批执行/结果推送/任务 Step 全链路拒绝。已有 `test_capability.py` / `test_auth.py` / `test_admin_revocation.py` / `test_gateway.py` / `test_approval.py` / `test_approval_push.py` / `test_step_executor.py` 等全面覆盖，无需新代码。
+- ⏸ **OIDC/SAML SSO 登录 + 组织架构同步后置**：属客户依赖（需客户 IdP / 目录，配置驱动），无客户时不可测、纯属推测性实现；待首个试点组织确定后再排期。本地账号密码登录保持现状。
+**Files**：无新增（撤权已有实现 + 测试）。**Scope**：S（仅范围确认）。
 
 #### T1.8 策略模拟器（控制面）
 **Description**：管理员选（用户, 资源, 动作, 上下文）→ 系统显示最终 allow/deny + 命中规则 + 能力集 + 过滤条件。
