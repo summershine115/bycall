@@ -30,6 +30,7 @@
 | 运行时能力主动披露且不可提权（Runtime Context） | ✅ 已落地（红线 #9） | `architecture.md` 红线 #9 |
 | 失败时保持授权状态（向量侧先行，失败不提交元数据/ACL 变更） | ✅ 已落地（红线 #6） | `architecture.md` 红线 #6 |
 | SKILL 信任定位：admin 管控的可信配置，合法注入 system（软隔离） | ✅ 已落地 | `product-design.md` §2.4、红线 #7 |
+| 下一阶段主方向：先收口（六条治理缝隙 + M5）→ 评测/发布门 → 行业试点；冻结 S3/S4 与新能力 | ✅ 已采纳（执行主方向） | `docs/execution-plan.md` |
 
 ## 3. 开放决策清单（待拍板）
 
@@ -95,3 +96,5 @@
 | `docs/specs/agent-framework-upgrade.md` | 已采纳 | S1 执行层（a+b）已落地；S2 记忆层 Phase 1 已落地（agent 写路径未落地）；S3–S4 待排期（切片见 §8） |
 | `tasks/plan.md` / `tasks/todo.md` | 随任务状态 | S1a 实施计划与任务清单，**已完成** |
 | `CHANGELOG.md` | 版本记录 | 用户可见变更流水账，不承载「为什么」 |
+| `docs/execution-plan.md` | **主方向（进行中）** | 下一阶段可执行计划（收口 M5 + 评测 + 试点，冻结 S3/S4）；取代默认「M7+/S3-S4 堆能力」 |
+| `docs/gaps.md` | 待建（阶段 0 产出） | 六条治理缝隙清单（战略 §3），owner + 源码定位 + 目标行为 |
