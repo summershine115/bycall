@@ -237,6 +237,7 @@ def test_resolver_get_chat_model_pair(tmp_path):
     # M3：model 是 ChatOpenAI（BaseChatModel）。
     assert isinstance(model, BaseChatModel)
 
+
 def test_per_session_model_preferred(tmp_path):
     """per-session 模型优先：model_id 绑定→用该模型；空→全局激活；失效→fallback 全局。"""
     from bycall.governance.models import Conversation, Model

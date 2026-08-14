@@ -12,7 +12,7 @@
 | 3 | 模型绑定生效 | `Conversation.model_id` 已预留，运行时曾仍取全局激活 | `llm/resolver.py` 新增 `get_chat_model_for_conversation`，api/IM 两路按会话路由 | T1.3 | ✅ 已闭合 |
 | 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
 | 5 | 工具结果脱敏未平台化 | `tools/base.py`（redactor 字段）+ `tools/gateway.py`：靠单工具声明 redactor | 统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型 | T1.6 | ⬜ 未闭合 |
-| 6 | 同步/流式治理链未收敛 | `agent/runner.py`（`run_agent` + `run_agent_stream`）+ `api/dataplane.py`：两套相似流程 | 抽共享 pipeline（策略准备→执行→后处理→审计） | T1.4 | ⬜ 未闭合 |
+| 6 | 同步/流式治理链收敛 | `agent/runner.py`：`run_agent` / `run_agent_stream` 各自采集 | 抽共享 `_prepare_turn`（步骤1-4）+ `_finalize_turn`（步骤6-7） | T1.4 | ✅ 已闭合 |
 
 ## 逐条明细
 
@@ -52,7 +52,8 @@
 - **源码**：`tools/redactor.py`（新）、`tools/base.py`、`tools/gateway.py`。
 
 ### 缝隙 #6：同步/流式治理链未收敛（T1.4）
-- **现状**：`run_agent` 与 `run_agent_stream` 两套高度相似流程，各自采集、易漂移（任务维度已由 default_bus 闭合，对话维度未闭合）。
+- **已闭合（T1.4）**：抽出 `_prepare_turn`（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌，含拒绝短路）与 `_finalize_turn`（会话持久化 + 审计 + 构造结果），`run_agent` / `run_agent_stream` 两路共用；执行循环差异（`run_tool_loop` vs `run_tool_loop_stream`）保留在各自调用方。审计字段由同一 `_finalize_turn` 产出，杜绝漂移。
+- **原现状**：`run_agent` 与 `run_agent_stream` 两套高度相似流程，各自采集、易漂移（任务维度已由 default_bus 闭合，对话维度未闭合）。
 - **风险**：策略增多后两路行为漂移，审计字段不一致。
 - **目标**：抽共享「策略准备 → 执行 → 后处理 → 审计」管线，两路共用。
 - **源码**：`agent/pipeline.py`（新）、`agent/runner.py`、`api/dataplane.py`。
