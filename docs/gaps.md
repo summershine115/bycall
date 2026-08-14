@@ -8,7 +8,7 @@
 | # | 缝隙 | 现状（源码定位） | 目标行为 | 任务 | 状态 |
 |---|------|------------------|----------|------|------|
 | 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 已闭合（level/密级；dept 待 User.dept 字段） |
-| 2 | 会话键单组织落地 | `governance/models.py`：`Conversation`/`Message` 主要是 `(user_id, channel)` | `(agent_id, channel, tenant_id, user_id)` 显式隔离 | T1.5 | ⬜ 未闭合 |
+| 2 | 会话键多租户预留 | `Conversation` 曾缺 `tenant_id`/`agent_id` 列 | 补 `tenant_id`/`agent_id` 预留列 + 迁移 + 红线条文对齐 | T1.5 | ✅ 已闭合（列就位；完整多租户运行时按 ADR-0004 后置） |
 | 3 | 模型绑定生效 | `Conversation.model_id` 已预留，运行时曾仍取全局激活 | `llm/resolver.py` 新增 `get_chat_model_for_conversation`，api/IM 两路按会话路由 | T1.3 | ✅ 已闭合 |
 | 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
 | 5 | 工具结果脱敏未平台化 | `tools/base.py`（redactor 字段）+ `tools/gateway.py`：靠单工具声明 redactor | 统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型 | T1.6 | ⬜ 未闭合 |
@@ -26,7 +26,8 @@
 - **源码**：`governance/policy.py`（新）、`governance/capability.py`、`rag/retrieve.py`、`api/dataplane.py`。
 
 ### 缝隙 #2：会话键单组织落地（T1.5）
-- **现状**：红线定义 `(agent_id, channel, tenant_id, user_id)`，DB 实际主要是 `(user_id, channel)`。
+- **已闭合（T1.5）**：`Conversation` 补 `tenant_id`（默认 `default`）/ `agent_id`（可空）预留列 + 幂等迁移；architecture.md 红线 #2「DB 落地」对齐。ADR-0004 单组织部署 → 运行时恒 `tenant_id="default"`、`agent_id=None`；完整多租户/多 Agent 运行时隔离（记忆/审批/审计/MCP/缓存全链路）按 ADR-0004 后置。
+- **原现状**：红线定义 `(agent_id, channel, tenant_id, user_id)`，DB 实际主要是 `(user_id, channel)`。
 - **风险**：多租户 / 同租户多 Agent / 组织合并场景下会话与记忆可串扰。
 - **目标**：会话、记忆、审批、审计、MCP、缓存均带显式 tenant/agent 隔离键。
 - **源码**：`governance/models.py`、`db.py`。

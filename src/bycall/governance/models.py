@@ -663,6 +663,10 @@ class Conversation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(index=True)  # User.id
     channel: str = Field(index=True)  # "api" / "wecom" / "feishu"
+    # 租户/Agent 隔离键（红线 #2 完整键：agent_id, channel, tenant_id, user_id）。
+    # ADR-0004 单组织部署优先 → 运行时恒 tenant_id="default"、agent_id=None；列为多租户/多 Agent 预留。
+    tenant_id: str = Field(default="default", index=True)
+    agent_id: int | None = Field(default=None, index=True)
     session_key: str = Field(unique=True, index=True)  # 确定性: f"{channel}:{user_id}"
     model_id: int | None = Field(default=None)  # per-session 模型（空→全局激活）
     summary: str = ""  # 压缩摘要（增量更新，非从头重写）
