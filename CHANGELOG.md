@@ -26,6 +26,7 @@
 
 
 ### 新增
+- 策略模拟器（阶段 1 · T1.8）：控制面新增「策略模拟」页——管理员选定用户 + 动作（检索/调工具），后端复用 `compute_capability_set` / `build_acl_filters` / `filter_tools` 三件套预演治理判定，展示 allow/deny、命中规则、能力集与召回前过滤条件，让治理结果可独立验证（不靠读代码）。
 - 工具结果统一脱敏 + 大小限制（阶段 1 · T1.6）：新增 `tools/redactor.py::sanitize_tool_result`，把「脱敏 + 截断（上限 4000 字符）」收敛到一处，工具网关与审批执行共用；无 redactor 的工具结果也默认截断，防超大工具返回撑爆 LLM 上下文 / 费用 DoS。
 - per-session 模型绑定生效（阶段 1 · T1.3）：会话 `model_id` 绑定后，api 与 IM 渠道均按会话路由到该模型（优先于全局激活）；未绑定或绑定失效时 fallback 全局激活。此前 `Conversation.model_id` 已预留但运行时未消费。
 - 完整 ABAC 闭环（阶段 1 · T1.1）：新增 `governance/policy.py` 统一策略接口（ADR-0005），把主体属性翻译成召回前过滤条件，检索不再手写 `source IN`。文档新增 `level` 密级字段（默认 0=公开），经 chunk ACL 写入向量库，检索按 `level <= user_level` 预过滤——机密文档（level≥1）对低职级用户召回前即被过滤、不进 LLM 不留痕；`FilterCondition`/zvec 支持范围比较（`<=`/`>=` 等）。dept 维度预留（schema 已建字段，待 `User.dept` 属性补齐）。

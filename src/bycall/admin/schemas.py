@@ -952,3 +952,32 @@ class TaskScheduleOut(BaseModel):
     last_fired_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# ============ 策略模拟器（T1.8）============
+
+
+class PolicySimulateRequest(BaseModel):
+    """策略模拟请求：给定用户 + 动作 + 资源，预演治理判定。"""
+
+    user_id: int = Field(..., description="要模拟的用户")
+    action: str = Field(
+        default="retrieve", description="动作：retrieve（检索）/ tool_call（调工具）"
+    )
+    tool_name: str | None = Field(default=None, description="action=tool_call 时的工具名")
+
+
+class PolicySimulateResult(BaseModel):
+    """策略模拟结果：治理脊柱对「该用户 + 动作」的判定快照。"""
+
+    user_id: int
+    user_name: str
+    role: str
+    level: int
+    is_admin: bool
+    allowed_tools: list[str]
+    knowledge_scope_tags: list[str]
+    visible_kb_ids: list[int]
+    retrieval_filters: list[dict]
+    decision: str  # allowed / denied
+    detail: str

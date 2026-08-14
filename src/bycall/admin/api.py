@@ -74,6 +74,8 @@ from bycall.admin.schemas import (
     ModelOut,
     ModelTestResult,
     ModelUpdate,
+    PolicySimulateRequest,
+    PolicySimulateResult,
     PromptActivate,
     PromptCreate,
     PromptOut,
@@ -242,6 +244,88 @@ def _require_admin() -> None:
     """
     # TODO(M1 集成): 替换为 require_admin_session dependency
     return None
+
+
+@router.post("/policy/simulate", response_model=PolicySimulateResult)
+def policy_simulate(
+    payload: PolicySimulateRequest,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> PolicySimulateResult:
+    """策略模拟器：给定用户 + 动作 + 资源，预演治理判定（allow/deny + 能力集 + 过滤条件）。
+
+    让治理结果可独立验证——admin 在控制面就能看到「这个用户对检索/工具会得到什么判定、
+    命中了哪些规则」，不靠读代码（战略 §4.1「策略模拟器」）。复用治理脊柱三个真实组件
+    （compute_capability_set / build_acl_filters / filter_tools），与数据面实际判定同源，
+    杜绝「模拟与真实不一致」。
+    """
+    from bycall.governance.capability import compute_capability_set
+    from bycall.governance.policy import build_acl_filters, subject_from_capability
+    from bycall.tools.gateway import filter_tools
+
+    user = session.get(User, payload.user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"用户不存在: {payload.user_id}")
+
+    try:
+        cap = compute_capability_set(session, user)
+    except PermissionError as e:
+        return PolicySimulateResult(
+            user_id=payload.user_id,
+            user_name=user.name,
+            role=user.role,
+            level=0,
+            is_admin=False,
+            allowed_tools=[],
+            knowledge_scope_tags=[],
+            visible_kb_ids=[],
+            retrieval_filters=[],
+            decision="denied",
+            detail=f"拒绝：{e}",
+        )
+
+    subject = subject_from_capability(cap)
+    filters = build_acl_filters(subject)
+    allowed_specs = filter_tools(cap.allowed_tools)
+
+    if payload.action == "tool_call":
+        if payload.tool_name is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "action=tool_call 需提供 tool_name")
+        allowed = ("*" in cap.allowed_tools) or any(
+            s.name == payload.tool_name for s in allowed_specs
+        )
+        decision = "allowed" if allowed else "denied"
+        detail = (
+            f"工具 {payload.tool_name} 在角色白名单内，放行"
+            if allowed
+            else f"工具 {payload.tool_name} 不在角色白名单内，拒绝"
+        )
+    else:  # retrieve
+        if not cap.knowledge_scope_tags:
+            decision, detail = "denied", "无可见知识域（denied_no_access）"
+        elif not filters:
+            decision, detail = "allowed", "admin/通配：检索不过滤（全可见）"
+        else:
+            decision = "allowed"
+            detail = "召回前过滤：" + ", ".join(
+                f"{f.field} {f.op} {f.value or f.values}" for f in filters
+            )
+
+    return PolicySimulateResult(
+        user_id=payload.user_id,
+        user_name=user.name,
+        role=cap.role,
+        level=cap.level,
+        is_admin=cap.is_admin,
+        allowed_tools=cap.allowed_tools,
+        knowledge_scope_tags=cap.knowledge_scope_tags,
+        visible_kb_ids=cap.visible_kb_ids,
+        retrieval_filters=[
+            {"field": f.field, "op": f.op, "value": f.value, "values": f.values} for f in filters
+        ],
+        decision=decision,
+        detail=detail,
+    )
 
 
 def _require_role_exists(session: Session, role_name: str) -> Role:

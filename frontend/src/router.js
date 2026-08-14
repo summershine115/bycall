@@ -22,6 +22,7 @@ const routes = [
       { path: 'tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
       { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
+      { path: 'policy-simulator', name: 'policy-simulator', component: () => import('./views/PolicySimulator.vue') },
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },
     ],
   },
