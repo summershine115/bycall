@@ -59,7 +59,9 @@ def test_level_zero_still_emits_filter():
 
 def test_subject_from_capability():
     """从 CapabilitySet 裁剪出 ABAC 判定所需字段。"""
-    cap = CapabilitySet(user_id=1, user_name="alice", role="sales", knowledge_scope_tags=["sales"], level=3)
+    cap = CapabilitySet(
+        user_id=1, user_name="alice", role="sales", knowledge_scope_tags=["sales"], level=3
+    )
     s = subject_from_capability(cap)
     assert s.is_admin is False
     assert s.knowledge_scope_tags == ["sales"]
@@ -111,7 +113,15 @@ def test_level_abac_filters_confidential_chunk(abac_store):
 
 def test_level_lte_filter_direct(abac_store):
     """zvec 直接按 level <= N 过滤（范围比较 op 落地）。"""
-    low = abac_store.search(SearchRequest(full_text="secret", filters=[FilterCondition(field="level", op="lte", value=0)]))
+    low = abac_store.search(
+        SearchRequest(
+            full_text="secret", filters=[FilterCondition(field="level", op="lte", value=0)]
+        )
+    )
     assert low == []
-    high = abac_store.search(SearchRequest(full_text="secret", filters=[FilterCondition(field="level", op="lte", value=5)]))
+    high = abac_store.search(
+        SearchRequest(
+            full_text="secret", filters=[FilterCondition(field="level", op="lte", value=5)]
+        )
+    )
     assert any("secret" in h.text for h in high)

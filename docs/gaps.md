@@ -10,7 +10,7 @@
 | 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 已闭合（level/密级；dept 待 User.dept 字段） |
 | 2 | 会话键单组织落地 | `governance/models.py`：`Conversation`/`Message` 主要是 `(user_id, channel)` | `(agent_id, channel, tenant_id, user_id)` 显式隔离 | T1.5 | ⬜ 未闭合 |
 | 3 | 模型绑定未生效 | `governance/models.py`（`Conversation.model_id` 可空外键）+ `llm/resolver.py` + `agent/runner.py`：运行时仍取全局激活 | per-session 模型纳入能力集并路由 | T1.3 | ⬜ 未闭合 |
-| 4 | `visible_kb_ids` 语义未统一 | `governance/capability.py`（88/104/319/332/371/372）+ `api/dataplane.py` + `agent/runner.py` 仍遍历全部 KB | 接入检索或更名移出，禁止被误认为安全边界 | T1.2 | ⬜ 未闭合 |
+| 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
 | 5 | 工具结果脱敏未平台化 | `tools/base.py`（redactor 字段）+ `tools/gateway.py`：靠单工具声明 redactor | 统一字段分级 + 行级过滤 + 输出大小限制，默认拒绝未声明类型 | T1.6 | ⬜ 未闭合 |
 | 6 | 同步/流式治理链未收敛 | `agent/runner.py`（`run_agent` + `run_agent_stream`）+ `api/dataplane.py`：两套相似流程 | 抽共享 pipeline（策略准备→执行→后处理→审计） | T1.4 | ⬜ 未闭合 |
 
@@ -38,7 +38,8 @@
 - **源码**：`agent/runner.py`、`llm/resolver.py`、`governance/models.py`。
 
 ### 缝隙 #4：`visible_kb_ids` 语义未统一（T1.2）
-- **现状**：`CapabilitySet.visible_kb_ids` 已计算，但数据面 runner 仍遍历全部 KB。
+- **已闭合（T1.2）**：核实 `runner._retrieve_across_kbs` 已按 `cap.visible_kb_ids` 检索前过滤 KB（非 admin 只搜可见 KB）；原「runner 遍历全部 KB」的描述已过时（战略 §3 写于 v0.2.0，代码后续已修）。本任务澄清 `CapabilitySet` docstring 语义（数据面 KB 级 ACL，非仅控制面）+ 补 `tests/unit/test_kb_acl.py` 数据面过滤测试。
+- **原现状（已过时）**：`CapabilitySet.visible_kb_ids` 已计算，但数据面 runner 仍遍历全部 KB。
 - **风险**：未生效字段被误认为安全边界，产生「已治理」的错觉。
 - **目标**：二选一——作为数据面 ACL 接入检索，或更名移出能力集；禁止既不算又不改名。
 - **源码**：`governance/capability.py`、`api/dataplane.py`、`agent/runner.py`。
