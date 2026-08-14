@@ -136,6 +136,7 @@ const navGroups = [
       { name: 'roles', label: '角色与权限', icon: Key },
       { name: 'prompts', label: '提示词版本', icon: Document },
       { name: 'audit', label: '审计日志', icon: List },
+      { name: 'policy-simulator', label: '策略模拟', icon: List },
     ],
   },
   {
@@ -184,6 +185,7 @@ const titles = {
   tasks: '任务执行',
   settings: '运行时设置',
   audit: '审计日志',
+  'policy-simulator': '策略模拟',
   chat: '对话测试',
 }
 

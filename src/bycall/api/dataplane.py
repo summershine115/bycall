@@ -109,11 +109,11 @@ def _current_user(request: Request, session: Session) -> User:
     return user
 
 
-def _resolve_chat_model(session: Session):
-    """取激活的 chat Model；无则抛 503。返回 LangChain ChatModel。"""
-    from bycall.llm.resolver import get_chat_model
+def _resolve_chat_model(session: Session, conversation: Conversation | None = None):
+    """取对话 ChatModel：per-session 模型优先，否则全局激活；无则抛 503。"""
+    from bycall.llm.resolver import get_chat_model_for_conversation
 
-    resolved = get_chat_model(session)
+    resolved = get_chat_model_for_conversation(session, conversation)
     if resolved is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -201,9 +201,9 @@ def chat(
         )
 
     user = _current_user(request, session)
-    chat_model = _resolve_chat_model(session)
     _check_rate_limit(user)
     conv = _resolve_conversation(session, user, body.conversation_id)
+    chat_model = _resolve_chat_model(session, conv)
 
     result = run_agent(
         session=session,
@@ -243,10 +243,10 @@ async def chat_stream(
     session = ctx.__enter__()
     try:
         user = _current_user(request, session)
-        chat_model = _resolve_chat_model(session)
         _check_rate_limit(user)
         conv = _resolve_conversation(session, user, body.conversation_id)
         conv_id = conv.id
+        chat_model = _resolve_chat_model(session, conv)
     except BaseException:
         ctx.__exit__(None, None, None)
         raise

@@ -61,7 +61,7 @@
 
 1. **权限预过滤**：RAG 文档级 ACL，向量检索**前**注入 metadata filter，不是先召回再过滤。
 2. **Session 隔离**：`session_key = (agent_id, channel, tenant_id, user_id)`，多用户并发独立。一个 IM bot 连接服务全组织员工，每人私聊 = 一条独立会话（`Conversation`），上下文按会话隔离，提示词/SKILL/MCP/默认模型全局共享（详见 `product-design.md` §2.4）。
-   - **DB 落地**：`Conversation(user_id, channel, model_id?)` + `Message(conversation_id, role, content)`，一个 `(user_id, channel)` 对应一条会话。
+   - **DB 落地**：`Conversation(user_id, channel, tenant_id, agent_id, model_id?)` + `Message(conversation_id, role, content)`，一个 `(user_id, channel)` 对应一条会话。红线完整键 `(agent_id, channel, tenant_id, user_id)` 的 `tenant_id`/`agent_id` 列已预留（T1.5）；ADR-0004 单组织部署下运行时恒 `tenant_id="default"`、`agent_id=None`，完整多租户/多 Agent 隔离待排期。
    - **并发与幂等（规划中，M3 会话状态层，借鉴 QM 见 `docs/qm-benchmark.md` §6）**：会话条目 append 必须持 DB 租约（`session_leases` 单行 UPSERT 原子获取 + token 释放，turn/compaction 分 holder），同会话并发消息不得竞争历史读写；IM 消息以渠道消息 ID 为幂等键去重（事件重发只执行一次）；失败时 user 消息 back-fill + system 失败条目，历史永不断裂。
    - **per-session 模型**：`Conversation.model_id` 可空外键，空 → fallback 全局激活模型（`Model.is_active`）。默认行为兼容 M1/M2 无状态形态。
 3. **混合架构**：LangGraph durable（超步边界持久化）+ 同步 RAG 热路径。

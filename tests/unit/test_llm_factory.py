@@ -236,3 +236,47 @@ def test_resolver_get_chat_model_pair(tmp_path):
     assert entity.name == "glm-4-flash"
     # M3：model 是 ChatOpenAI（BaseChatModel）。
     assert isinstance(model, BaseChatModel)
+
+
+def test_per_session_model_preferred(tmp_path):
+    """per-session 模型优先：model_id 绑定→用该模型；空→全局激活；失效→fallback 全局。"""
+    from bycall.governance.models import Conversation, Model
+    from bycall.llm.resolver import get_chat_model_for_conversation
+
+    session = _new_session(tmp_path)
+    _seed_models(session)
+    # 第二个 chat 模型（非激活），作为 per-session 覆盖
+    session.add(
+        Model(
+            name="session-chat",
+            model_type="chat",
+            source="remote",
+            provider="generic",
+            base_url="https://session.example/v1",
+            api_key="sk-session",
+            is_active=False,
+        )
+    )
+    session.commit()
+    chats = session.exec(Model.select_by_type("chat")).all()
+    session_chat = next(m for m in chats if m.name == "session-chat")
+    global_chat = next(m for m in chats if m.name == "glm-4-flash")
+
+    # 绑定 per-session 模型 → 用该模型
+    conv = Conversation(user_id=1, channel="api", session_key="api:1", model_id=session_chat.id)
+    session.add(conv)
+    session.commit()
+    entity, _ = get_chat_model_for_conversation(session, conv)
+    assert entity.id == session_chat.id
+
+    # 空 model_id → 全局激活
+    conv2 = Conversation(user_id=2, channel="api", session_key="api:2", model_id=None)
+    session.add(conv2)
+    session.commit()
+    entity2, _ = get_chat_model_for_conversation(session, conv2)
+    assert entity2.id == global_chat.id
+
+    # 绑定的模型不存在 → fallback 全局
+    conv3 = Conversation(user_id=3, channel="api", session_key="api:3", model_id=999999)
+    entity3, _ = get_chat_model_for_conversation(session, conv3)
+    assert entity3.id == global_chat.id

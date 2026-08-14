@@ -41,6 +41,7 @@ export const auth = {
 export const admin = {
   // 用户
   listUsers: () => http.get('/api/admin/users').then((r) => r.data),
+  simulatePolicy: (data) => http.post('/api/admin/policy/simulate', data).then((r) => r.data),
   createUser: (data) => http.post('/api/admin/users', data).then((r) => r.data),
   updateUser: (id, data) => http.patch(`/api/admin/users/${id}`, data).then((r) => r.data),
   deleteUser: (id) => http.delete(`/api/admin/users/${id}`),

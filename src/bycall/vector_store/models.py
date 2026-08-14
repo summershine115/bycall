@@ -105,8 +105,8 @@ class FilterCondition:
     """
 
     field: str
-    op: Literal["match", "in"]
-    value: str | int | float | bool | None = None  # op=="match" 时用
+    op: Literal["match", "in", "lte", "gte", "lt", "gt"]
+    value: str | int | float | bool | None = None  # op=="match"/范围比较时用
     values: list[str] | None = None  # op == "in" 时用
 
     def matches(self, candidate: object) -> bool:
@@ -116,6 +116,16 @@ class FilterCondition:
             return actual == self.value
         if self.op == "in":
             return actual in (self.values or [])
+        if actual is None:
+            return False
+        if self.op == "lte":
+            return actual <= self.value
+        if self.op == "gte":
+            return actual >= self.value
+        if self.op == "lt":
+            return actual < self.value
+        if self.op == "gt":
+            return actual > self.value
         return False
 
 

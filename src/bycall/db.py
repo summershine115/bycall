@@ -151,7 +151,7 @@ def _ensure_schema_compatibility() -> None:
                     )
                 )
 
-    # conversation: 补 summary_covered_count 列（压缩指针：summary 已覆盖的最旧消息数）
+    # conversation: 补 summary_covered_count / tenant_id / agent_id 列（会话键多租户预留 T1.5）
     if "conversation" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("conversation")}
         if "summary_covered_count" not in columns:
@@ -161,6 +161,25 @@ def _ensure_schema_compatibility() -> None:
                         'ALTER TABLE conversation ADD COLUMN "summary_covered_count" '
                         "INTEGER NOT NULL DEFAULT 0"
                     )
+                )
+        if "tenant_id" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE conversation ADD COLUMN \"tenant_id\" VARCHAR NOT NULL DEFAULT 'default'"
+                    )
+                )
+        if "agent_id" not in columns:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE conversation ADD COLUMN "agent_id" INTEGER'))
+
+    # document: 补 level 列（T1.1 密级/职级 ABAC：文档密级，检索按 level <= user_level 过滤）。
+    if "document" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("document")}
+        if "level" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text('ALTER TABLE document ADD COLUMN "level" INTEGER NOT NULL DEFAULT 0')
                 )
 
     # usermemory: 补 source / confidence / status 列（S2 记忆层 Phase 1）。存量记忆均为

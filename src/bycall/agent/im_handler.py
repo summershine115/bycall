@@ -282,7 +282,7 @@ async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str
     from bycall.agent.session_store import get_or_create_conversation
     from bycall.config import get_settings
     from bycall.governance.models import User
-    from bycall.llm.resolver import get_chat_model
+    from bycall.llm.resolver import get_chat_model_for_conversation
 
     settings = get_settings()
     ttl = settings.session_lease_ttl_seconds
@@ -300,15 +300,15 @@ async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str
             yield f"用户不存在: id={user_id}", True, _no_model_result_static(channel)
             return
 
-        resolved = get_chat_model(session)
+        conv = get_or_create_conversation(session, user_id, channel)
+        conv_id = conv.id
+
+        resolved = get_chat_model_for_conversation(session, conv)
         if resolved is None:
             result = _no_model_result_static(channel)
             yield result.answer, True, result
             return
         _, chat_model = resolved
-
-        conv = get_or_create_conversation(session, user_id, channel)
-        conv_id = conv.id
 
         # 获取 turn 租约：同一会话同一时刻只有一个 turn，串行化历史 append。
         lease_token = acquire_turn_lease(conv_id, ttl_seconds=ttl)

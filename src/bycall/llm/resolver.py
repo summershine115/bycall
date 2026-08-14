@@ -22,7 +22,7 @@ import time
 from langchain_core.language_models import BaseChatModel
 from sqlmodel import Session
 
-from bycall.governance.models import Model
+from bycall.governance.models import Conversation, Model
 from bycall.llm.base import EmbedModel, RankResult, RerankModel
 from bycall.llm.openai_compat import OpenAIEmbedModel
 from bycall.observability.metrics import LLM_CALL_DURATION, LLM_CALLS
@@ -147,6 +147,32 @@ def get_chat_model(
     if entity is None:
         return None
     return entity, resolve_chat_model(session, entity, timeout=timeout)
+
+
+def get_chat_model_by_id(
+    session: Session, model_id: int, *, timeout: float = 60.0
+) -> tuple[Model, BaseChatModel] | None:
+    """按 id 查 chat Model 并构造实例。不存在或非 chat 类型返回 None。"""
+    entity = session.get(Model, model_id)
+    if entity is None or entity.model_type != "chat":
+        return None
+    return entity, resolve_chat_model(session, entity, timeout=timeout)
+
+
+def get_chat_model_for_conversation(
+    session: Session, conversation: Conversation | None, *, timeout: float = 60.0
+) -> tuple[Model, BaseChatModel] | None:
+    """per-session 模型优先，空/失效则 fallback 全局激活。
+
+    ``Conversation.model_id`` 非空 → 按 id 解析；模型已删 / 类型不符 → fallback 全局激活。
+    落实架构预留的「全局激活 + 会话级覆盖」默认模型选择（design §7 决策 #5）。
+    """
+    if conversation is not None and conversation.model_id is not None:
+        resolved = get_chat_model_by_id(session, conversation.model_id, timeout=timeout)
+        if resolved is not None:
+            return resolved
+    # fallback 全局激活：不传 timeout，保持与既有测试 patch 的 ``lambda session:`` 签名兼容。
+    return get_chat_model(session)
 
 
 def resolve_rerank_model(

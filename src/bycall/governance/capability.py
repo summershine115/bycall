@@ -85,8 +85,10 @@ class CapabilitySet:
     - ``knowledge_scope_text``：可见知识域的预格式化注入文本（进 system message）。由
       ``build_knowledge_scope_text`` 从 knowledge_scope_tags/is_admin 派生，让数字员工
       能据实回答用户「能访问哪些知识」，而非编造或含糊其辞。空串 = 无注入。
-    - ``visible_kb_ids``：该角色可见的知识库 ID 列表。空 = 无限制（全部可见）。
-      用于 admin 控制面 KB 列表过滤——管理面板按角色限制 KB 可见性。
+    - ``visible_kb_ids``：该角色可检索的知识库 ID 列表（KB 级 ACL，数据面）。
+      admin 空 = 全部可见；非 admin 空 = 无可见 KB（fail-closed，检索返回空）。
+      由 ``KnowledgeBase.visible_to_roles`` 派生，数据面 runner 检索前据此过滤 KB——
+      角色不可见的 KB 根本不进入检索（红线 #1 的 KB 级形态）。
     - ``is_admin``：admin 内置角色标记，控制面特权判定用。
     """
 

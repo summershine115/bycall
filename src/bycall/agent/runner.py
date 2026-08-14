@@ -166,75 +166,30 @@ def run_agent(
             channel=channel,
             conversation_id=conversation_id,
         )
-    # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
-    try:
-        with _tracer.start_as_current_span("capability") as _span:
-            cap: CapabilitySet = compute_capability_set(session, user)
-            _span.set_attribute("bycall.role", cap.role)
-            _span.set_attribute("bycall.allowed_tools", len(cap.allowed_tools))
-    except PermissionError as e:
-        _audit(session, user, channel, question, "denied", str(e), "")
-        return _result(
-            answer=f"权限不足：{e}",
-            decision="denied",
-            scope=[],
-            retrieved=0,
-            user=user,
-        )
-
-    # 2. RAG 检索（ACL 预过滤）：跨用户可见的全部 KB collection 检索。
-    with _tracer.start_as_current_span("rag.retrieve") as _span:
-        retrieved = _retrieve_across_kbs(
-            session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
-        )
-        _span.set_attribute("bycall.retrieved", len(retrieved))
-        _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
-
-    # 无任何可见知识域 → 不进 LLM，直接拒绝（不让 LLM 看到问题）。
-    has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
-    if not has_access:
-        _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
-        return _result(
-            answer="你没有访问相关知识的权限，请联系管理员。",
-            decision="denied_no_access",
-            scope=cap.knowledge_scope_tags,
-            retrieved=0,
-            user=user,
-        )
-
-    # 3-4. 工具过滤 + 运行时上下文 + 消息构造（同步/流式共用，防行为漂移）。
-    _allowed_tool_specs, langchain_tools, messages, context_trace = _prepare_agent_messages(
+    # 1-4. 治理前置管线（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌）。
+    decision, payload = _prepare_turn(
         session=session,
         user=user,
-        cap=cap,
         question=question,
         channel=channel,
         conversation_id=conversation_id,
-        retrieved=retrieved,
+        im_user_id=im_user_id,
     )
+    if decision != "ready":
+        return payload  # denied / denied_no_access（已审计）
+
+    cap = payload.cap
+    retrieved = payload.retrieved
+    langchain_tools = payload.langchain_tools
+    messages = payload.messages
+    context_trace = payload.context_trace
+    cap_token = payload.cap_token
+    approval_token = payload.approval_token
 
     # 5. 执行工具回路（LangGraph）：model ↔ tool 循环，直到无 tool_calls。
-    #    能力令牌（M4 Slice B）：通过 contextvars 注入当前 CapabilitySet，MCPClient.call_tool
-    #    读取并编码为 meta 传给 MCP server 自行鉴权。
-    #    审批上下文（M4 Slice C）：携带 user/conversation/channel，供审批门创建
-    #    ApprovalRequest（破坏性工具调用人审拦截）。
-    from bycall.mcp.context import reset_current_capability, set_current_capability
-    from bycall.tools.approval import (
-        ApprovalContext,
-        reset_approval_context,
-        set_approval_context,
-    )
+    from bycall.mcp.context import reset_current_capability
+    from bycall.tools.approval import reset_approval_context
 
-    cap_token = set_current_capability(cap)
-    approval_token = set_approval_context(
-        ApprovalContext(
-            user_id=user.id,  # type: ignore[arg-type]
-            user_name=user.name,
-            conversation_id=conversation_id,
-            channel=channel,
-            im_user_id=im_user_id,
-        )
-    )
     try:
         _chat_start = time.perf_counter()
         graph_result: GraphResult = run_tool_loop(
@@ -261,47 +216,23 @@ def run_agent(
         reset_current_capability(cap_token)
         reset_approval_context(approval_token)
 
-    # 6. 会话持久化：存 user + assistant 消息 + 压缩检查。
-    if conversation_id is not None:
-        save_message(session, conversation_id, "user", question)
-        save_message(session, conversation_id, "assistant", answer)
-
-        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
-        schedule_compaction(conversation_id)
-
-    # 7. 审计落库（含工具调用记录）。
-    # detail 保留工具名/skill 名摘要（快速扫），tool_results 存结构化明细 [{name,args,result}]
-    # （result 为脱敏后值，支柱 3「调用后审计落库」+ 支柱 4 第二条泄漏面）。
-    tool_detail = ""
-    if graph_result.tool_calls_made:
-        tool_names = [tc["name"] for tc in graph_result.tool_calls_made]
-        tool_detail = f"tools={tool_names}, "
-    skill_detail = f"skills={cap.skills}, " if cap.skills else ""
-    _audit(
-        session,
-        user,
-        channel,
-        question,
-        "answered",
-        f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
-        answer[:500],
-        tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
-        context_trace=context_trace,
-    )
     # 8. agent 记忆提取（保守可写，红线 #7）：仅 answered+工具调用 轮触发——纯闲聊/拒绝/
     # 失败不调提取 LLM（省成本）。提取写入用独立 session，失败不影响主流程。
     if graph_result.tool_calls_made:
         maybe_extract_and_save_memory(llm=llm, user_id=user.id, question=question, answer=answer)
 
-    return _result(
-        answer=answer,
-        decision="answered",
-        scope=cap.knowledge_scope_tags,
-        retrieved=len(retrieved),
+    # 6-7. 会话持久化 + 审计 + 构造结果（两路共用）。
+    return _finalize_turn(
+        session=session,
         user=user,
-        tool_calls=graph_result.tool_calls_made,
-        citations=_build_citations(retrieved),
+        channel=channel,
+        question=question,
+        cap=cap,
+        retrieved=retrieved,
+        graph_result=graph_result,
+        answer=answer,
         context_trace=context_trace,
+        conversation_id=conversation_id,
     )
 
 
@@ -457,19 +388,17 @@ def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
 def _retrieve_across_kbs(
     session: Session,
     question: str,
-    knowledge_scope_tags: list[str],
-    visible_kb_ids: list[int],
-    is_admin: bool,
+    cap,
 ) -> list:
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
     查全部 KB → 每个 KB 用各自绑定的 embedding 模型 embed query → 该 KB 的 collection
-    内做向量+FTS 混合检索（source ACL 预过滤）→ 跨 KB 用 RRF 融合取 topk。
+    内做向量+FTS 混合检索（ACL 预过滤由统一 policy 产出）→ 跨 KB 用 RRF 融合取 topk。
 
     知识域为空（无权限）→ 不检索（默认隔离）。
     admin（tags=['*']）→ 搜全部 KB（source 不预过滤）。
     """
-    if not knowledge_scope_tags:
+    if not cap.knowledge_scope_tags:
         return []
 
     from bycall.config import get_settings
@@ -477,8 +406,8 @@ def _retrieve_across_kbs(
     from bycall.rag.retrieve import retrieve_multi_kb
 
     kbs = list(session.exec(KnowledgeBase.select_all()).all())
-    if not is_admin:
-        visible_ids = set(visible_kb_ids)
+    if not cap.is_admin:
+        visible_ids = set(cap.visible_kb_ids)
         kbs = [kb for kb in kbs if kb.id in visible_ids]
     if not kbs:
         return []
@@ -491,7 +420,9 @@ def _retrieve_across_kbs(
         config=get_settings().vector_store,
         kb_specs=kb_specs,
         question=question,
-        knowledge_scope_tags=knowledge_scope_tags,
+        knowledge_scope_tags=cap.knowledge_scope_tags,
+        level=cap.level,
+        is_admin=cap.is_admin,
     )
     elapsed = time.perf_counter() - start
     RAG_RETRIEVAL_DURATION.observe(elapsed)
@@ -521,6 +452,155 @@ def _build_citations(retrieved: list) -> list[dict]:
     return out
 
 
+@dataclass
+class _PreparedTurn:
+    """步骤 1-4 的治理前置管线产物（同步/流式两路共用，防行为漂移——缝隙 #6）。"""
+
+    cap: CapabilitySet
+    retrieved: list
+    langchain_tools: list
+    messages: list
+    context_trace: str
+    cap_token: object
+    approval_token: object
+
+
+def _prepare_turn(
+    *,
+    session: Session,
+    user: User,
+    question: str,
+    channel: str,
+    conversation_id: int | None,
+    im_user_id: str,
+) -> tuple[str, AgentResult | _PreparedTurn]:
+    """步骤 1-4：能力集 → RAG 预过滤 → 工具过滤 → 运行时上下文 + 消息 + 能力/审批令牌。
+
+    返回 ``(decision, payload)``：
+    - ``("denied" | "denied_no_access", AgentResult)``：短路拒绝（已审计，调用方 return/流式回）。
+    - ``("ready", _PreparedTurn)``：准备就绪，调用方执行工具回路。
+    """
+    # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
+    try:
+        with _tracer.start_as_current_span("capability") as _span:
+            cap: CapabilitySet = compute_capability_set(session, user)
+            _span.set_attribute("bycall.role", cap.role)
+            _span.set_attribute("bycall.allowed_tools", len(cap.allowed_tools))
+    except PermissionError as e:
+        _audit(session, user, channel, question, "denied", str(e), "")
+        return "denied", _result(
+            answer=f"权限不足：{e}",
+            decision="denied",
+            scope=[],
+            retrieved=0,
+            user=user,
+        )
+
+    # 2. RAG 检索（ACL 预过滤）。
+    with _tracer.start_as_current_span("rag.retrieve") as _span:
+        retrieved = _retrieve_across_kbs(session, question, cap)
+        _span.set_attribute("bycall.retrieved", len(retrieved))
+        _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
+
+    # 无任何可见知识域 → 不进 LLM（不让 LLM 看到问题）。
+    has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
+    if not has_access:
+        _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
+        return "denied_no_access", _result(
+            answer="你没有访问相关知识的权限，请联系管理员。",
+            decision="denied_no_access",
+            scope=cap.knowledge_scope_tags,
+            retrieved=0,
+            user=user,
+        )
+
+    # 3-4. 工具过滤 + 运行时上下文 + 消息构造。
+    _allowed_tool_specs, langchain_tools, messages, context_trace = _prepare_agent_messages(
+        session=session,
+        user=user,
+        cap=cap,
+        question=question,
+        channel=channel,
+        conversation_id=conversation_id,
+        retrieved=retrieved,
+    )
+
+    # 能力令牌 + 审批上下文（M4）。
+    from bycall.mcp.context import set_current_capability
+    from bycall.tools.approval import ApprovalContext, set_approval_context
+
+    cap_token = set_current_capability(cap)
+    approval_token = set_approval_context(
+        ApprovalContext(
+            user_id=user.id,  # type: ignore[arg-type]
+            user_name=user.name,
+            conversation_id=conversation_id,
+            channel=channel,
+            im_user_id=im_user_id,
+        )
+    )
+    return "ready", _PreparedTurn(
+        cap=cap,
+        retrieved=retrieved,
+        langchain_tools=langchain_tools,
+        messages=messages,
+        context_trace=context_trace,
+        cap_token=cap_token,
+        approval_token=approval_token,
+    )
+
+
+def _finalize_turn(
+    *,
+    session: Session,
+    user: User,
+    channel: str,
+    question: str,
+    cap: CapabilitySet,
+    retrieved: list,
+    graph_result: GraphResult,
+    answer: str,
+    context_trace: str,
+    conversation_id: int | None,
+) -> AgentResult:
+    """步骤 6-7：会话持久化 + 审计落库 + 构造结果（两路共用，防行为漂移——缝隙 #6）。"""
+    # 6. 会话持久化：存 user + assistant 消息 + 压缩检查。
+    if conversation_id is not None:
+        save_message(session, conversation_id, "user", question)
+        save_message(session, conversation_id, "assistant", answer)
+        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
+        schedule_compaction(conversation_id)
+
+    # 7. 审计落库（含工具调用记录）。
+    tool_detail = ""
+    if graph_result.tool_calls_made:
+        tool_names = [tc["name"] for tc in graph_result.tool_calls_made]
+        tool_detail = f"tools={tool_names}, "
+    skill_detail = f"skills={cap.skills}, " if cap.skills else ""
+    _audit(
+        session,
+        user,
+        channel,
+        question,
+        "answered",
+        f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
+        answer[:500],
+        tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
+        context_trace=context_trace,
+    )
+
+    return _result(
+        answer=answer,
+        decision="answered",
+        scope=cap.knowledge_scope_tags,
+        retrieved=len(retrieved),
+        user=user,
+        tool_calls=graph_result.tool_calls_made,
+        citations=_build_citations(retrieved),
+        context_trace=context_trace,
+    )
+
+
 async def run_agent_stream(
     *,
     session: Session,
@@ -545,82 +625,32 @@ async def run_agent_stream(
     stream_id 由调用方管理（IM 渠道用 sender.send_stream 的 stream_id），此处不生成。
     """
 
-    # 1. 策略引擎。
-    try:
-        cap: CapabilitySet = compute_capability_set(session, user)
-    except PermissionError as e:
-        _audit(session, user, channel, question, "denied", str(e), "")
-        yield (
-            _result(
-                answer=f"权限不足：{e}",
-                decision="denied",
-                scope=[],
-                retrieved=0,
-                user=user,
-            ).answer,
-            True,
-            _result(
-                answer=f"权限不足：{e}",
-                decision="denied",
-                scope=[],
-                retrieved=0,
-                user=user,
-            ),
-        )
-        return
-
-    # 2. RAG 检索。
-    retrieved = _retrieve_across_kbs(
-        session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
-    )
-    has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
-    if not has_access:
-        _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")
-        answer = "你没有访问相关知识的权限，请联系管理员。"
-        yield (
-            answer,
-            True,
-            _result(
-                answer=answer,
-                decision="denied_no_access",
-                scope=cap.knowledge_scope_tags,
-                retrieved=0,
-                user=user,
-            ),
-        )
-        return
-
-    # 3-4. 工具过滤 + 运行时上下文 + 消息构造（与同步入口共享）。
-    _allowed_tool_specs, langchain_tools, messages, context_trace = _prepare_agent_messages(
+    # 1-4. 治理前置管线（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌）。
+    decision, payload = _prepare_turn(
         session=session,
         user=user,
-        cap=cap,
         question=question,
         channel=channel,
         conversation_id=conversation_id,
-        retrieved=retrieved,
+        im_user_id=im_user_id,
     )
+    if decision != "ready":
+        result = payload  # denied / denied_no_access（已审计）
+        yield result.answer, True, result
+        return
+
+    cap = payload.cap
+    retrieved = payload.retrieved
+    langchain_tools = payload.langchain_tools
+    messages = payload.messages
+    context_trace = payload.context_trace
+    cap_token = payload.cap_token
+    approval_token = payload.approval_token
 
     # 5. 流式执行工具回路。
-    #    能力令牌：注入 CapabilitySet 供 MCPClient.call_tool 使用。
-    #    审批上下文（M4 Slice C）：供审批门创建 ApprovalRequest。
-    from bycall.mcp.context import reset_current_capability, set_current_capability
-    from bycall.tools.approval import (
-        ApprovalContext,
-        reset_approval_context,
-        set_approval_context,
-    )
+    from bycall.mcp.context import reset_current_capability
+    from bycall.tools.approval import reset_approval_context
 
-    cap_token = set_current_capability(cap)
-    approval_token = set_approval_context(
-        ApprovalContext(
-            user_id=user.id,  # type: ignore[arg-type]
-            user_name=user.name,
-            conversation_id=conversation_id,
-            channel=channel,
-            im_user_id=im_user_id,
-        )
-    )
     full_answer = ""
     graph_result: GraphResult | None = None
     try:
@@ -672,30 +702,6 @@ async def run_agent_stream(
         graph_result = GraphResult(answer=full_answer)
     answer = full_answer or graph_result.answer
 
-    # 6. 会话持久化。
-    if conversation_id is not None:
-        save_message(session, conversation_id, "user", question)
-        save_message(session, conversation_id, "assistant", answer)
-        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
-        schedule_compaction(conversation_id)
-
-    # 7. 审计。
-    tool_detail = ""
-    if graph_result.tool_calls_made:
-        tool_names = [tc["name"] for tc in graph_result.tool_calls_made]
-        tool_detail = f"tools={tool_names}, "
-    skill_detail = f"skills={cap.skills}, " if cap.skills else ""
-    _audit(
-        session,
-        user,
-        channel,
-        question,
-        "answered",
-        f"{tool_detail}{skill_detail}retrieved={len(retrieved)} chunks, scope={cap.knowledge_scope_tags}",
-        answer[:500],
-        tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
-        context_trace=context_trace,
-    )
     # 8. agent 记忆提取（保守可写）：仅 answered+工具调用 轮触发。放独立线程跑同步提取，
     # 不阻塞事件循环；答案已流式送出（用户在读），提取期间用户无感。
     if graph_result.tool_calls_made:
@@ -707,15 +713,18 @@ async def run_agent_stream(
             answer=answer,
         )
 
-    result = _result(
-        answer=answer,
-        decision="answered",
-        scope=cap.knowledge_scope_tags,
-        retrieved=len(retrieved),
+    # 6-7. 会话持久化 + 审计 + 构造结果（两路共用）。
+    result = _finalize_turn(
+        session=session,
         user=user,
-        tool_calls=graph_result.tool_calls_made,
-        citations=_build_citations(retrieved),
+        channel=channel,
+        question=question,
+        cap=cap,
+        retrieved=retrieved,
+        graph_result=graph_result,
+        answer=answer,
         context_trace=context_trace,
+        conversation_id=conversation_id,
     )
     yield "", True, result
 

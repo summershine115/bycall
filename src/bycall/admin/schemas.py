@@ -415,6 +415,11 @@ class DocumentCreate(BaseModel):
     source: str = Field(
         ..., description="知识域标签，如 public/sales/hr（对应角色 knowledge_scope_tags）"
     )
+    level: int = Field(
+        default=0,
+        ge=0,
+        description="密级/职级（ABAC）：越大越机密，检索按 level <= user_level 过滤",
+    )
     content: str = Field(..., description="文档正文（手动输入或文件解析后文本）")
     file_name: str = Field(default="", description="来源文件名（可选，用于显示）")
     knowledge_base_id: int = Field(..., description="所属知识库 ID")
@@ -428,6 +433,9 @@ class DocumentUpdate(BaseModel):
 
     title: str | None = None
     source: str | None = Field(default=None, description="改 source 会触发重新入库")
+    level: int | None = Field(
+        default=None, ge=0, description="改 level 会触发重新入库（chunk 密级需同步更新）"
+    )
 
 
 class DocumentOut(BaseModel):
@@ -439,6 +447,7 @@ class DocumentOut(BaseModel):
     knowledge_base_id: int
     title: str
     source: str
+    level: int
     status: str
     chunk_count: int
     char_count: int
@@ -943,3 +952,32 @@ class TaskScheduleOut(BaseModel):
     last_fired_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# ============ 策略模拟器（T1.8）============
+
+
+class PolicySimulateRequest(BaseModel):
+    """策略模拟请求：给定用户 + 动作 + 资源，预演治理判定。"""
+
+    user_id: int = Field(..., description="要模拟的用户")
+    action: str = Field(
+        default="retrieve", description="动作：retrieve（检索）/ tool_call（调工具）"
+    )
+    tool_name: str | None = Field(default=None, description="action=tool_call 时的工具名")
+
+
+class PolicySimulateResult(BaseModel):
+    """策略模拟结果：治理脊柱对「该用户 + 动作」的判定快照。"""
+
+    user_id: int
+    user_name: str
+    role: str
+    level: int
+    is_admin: bool
+    allowed_tools: list[str]
+    knowledge_scope_tags: list[str]
+    visible_kb_ids: list[int]
+    retrieval_filters: list[dict]
+    decision: str  # allowed / denied
+    detail: str

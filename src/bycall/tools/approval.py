@@ -158,6 +158,7 @@ def execute_approved_tool(req) -> tuple[bool, str]:
     from bycall.governance.capability import reload_user_and_compute_cap
     from bycall.mcp.context import reset_current_capability, set_current_capability
     from bycall.tools.gateway import filter_tools
+    from bycall.tools.redactor import sanitize_tool_result
     from bycall.tools.registry import get_tool
 
     # 任务级审批（approval_wait Step）：管理员确认即通过，无工具可执行。
@@ -193,16 +194,14 @@ def execute_approved_tool(req) -> tuple[bool, str]:
     cap_token = set_current_capability(cap)
     try:
         result = spec.func(**args)
-        # 应用脱敏（支柱 4 第二条泄漏面——审批执行的结果也要脱敏）。
-        if spec.redactor is not None:
-            result = spec.redactor(result, cap)
+        # 统一脱敏 + 截断（缝隙 #5）：与网关同管道，审批执行的结果也受大小限制保护。
+        result_str = sanitize_tool_result(result, cap, redactor=spec.redactor)
     except Exception as e:
         logger.warning("审批 #%s 工具 %s 执行异常: %s", req.id, spec.name, e)
         return False, f"工具执行异常: {e}"
     finally:
         reset_current_capability(cap_token)
 
-    result_str = str(result)[:_RESULT_TRUNCATE]
     logger.info("审批 #%s 执行成功: tool=%s result_len=%d", req.id, spec.name, len(result_str))
     return True, result_str
 
