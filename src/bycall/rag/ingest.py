@@ -160,7 +160,7 @@ class IngestPipeline:
                     "title": pre.title,
                     "parent_id": pre.parent_id or "",
                 },
-                acl=ACLMetadata(tenant_id=_DEFAULT_TENANT),
+                acl=ACLMetadata(tenant_id=_DEFAULT_TENANT, level=pre.level),
                 parent_id=pre.parent_id,
                 chunk_type=pre.chunk_type,
                 chunk_index=pre.chunk_index,
@@ -200,14 +200,18 @@ class IngestPipeline:
         text: str,
         source: str,
         doc_id: str = "",
+        level: int = 0,
         config: ChunkingConfig | None = None,
         on_progress: Callable[..., None] | None = None,
     ) -> IngestResult:
-        """便利方法：单段文本入库（自动生成 doc_id）。"""
+        """便利方法：单段文本入库（自动生成 doc_id）。
+
+        ``level`` 为密级/职级（ABAC），写入 chunk ACL，检索按 ``level <= user_level`` 过滤。
+        """
         if not doc_id:
             doc_id = f"txt_{uuid.uuid4().hex[:12]}"
         return self.ingest_documents(
-            [Document(doc_id=doc_id, text=text, source=source)],
+            [Document(doc_id=doc_id, text=text, source=source, level=level)],
             config=config,
             on_progress=on_progress,
         )

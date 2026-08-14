@@ -1700,6 +1700,7 @@ def _ingest_document(
                     content,
                     source=source,
                     doc_id=f"doc_{doc_id}",
+                    level=doc.level,
                     config=config,
                     on_progress=on_progress,
                 )
@@ -1834,6 +1835,7 @@ def _run_background_ingest(kb_id: int, doc_id: int, title: str, source: str, con
                             content,
                             source=source,
                             doc_id=f"doc_{doc_id}",
+                            level=doc.level,
                             config=config,
                             on_progress=lambda **kw: ingest_tracker.update(doc_id, **kw),
                         )
@@ -2300,6 +2302,7 @@ def create_document(
         knowledge_base_id=kb_id,
         title=payload.title,
         source=payload.source.strip(),
+        level=payload.level,
         content=content,
         file_name=payload.file_name,
         file_type=file_type,
@@ -2337,7 +2340,7 @@ def update_document(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> Document:
-    """更新文档标题/source。改 source 会重新入库。"""
+    """更新文档标题/source/level。改 source 或 level 会重新入库。"""
     kb = _get_kb_or_404(session, kb_id)
     doc = _get_document_or_404(session, doc_id)
     if doc.knowledge_base_id != kb_id:
@@ -2345,6 +2348,7 @@ def update_document(
 
     need_reingest = False
     old_source = doc.source
+    old_level = doc.level
     if payload.title is not None:
         doc.title = payload.title
     if payload.source is not None and payload.source != doc.source:
@@ -2352,6 +2356,9 @@ def update_document(
         if not new_source:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="知识域标签不能为空")
         doc.source = new_source
+        need_reingest = True
+    if payload.level is not None and payload.level != doc.level:
+        doc.level = payload.level
         need_reingest = True
 
     session.add(doc)
@@ -2369,8 +2376,9 @@ def update_document(
             on_progress=lambda **kw: ingest_tracker.update(doc.id, **kw),
         )
         if not result.ok:
-            # 旧 chunk 若仍存在，其 ACL 仍是 old_source；DB 必须回滚到相同授权状态。
+            # 旧 chunk 若仍存在，其 ACL 仍是 old_source/old_level；DB 必须回滚到相同授权状态。
             doc.source = old_source
+            doc.level = old_level
             session.add(doc)
             session.commit()
             raise HTTPException(
@@ -2547,6 +2555,7 @@ async def upload_document(
     kb_id: int,
     file: UploadFile,
     source: str = Query(..., description="知识域标签"),
+    level: int = Query(default=0, ge=0, description="密级/职级（ABAC）：越大越机密"),
     title: str | None = Query(default=None, description="文档标题（默认用文件名）"),
     engine: str | None = Query(
         default=None,
@@ -2603,6 +2612,7 @@ async def upload_document(
         knowledge_base_id=kb_id,
         title=title or file.filename.rsplit(".", 1)[0],
         source=source.strip(),
+        level=level,
         content="",
         file_name=file.filename,
         file_type=ext,

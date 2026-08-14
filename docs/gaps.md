@@ -7,7 +7,7 @@
 
 | # | 缝隙 | 现状（源码定位） | 目标行为 | 任务 | 状态 |
 |---|------|------------------|----------|------|------|
-| 1 | 完整 ABAC 未闭环 | `governance/capability.py` + `rag/retrieve.py`：`ACLMetadata` 预留 tenant/dept/level，检索实际只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一 `evaluate()` 产出召回前过滤条件 | T1.1 | ⬜ 未闭合 |
+| 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 已闭合（level/密级；dept 待 User.dept 字段） |
 | 2 | 会话键单组织落地 | `governance/models.py`：`Conversation`/`Message` 主要是 `(user_id, channel)` | `(agent_id, channel, tenant_id, user_id)` 显式隔离 | T1.5 | ⬜ 未闭合 |
 | 3 | 模型绑定未生效 | `governance/models.py`（`Conversation.model_id` 可空外键）+ `llm/resolver.py` + `agent/runner.py`：运行时仍取全局激活 | per-session 模型纳入能力集并路由 | T1.3 | ⬜ 未闭合 |
 | 4 | `visible_kb_ids` 语义未统一 | `governance/capability.py`（88/104/319/332/371/372）+ `api/dataplane.py` + `agent/runner.py` 仍遍历全部 KB | 接入检索或更名移出，禁止被误认为安全边界 | T1.2 | ⬜ 未闭合 |
@@ -17,7 +17,9 @@
 ## 逐条明细
 
 ### 缝隙 #1：完整 ABAC 未闭环（T1.1）
-- **现状**：`ACLMetadata` 已预留 `tenant_id/dept/level/敏感度` 字段；检索入口主要把 `knowledge_scope_tags` 翻译为 `source IN (...)`，部门/职级/密级尚未真正参与召回前过滤。
+- **已落地（T1.1，commit 见 git log）**：新增 `governance/policy.py`（`build_acl_filters`）；`Document.level` → chunk ACL → zvec `level` 字段 → 检索 `level <= user_level` 预过滤。检索不再手写 `source IN`。
+- **剩余**：`dept` 维度——zvec schema 已建字段，但 `User` 尚无 dept 属性，待数据模型补齐后追加 `dept` 条件。
+- **原现状**：`ACLMetadata` 已预留 `tenant_id/dept/level/敏感度` 字段；检索入口主要把 `knowledge_scope_tags` 翻译为 `source IN (...)`，部门/职级/密级尚未真正参与召回前过滤。
 - **风险**：越权召回——用户能看到其角色标签之外的、按部门/职级/密级本应隔离的文档。
 - **目标**：落地 ADR-0005 的统一 Policy 接口，`evaluate(用户, 资源, 动作, 上下文) → 过滤条件`，检索层只消费 policy 产物。
 - **验收**：跨部门+职级+密级文档在召回前即被过滤（不进 LLM、不留痕）。

@@ -344,8 +344,13 @@ class ZvecStore(VectorStore):
                 fields["tenant_id"] = chunk.acl.tenant_id
             if chunk.acl.dept is not None and (not known or "dept" in known):
                 fields["dept"] = chunk.acl.dept
-            if chunk.acl.level is not None and (not known or "level" in known):
-                fields["level"] = chunk.acl.level
+        # level 恒写（默认 0 = 公开）：密级字段必须确定性存在，否则 ``level <= N``
+        # 范围过滤对 NULL level 的 chunk 会漏判（fail-open）。acl=None 时也写 0。
+        if not known or "level" in known:
+            level = (
+                chunk.acl.level if (chunk.acl is not None and chunk.acl.level is not None) else 0
+            )
+            fields["level"] = level
         return Doc(id=chunk.id, fields=fields, vectors={"embedding": chunk.vector})
 
     # ---------- 内部：检索 ----------
@@ -376,6 +381,9 @@ class ZvecStore(VectorStore):
             elif cond.op == "in":
                 vals = ", ".join(_quote_value(v) for v in (cond.values or []))
                 parts.append(f"{cond.field} IN ({vals})")
+            elif cond.op in ("lte", "gte", "lt", "gt"):
+                op_map = {"lte": "<=", "gte": ">=", "lt": "<", "gt": ">"}
+                parts.append(f"{cond.field} {op_map[cond.op]} {_quote_value(cond.value)}")
         return " AND ".join(parts)
 
     @staticmethod

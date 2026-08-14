@@ -15,6 +15,7 @@ import logging
 from sqlmodel import Session
 
 from bycall.config import VectorStoreConfig
+from bycall.governance.policy import PolicySubject, build_acl_filters
 from bycall.llm.base import Message, RankResult, RerankModel
 from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import FilterCondition, SearchRequest, SearchResult
@@ -32,12 +33,15 @@ def retrieve_context(
     query_vector: list[float] | None = None,
     collection_name: str = "knowledge",
     topk: int = 5,
+    level: int = 0,
+    is_admin: bool = False,
 ) -> list[SearchResult]:
-    """按角色知识域预过滤检索（混合检索：向量 + FTS）。
+    """按角色能力集预过滤检索（混合检索：向量 + FTS）。
 
-    - knowledge_scope_tags 含 ``"*"`` → 不过滤（admin 全可见）
-    - 否则 → ``FilterCondition(field="source", op="in", values=tags)`` 预过滤
-    - 空 tags → 返回空（无可见知识，默认隔离）
+    - 空 tags → 返回空（无可见知识，默认隔离）。
+    - 过滤条件由 ``governance.policy.build_acl_filters`` 统一构造（红线 #1，不再是
+      手写 ``source IN``）：admin/通配 → 空；否则 ``source IN tags`` + ``level <= user_level``
+      （密级/职级，机密文档召回前即被过滤）。
     - ``query_vector`` 非空 + ``full_text`` 同时给出 → 混合检索（vector + FTS 两路），
       zvec 内部自动挂 RrfReRanker 融合（KB 内融合）。
     - ``query_vector`` 为 None → 退化为纯 FTS（降级/兼容场景）。
@@ -49,11 +53,10 @@ def retrieve_context(
     if not knowledge_scope_tags:
         return []
 
-    # admin / 通配：不过滤。
-    if "*" in knowledge_scope_tags:
-        filters: list[FilterCondition] = []
-    else:
-        filters = [FilterCondition(field="source", op="in", values=knowledge_scope_tags)]
+    # 权限预过滤条件由统一 policy 产出（红线 #1）。
+    filters = build_acl_filters(
+        PolicySubject(is_admin=is_admin, knowledge_scope_tags=knowledge_scope_tags, level=level)
+    )
 
     try:
         results = store.search(
@@ -80,6 +83,8 @@ def retrieve_multi_kb(
     question: str,
     knowledge_scope_tags: list[str],
     topk: int = 5,
+    level: int = 0,
+    is_admin: bool = False,
 ) -> list[SearchResult]:
     """跨多个 KB collection 检索，per-KB 混合检索后用 RRF 融合取 topk。
 
@@ -130,6 +135,8 @@ def retrieve_multi_kb(
                     knowledge_scope_tags=knowledge_scope_tags,
                     collection_name=collection_name,
                     topk=topk,
+                    level=level,
+                    is_admin=is_admin,
                 )
                 per_kb_results.append(hits)
             finally:

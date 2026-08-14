@@ -415,6 +415,11 @@ class DocumentCreate(BaseModel):
     source: str = Field(
         ..., description="知识域标签，如 public/sales/hr（对应角色 knowledge_scope_tags）"
     )
+    level: int = Field(
+        default=0,
+        ge=0,
+        description="密级/职级（ABAC）：越大越机密，检索按 level <= user_level 过滤",
+    )
     content: str = Field(..., description="文档正文（手动输入或文件解析后文本）")
     file_name: str = Field(default="", description="来源文件名（可选，用于显示）")
     knowledge_base_id: int = Field(..., description="所属知识库 ID")
@@ -428,6 +433,9 @@ class DocumentUpdate(BaseModel):
 
     title: str | None = None
     source: str | None = Field(default=None, description="改 source 会触发重新入库")
+    level: int | None = Field(
+        default=None, ge=0, description="改 level 会触发重新入库（chunk 密级需同步更新）"
+    )
 
 
 class DocumentOut(BaseModel):
@@ -439,6 +447,7 @@ class DocumentOut(BaseModel):
     knowledge_base_id: int
     title: str
     source: str
+    level: int
     status: str
     chunk_count: int
     char_count: int

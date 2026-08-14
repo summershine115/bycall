@@ -184,9 +184,7 @@ def run_agent(
 
     # 2. RAG 检索（ACL 预过滤）：跨用户可见的全部 KB collection 检索。
     with _tracer.start_as_current_span("rag.retrieve") as _span:
-        retrieved = _retrieve_across_kbs(
-            session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
-        )
+        retrieved = _retrieve_across_kbs(session, question, cap)
         _span.set_attribute("bycall.retrieved", len(retrieved))
         _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
 
@@ -457,19 +455,17 @@ def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
 def _retrieve_across_kbs(
     session: Session,
     question: str,
-    knowledge_scope_tags: list[str],
-    visible_kb_ids: list[int],
-    is_admin: bool,
+    cap,
 ) -> list:
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
     查全部 KB → 每个 KB 用各自绑定的 embedding 模型 embed query → 该 KB 的 collection
-    内做向量+FTS 混合检索（source ACL 预过滤）→ 跨 KB 用 RRF 融合取 topk。
+    内做向量+FTS 混合检索（ACL 预过滤由统一 policy 产出）→ 跨 KB 用 RRF 融合取 topk。
 
     知识域为空（无权限）→ 不检索（默认隔离）。
     admin（tags=['*']）→ 搜全部 KB（source 不预过滤）。
     """
-    if not knowledge_scope_tags:
+    if not cap.knowledge_scope_tags:
         return []
 
     from bycall.config import get_settings
@@ -477,8 +473,8 @@ def _retrieve_across_kbs(
     from bycall.rag.retrieve import retrieve_multi_kb
 
     kbs = list(session.exec(KnowledgeBase.select_all()).all())
-    if not is_admin:
-        visible_ids = set(visible_kb_ids)
+    if not cap.is_admin:
+        visible_ids = set(cap.visible_kb_ids)
         kbs = [kb for kb in kbs if kb.id in visible_ids]
     if not kbs:
         return []
@@ -491,7 +487,9 @@ def _retrieve_across_kbs(
         config=get_settings().vector_store,
         kb_specs=kb_specs,
         question=question,
-        knowledge_scope_tags=knowledge_scope_tags,
+        knowledge_scope_tags=cap.knowledge_scope_tags,
+        level=cap.level,
+        is_admin=cap.is_admin,
     )
     elapsed = time.perf_counter() - start
     RAG_RETRIEVAL_DURATION.observe(elapsed)
@@ -570,9 +568,7 @@ async def run_agent_stream(
         return
 
     # 2. RAG 检索。
-    retrieved = _retrieve_across_kbs(
-        session, question, cap.knowledge_scope_tags, cap.visible_kb_ids, cap.is_admin
-    )
+    retrieved = _retrieve_across_kbs(session, question, cap)
     has_access = ("*" in cap.knowledge_scope_tags) or bool(cap.knowledge_scope_tags)
     if not has_access:
         _audit(session, user, channel, question, "denied_no_access", "无可见知识域", "")

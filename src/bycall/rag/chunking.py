@@ -26,6 +26,7 @@ class Document:
     text: str  # 正文
     source: str  # 知识域标签
     title: str = ""  # 标题
+    level: int = 0  # 密级/职级（ABAC），默认 0 = 公开
 
 
 @dataclass
@@ -51,6 +52,7 @@ class PreChunk:
     text: str
     source: str
     title: str
+    level: int = 0  # 密级/职级（透传到 chunk ACL）
     chunk_index: int = 0
     chunk_type: str = "child"  # "child" | "parent"
     parent_id: str | None = None  # 子块→父块 id
@@ -170,6 +172,7 @@ def documents_to_pre_chunks(
                     text=pt,
                     source=doc.source,
                     title=doc.title,
+                    level=doc.level,
                     chunk_index=idx,
                     chunk_type="parent",
                 )
@@ -195,6 +198,7 @@ def documents_to_pre_chunks(
                         text=ct,
                         source=doc.source,
                         title=doc.title,
+                        level=doc.level,
                         chunk_index=idx,
                         chunk_type="child",
                         parent_id=parent_chunks[pi].id,
@@ -215,6 +219,7 @@ def documents_to_pre_chunks(
                         text=ct,
                         source=doc.source,
                         title=doc.title,
+                        level=doc.level,
                         chunk_index=i,
                         chunk_type="child",
                     )

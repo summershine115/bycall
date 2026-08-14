@@ -163,6 +163,15 @@ def _ensure_schema_compatibility() -> None:
                     )
                 )
 
+    # document: 补 level 列（T1.1 密级/职级 ABAC：文档密级，检索按 level <= user_level 过滤）。
+    if "document" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("document")}
+        if "level" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text('ALTER TABLE document ADD COLUMN "level" INTEGER NOT NULL DEFAULT 0')
+                )
+
     # usermemory: 补 source / confidence / status 列（S2 记忆层 Phase 1）。存量记忆均为
     # admin 维护、可信、有效，默认值（'admin' / 1.0 / 'active'）对齐现状，补列零成本。
     if "usermemory" in inspector.get_table_names():

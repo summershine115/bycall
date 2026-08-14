@@ -591,6 +591,9 @@ class Document(SQLModel, table=True):
     knowledge_base_id: int = Field(index=True)  # 所属 KB（决定 collection + embedding）
     title: str = Field(index=True)  # 文档标题
     source: str = Field(index=True)  # 知识域 ACL 标签（对应 Role.knowledge_scope_tags）
+    # 密级/职级（ABAC）：数值越大越机密，检索按 ``level <= user_level`` 预过滤
+    # （RoleConfig.level 对应用户职级）。默认 0 = 公开，对所有角色可见。
+    level: int = Field(default=0, index=True)
     content: str = ""  # 原始正文（manual/file 解析后文本）
     status: str = Field(default="pending", index=True)  # pending|processing|completed|failed
     chunk_count: int = 0  # 切块数（入库成功后更新）
