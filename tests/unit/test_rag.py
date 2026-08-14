@@ -241,28 +241,31 @@ class TestRetrieveContext:
 class TestBuildRagMessages:
     def test_message_structure(self):
         """消息结构：system prompt + context user + user question。"""
+        from bycall.agent.context_budget import DEFAULT_BUDGET, budget_and_format_rag
         from bycall.vector_store.models import SearchResult
 
         retrieved = [
             SearchResult(id="r1", score=1.0, text="知识片段 A", fields={"source": "sales"}),
             SearchResult(id="r2", score=0.8, text="知识片段 B", fields={"source": "hr"}),
         ]
+        rag_context, _ = budget_and_format_rag(retrieved, DEFAULT_BUDGET)
         messages = build_rag_messages(
             system_prompt="你是数字员工。",
             question="报价流程是什么？",
-            retrieved=retrieved,
+            rag_context=rag_context,
         )
         assert len(messages) == 3
         # 第 1 条：控制面 system prompt + 防御声明（提示词注入缓解）
         assert messages[0].role == "system"
         assert messages[0].content.startswith("你是数字员工。")
         assert "以本段规则为准" in messages[0].content  # 防御声明
-        # 第 2 条：知识库上下文（user，含来源与文本 + 不可信边界标注）
+        # 第 2 条：预算化后的知识库上下文（user，含来源/相关性标注 + 不可信边界）
         assert messages[1].role == "user"
-        assert "[sales]" in messages[1].content
+        assert "sales" in messages[1].content
         assert "知识片段 A" in messages[1].content
-        assert "[hr]" in messages[1].content
+        assert "hr" in messages[1].content
         assert "知识片段 B" in messages[1].content
+        assert "相关性" in messages[1].content  # 预算化新增的相关性分档标注（缺陷 1）
         assert "参考资料" in messages[1].content  # 边界标注
         # 第 3 条：用户问题
         assert messages[2].role == "user"
@@ -270,7 +273,9 @@ class TestBuildRagMessages:
 
     def test_empty_retrieved_still_has_context_msg(self):
         """无检索结果时第二条 user context 仍存在（内容空）。"""
-        messages = build_rag_messages(system_prompt="你是数字员工。", question="问题", retrieved=[])
+        messages = build_rag_messages(
+            system_prompt="你是数字员工。", question="问题", rag_context=""
+        )
         assert len(messages) == 3
         assert messages[1].role == "user"
         assert "knowledge_context" in messages[1].content

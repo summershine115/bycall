@@ -52,12 +52,6 @@ def build_runtime_context(
     else:
         lines.append("- 无。你可以对话和使用已提供的上下文，但不能执行外部操作。")
 
-    lines.extend(["", "### 已配置领域能力"])
-    if capability.skills:
-        lines.extend(f"- {name}" for name in capability.skills)
-    else:
-        lines.append("- 当前未配置领域 Skill。")
-
     lines.extend(
         [
             "",
