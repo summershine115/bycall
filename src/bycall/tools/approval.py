@@ -112,6 +112,9 @@ def create_approval_request(ctx: ApprovalContext, tool_name: str, args: dict[str
         session.flush()  # 拿到自增 id
         assert req.id is not None  # flush 后自增主键必已填充
         req_id: int = req.id
+    from bycall.observability.metrics import HUMAN_TAKEOVER
+
+    HUMAN_TAKEOVER.labels(kind="approval_requested").inc()
     logger.info("审批请求 #%d 已创建: tool=%s user=%s", req_id, tool_name, ctx.user_name)
     return req_id
 

@@ -358,6 +358,19 @@ def _seed_defaults() -> None:
             "0.85",
             "agent 记忆提取置信阈值（0~1，低于此值不写）",
         )
+        # T2.5 成本指标单价（每百万 token 美元）：运营看板成本估算用，非计费系统。
+        _seed_setting(
+            session,
+            "cost.chat_input_usd_per_1m",
+            "0.15",
+            "chat 模型输入 token 单价（美元/百万）",
+        )
+        _seed_setting(
+            session,
+            "cost.chat_output_usd_per_1m",
+            "0.60",
+            "chat 模型输出 token 单价（美元/百万）",
+        )
         # 解析引擎配置与 IM 凭证同机制：控制台可编辑、保存即时生效
         # （DB > .env 环境变量 > 代码默认）。已部署环境从 .env 回填默认值。
         _seed_parse_settings(session)

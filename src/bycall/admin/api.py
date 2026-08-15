@@ -80,6 +80,8 @@ from bycall.admin.schemas import (
     PromptCreate,
     PromptOut,
     PromptUpdate,
+    ReleaseOut,
+    ReleasePublishRequest,
     RoleCreate,
     RoleOut,
     RoleUpdate,
@@ -112,6 +114,7 @@ from bycall.governance.models import (
     KnowledgeBase,
     Message,
     Model,
+    ReleaseState,
     Role,
     Run,
     Skill,
@@ -326,6 +329,20 @@ def policy_simulate(
         decision=decision,
         detail=detail,
     )
+
+
+@router.get("/ops-metrics", response_model=dict)
+def ops_metrics(
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """五维运营指标快照（T2.5）：延迟/成本/人工接管率/失败率/重复执行率。
+
+    数据直接读进程内 Prometheus registry（与 /metrics 同一来源），前端看板据此
+    展示，也是试点阶段业务效果看板（T3.4）的底子——不再另造埋点。
+    """
+    from bycall.observability.metrics import ops_metrics_snapshot
+
+    return ops_metrics_snapshot()
 
 
 def _require_role_exists(session: Session, role_name: str) -> Role:
@@ -777,6 +794,144 @@ def delete_prompt(
     session.delete(prompt)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ============ 发布门 + 灰度 + 回滚（T2.4，prompt / model 共用） ============
+
+_VALID_RELEASE_KINDS = frozenset({"prompt", "model"})
+
+
+def _run_publish_gate(kind: str):
+    """跑发布门（离线评测用例，任一失败即阻断）。返回 GateReport。"""
+    from bycall.evals.gate import run_release_gate
+
+    return run_release_gate(kind)
+
+
+def _raise_gate_failed(kind: str, gate_report) -> None:
+    """发布门未通过 → 409，且**不改任何 is_active**（失败即阻断）。"""
+    detail = {
+        "message": f"发布门未通过：{kind} 变更被阻断（任一失败用例即红灯）",
+        "gate": gate_report.to_dict(),
+    }
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def _release_response(release: ReleaseState, gate_report=None) -> dict:
+    """发布端点统一响应：发布状态 + 门判定报告。"""
+    out = ReleaseOut.model_validate(release).model_dump(mode="json")
+    return {"ok": True, "release": out, "gate": gate_report.to_dict() if gate_report else None}
+
+
+@router.get("/releases", response_model=list[ReleaseOut])
+def list_releases(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[ReleaseState]:
+    """列出发布状态（prompt/model 的灰度/回滚生命周期）。"""
+    return list(session.exec(select(ReleaseState).order_by(ReleaseState.kind)).all())
+
+
+@router.post("/releases/{kind}/promote", response_model=ReleaseOut)
+def promote_release_endpoint(
+    kind: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ReleaseState:
+    """灰度转全量：把 is_active 切到发布目标，状态 → active。"""
+    if kind not in _VALID_RELEASE_KINDS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"发布类型不存在: {kind}")
+    from bycall.governance.release import promote_release
+
+    try:
+        release = promote_release(session, kind)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if release is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"没有进行中的 {kind} 发布")
+    _audit_admin(
+        session, request, f"promote_{kind}_release", f"ReleaseState({kind})", after=release
+    )
+    session.commit()
+    session.refresh(release)
+    return release
+
+
+@router.post("/releases/{kind}/rollback", response_model=ReleaseOut)
+def rollback_release_endpoint(
+    kind: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ReleaseState:
+    """一键回滚：is_active 切回上一版本/模型（复用 version + is_active 模式）。"""
+    if kind not in _VALID_RELEASE_KINDS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"发布类型不存在: {kind}")
+    from bycall.governance.release import rollback_release
+
+    release = rollback_release(session, kind)
+    if release is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"没有可回滚的 {kind} 发布")
+    _audit_admin(
+        session, request, f"rollback_{kind}_release", f"ReleaseState({kind})", after=release
+    )
+    session.commit()
+    session.refresh(release)
+    return release
+
+
+@router.post("/prompts/{version}/publish", response_model=dict)
+def publish_prompt_version(
+    version: int,
+    payload: ReleasePublishRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """发布提示词版本：过评测门 → 灰度或全量切换。
+
+    一个失败用例即阻断（409），此时 is_active 保持原状——失败即无副作用。
+    """
+    target = session.exec(select(SystemPrompt).where(SystemPrompt.version == version)).first()
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {version}")
+    active = session.exec(SystemPrompt.select_active()).first()
+    if active is not None and active.version == version:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"版本 {version} 已是当前激活版本")
+
+    gate_report = None
+    if not payload.skip_gate:
+        gate_report = _run_publish_gate("prompt")
+        if not gate_report.passed:
+            _raise_gate_failed("prompt", gate_report)
+
+    from bycall.governance.release import activate_target, upsert_release
+
+    release = upsert_release(
+        session,
+        kind="prompt",
+        target_prompt_version=version,
+        previous_prompt_version=active.version if active is not None else None,
+        canary_percent=payload.canary_percent,
+        gate_report_json=json.dumps(gate_report.to_dict()) if gate_report else "{}",
+    )
+    if payload.canary_percent in (0, 100):
+        # 全量：原子切换 is_active（复用现有 activate 语义）。
+        activate_target(session, release)
+    # 灰度（1–99）：不切 is_active——运行时按用户稳定哈希分流到 target。
+    session.commit()
+    session.refresh(release)
+    _audit_admin(
+        session,
+        request,
+        "publish_prompt",
+        f"SystemPrompt(v{version})",
+        before={"previous_active_version": active.version if active else None},
+        after=release,
+    )
+    session.commit()
+    return _release_response(release, gate_report)
 
 
 # ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
@@ -1517,6 +1672,57 @@ def activate_model(
     _audit_admin(session, request, "activate_model", f"Model({model.name})", after=model)
     session.commit()
     return {"ok": True, "model": _model_to_out(model).model_dump(mode="json")}
+
+
+@router.post("/models/{model_id}/publish", response_model=dict)
+def publish_model(
+    model_id: int,
+    payload: ReleasePublishRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> dict:
+    """发布 chat 模型：过评测门 → 灰度或全量切换（回滚复用 is_active 切换）。"""
+    model = _get_model_or_404(session, model_id)
+    if model.model_type != "chat":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "发布门当前只支持 chat 模型（embedding/rerank 用 /activate 端点）",
+        )
+    active = session.exec(Model.select_active_by_type("chat")).first()
+    if active is not None and active.id == model.id:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"模型 {model.name} 已是当前激活模型")
+
+    gate_report = None
+    if not payload.skip_gate:
+        gate_report = _run_publish_gate("model")
+        if not gate_report.passed:
+            _raise_gate_failed("model", gate_report)
+
+    from bycall.governance.release import activate_target, upsert_release
+
+    release = upsert_release(
+        session,
+        kind="model",
+        target_model_id=model.id,
+        previous_model_id=active.id if active is not None else None,
+        canary_percent=payload.canary_percent,
+        gate_report_json=json.dumps(gate_report.to_dict()) if gate_report else "{}",
+    )
+    if payload.canary_percent in (0, 100):
+        activate_target(session, release)
+    session.commit()
+    session.refresh(release)
+    _audit_admin(
+        session,
+        request,
+        "publish_model",
+        f"Model({model.name})",
+        before={"previous_active_model_id": active.id if active else None},
+        after=release,
+    )
+    session.commit()
+    return _release_response(release, gate_report)
 
 
 @router.post("/models/{model_id}/test", response_model=ModelTestResult)
@@ -3579,6 +3785,10 @@ def approve_approval(
 
     ok, result_text = execute_approved_tool(req)
 
+    from bycall.observability.metrics import HUMAN_TAKEOVER
+
+    HUMAN_TAKEOVER.labels(kind="approved").inc()
+
     operator = _get_operator_name(request)
     now = datetime.now(UTC)
     req.status = "executed" if ok else "failed"
@@ -3632,6 +3842,10 @@ def reject_approval(
     req.reviewed_at = datetime.now(UTC)
     req.review_note = payload.note
     session.add(req)
+
+    from bycall.observability.metrics import HUMAN_TAKEOVER
+
+    HUMAN_TAKEOVER.labels(kind="rejected").inc()
 
     # 通知会话：操作被拒绝。
     if req.conversation_id is not None:

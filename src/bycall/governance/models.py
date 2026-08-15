@@ -940,6 +940,46 @@ class SystemSetting(SQLModel, table=True):
         return select(SystemSetting).order_by(SystemSetting.key)
 
 
+# ============ ReleaseState：发布状态（T2.4 发布门 + 灰度 + 回滚）============
+
+
+class ReleaseState(SQLModel, table=True):
+    """一次配置发布的生命周期状态（kind 唯一：prompt / model）。
+
+    T2.4 发布门：任何激活切换都先过评测门（``gate_report_json`` 存判定报告）；
+    灰度：``canary_percent ∈ (0,100)`` 时**不切 is_active**，运行时按
+    ``stable_hash(scope_id) % 100 < canary_percent`` 把一部分会话路由到 target；
+    回滚：``rollback`` 把 is_active 切回 previous 版本（复用既有 version + is_active 模式）。
+
+    该表是能力集缓存的一类输入（见 ``capability._CAP_RELEVANT_TYPES``）——灰度比例
+    调整 / 回滚提交后，下一次能力集计算立即生效。
+    """
+
+    kind: str = Field(primary_key=True)  # "prompt" / "model"
+    # prompt 发布：目标/上一个激活版本号（SystemPrompt.version，唯一）。
+    target_prompt_version: int | None = Field(default=None)
+    previous_prompt_version: int | None = Field(default=None)
+    # model 发布：目标/上一个激活模型 id（Model.id，model_type=chat）。
+    target_model_id: int | None = Field(default=None)
+    previous_model_id: int | None = Field(default=None)
+    canary_percent: int = Field(default=0, ge=0, le=100)  # 0/100=全量（立即切 is_active）
+    status: str = Field(default="active", index=True)  # canary/active/rolled_back
+    gate_report_json: str = "{}"  # 发布门判定报告（JSON）
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_by_kind(kind: str):
+        from sqlmodel import select
+
+        return select(ReleaseState).where(ReleaseState.kind == kind)
+
+
 # ============ Task/Step/Run：持久化多步任务（S1a 执行核心）============
 
 

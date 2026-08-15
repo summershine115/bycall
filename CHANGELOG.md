@@ -44,6 +44,23 @@
 
 
 ### 新增
+- 评测与发布系统（阶段 2 · T2.1–T2.5）：新增 ``make eval`` / ``make eval-security``——四类离线
+  评测集（知识质量 / 权限安全 / 执行质量 / 运营效果）共 31 条内置用例，权限攻击覆盖越权召回、
+  跨用户记忆泄漏、提示词注入、工具越权、审批绕过五类（每类 ≥3 条），任一失败即红灯；``make
+  ci-local`` 已把两项评测纳入本地 CI 门。
+- 配置快照与离线回放（T2.3）：``python -m evals.run --snapshot`` 抓取提示词/Skill/角色/模型/
+  知识库/工具的 SHA-256 指纹快照（不含正文与密钥），``--compare old.json new.json`` 输出配置
+  diff、按变更类型选评测子集、旧/新两份报告与「是否越权/回退」判定，任一新配置用例失败退出
+  码为 1。
+- 发布门 + 灰度 + 一键回滚（T2.4）：控制面新增「发布与回滚」页；``POST /api/admin/prompts/{v}/
+  publish`` 与 ``POST /api/admin/models/{id}/publish`` 先跑评测门，一个失败用例即 409 且不改
+  ``is_active``。灰度（1–99%）保留旧版激活，运行时按用户/会话稳定哈希分流；``promote`` 转全量、
+  ``rollback`` 原子切回上一版本（复用既有 version + is_active 模式）。新增 ``ReleaseState`` 表
+  记录发布生命周期与门判定报告。
+- 五维运营指标（T2.5）：延迟（单轮端到端 histogram）/ 成本（token × DB 可调单价估算）/ 人工
+  接管（HITL 审批事件）/ 失败率 / 重复执行率（幂等去重拦截）统一进 Prometheus ``/metrics``；
+  控制面新增「运营指标」页（``GET /api/admin/ops-metrics``）展示同源快照，作为试点阶段业务
+  效果看板（T3.4）的底子。LLM 调用经 callback 自动记录 token 用量。
 - per-role 上下文预算（阶段 1 · T1.9）：``RoleConfig`` 新增可选 ``context_budget`` 字段，admin
   可按角色覆盖历史滑窗 / 记忆注入 / RAG 预算默认值（如管理层配更大历史窗口）。空则用全局
   默认，存量配置行为不变（后向兼容，JSON 列无需迁移）。

@@ -103,12 +103,14 @@ def resolve_chat_model(
     from langchain_openai import ChatOpenAI
 
     from bycall.governance.secrets import decrypt_secret
+    from bycall.observability.usage import LLMUsageCallbackHandler
 
     return ChatOpenAI(
         base_url=model.base_url,
         api_key=decrypt_secret(model.api_key),
         model=model.name,
         timeout=timeout,
+        callbacks=[LLMUsageCallbackHandler()],
     )
 
 
@@ -164,13 +166,21 @@ def get_chat_model_for_conversation(
 ) -> tuple[Model, BaseChatModel] | None:
     """per-session 模型优先，空/失效则 fallback 全局激活。
 
-    ``Conversation.model_id`` 非空 → 按 id 解析；模型已删 / 类型不符 → fallback 全局激活。
-    落实架构预留的「全局激活 + 会话级覆盖」默认模型选择（design §7 决策 #5）。
+    ``Conversation.model_id`` 非空 → 按 id 解析；模型已删 / 类型不符 → fallback。
+    T2.4 灰度：model canary 期间，无 per-session 绑定的会话按会话稳定哈希分流到候选
+    模型（``resolve_canary_chat_model``），未命中或候选失效再回全局激活。
     """
     if conversation is not None and conversation.model_id is not None:
         resolved = get_chat_model_by_id(session, conversation.model_id, timeout=timeout)
         if resolved is not None:
             return resolved
+    # T2.4 模型灰度：只在有会话归属时分流（无会话的单轮调用仍走全局激活）。
+    if conversation is not None and conversation.id is not None:
+        from bycall.governance.release import resolve_canary_chat_model
+
+        candidate = resolve_canary_chat_model(session, conversation.id)
+        if candidate is not None:
+            return candidate, resolve_chat_model(session, candidate, timeout=timeout)
     # fallback 全局激活：不传 timeout，保持与既有测试 patch 的 ``lambda session:`` 签名兼容。
     return get_chat_model(session)
 

@@ -1,6 +1,6 @@
 # Bycall 下一阶段执行计划（Execution Plan）
 
-> 状态：**主方向（进行中）** · 更新：2026-08-13 · 关联：[决策登记册](decisions/README.md)
+> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 试点与参考场景进行中——T3.1 代码部分已落地）** · 更新：2026-08-15 · 关联：[决策登记册](decisions/README.md)
 > 本文是 Bycall 当前唯一的**执行级工作方向**。它取代"继续按里程碑 M7+ / S3-S4 堆能力"的默认，
 > 改为"先收口、再评测、后试点"。所有新任务必须对齐本文的阶段与任务编号，未列入冻结清单的新
 > 能力不得动工。里程碑路线图的历史沿革仍见 `product-design.md` §6，本文与其冲突时以本文为准。
@@ -54,32 +54,32 @@
 **Description**：对登记册 §3 的第 6/7/8 项（首个付费行业 / 行业包是否版本化资产 / 收口与试点资源配比）
 拍板；其余 §3 待拍板项（1/2/3/5/9/10）若不影响未来 12 周执行，明确标注"后置，不阻塞本计划"。
 **Acceptance**：
-- [ ] 首个付费行业确定（默认制造业设备运维/工业售后，备选 IT 服务台）
-- [ ] 单租户优先已由 ADR-0004 拍板，不再重复讨论；本计划按"单组织私有部署"推进
-- [ ] 登记册 §3 每项标记为"已拍板（记录见 ADR/正文）"或"后置（不阻塞）"
+- [x] 首个付费行业已拍板（2026-08-15）：不锁定行业——平台场景无关（ADR-0009），以参考场景包支撑试点
+- [x] 单租户优先已由 ADR-0004 拍板，不再重复讨论；本计划按"单组织私有部署"推进
+- [x] 登记册 §3 每项标记为"已拍板（记录见 ADR/正文）"或"后置（不阻塞）"
 **Verify**：`docs/decisions/README.md` §3 无可阻塞本计划的 open 项。
 **Files**：`docs/decisions/README.md`（+ 需要时新增 ADR-0009）。**Scope**：S。
 
 #### T0.2 冻结范围决策
 **Description**：把 S3/S4、行业包资产化、前端视觉/主题/排版打磨正式移入冻结清单（§4），登记为已采纳决策。
 **Acceptance**：
-- [ ] §4 冻结清单写入登记册 §2（"已采纳：冻结项"）
-- [ ] 未来 12 周任务清单不引用被冻结项
+- [x] §4 冻结清单写入登记册 §2（"已采纳：冻结项"）
+- [x] 未来 12 周任务清单不引用被冻结项
 **Files**：`docs/decisions/README.md`、本文 §4。**Scope**：S。
 
 #### T0.3 文档纠偏
 **Description**：清理过时状态——`product-design.md` §6 M1 验收标准标注过时、README 里程碑 M6 表述统一、
 `agent-framework-upgrade.md` 状态栏同步 S2 Phase 2 已落地。
 **Acceptance**：
-- [ ] 文档状态栏（登记册 §5）与代码实况一致
-- [ ] 无"宣称已完成、实际未做"的误导性表述
+- [x] 文档状态栏（登记册 §5）与代码实况一致
+- [x] 无"宣称已完成、实际未做"的误导性表述
 **Files**：`docs/product-design.md`、`README.md`、`docs/specs/agent-framework-upgrade.md`。**Scope**：S。
 
 #### T0.4 建立治理缝隙清单
 **Description**：把战略 §3 六条缝隙落成带 owner + 目标里程碑 + 现状源码定位的清单。
 **Acceptance**：
-- [ ] 六条缝隙逐条标注 owner + 对应阶段任务编号（T1.1–T1.6）
-- [ ] 每条附"当前源码位置 + 目标行为"，可直接作为阶段 1 任务输入
+- [x] 六条缝隙逐条标注 owner + 对应阶段任务编号（T1.1–T1.6）
+- [x] 每条附"当前源码位置 + 目标行为"，可直接作为阶段 1 任务输入
 **Files**：`docs/gaps.md`（新）。**Scope**：S。
 
 **阶段 0 出口门**：登记册 §3 无可阻塞项；§4 冻结清单已登记；`docs/gaps.md` 就绪。
@@ -95,9 +95,9 @@
 `knowledge_scope_tags → source IN (...)` 的角色标签过滤）。新增统一 policy 引擎，把
 `ACLMetadata`(tenant_id/dept/level/敏感度) + 用户属性 + 资源属性 + 上下文翻译成**召回前**过滤条件。
 **Acceptance**：
-- [ ] `governance/policy.py` 提供统一 `evaluate()`，输入（用户, 资源, 动作, 上下文）→ 过滤条件
-- [ ] `rag/retrieve.py` 的检索 filter 由 policy 产出，不再是手写 `source IN`
-- [ ] 加一条"跨部门+职级+密级"文档，验证召回前即被过滤（不进 LLM、不留痕）
+- [x] `governance/policy.py` 提供统一 `evaluate()`，输入（用户, 资源, 动作, 上下文）→ 过滤条件
+- [x] `rag/retrieve.py` 的检索 filter 由 policy 产出，不再是手写 `source IN`
+- [x] 加一条"跨部门+职级+密级"文档，验证召回前即被过滤（不进 LLM、不留痕）
 **Verify**：`make test-unit` + 集成测试（越权召回=0）。
 **Dependencies**：T0.4。**Files**：`governance/policy.py`（新）、`governance/capability.py`、`rag/retrieve.py`、`api/dataplane.py`。**Scope**：L。
 
@@ -105,8 +105,8 @@
 **Description**：`CapabilitySet.visible_kb_ids` 已计算但数据面 runner 仍遍历全部 KB。二选一并落地：作为数据面
 ACL 接入检索，或更名移出能力集——**禁止**让未生效字段继续被误认为安全边界。
 **Acceptance**：
-- [ ] 若作为 ACL：检索入口只对 `visible_kb_ids` 内的 KB 召回（测试验证）
-- [ ] 若更名：字段改名/移除，代码与文档同步，不再产生"看似是边界"的误读
+- [x] 若作为 ACL：检索入口只对 `visible_kb_ids` 内的 KB 召回（测试验证）
+- [x] 若更名：字段改名/移除，代码与文档同步，不再产生"看似是边界"的误读
 **Verify**：`make test-unit` + `make test-integration`。
 **Dependencies**：T1.1。**Files**：`governance/capability.py`、`api/dataplane.py`、`agent/runner.py`。**Scope**：M。
 
@@ -114,8 +114,8 @@ ACL 接入检索，或更名移出能力集——**禁止**让未生效字段继
 **Description**：`Conversation.model_id` 已预留但运行时仍取全局激活模型。把模型选择纳入能力集 + 成本/驻留策略，
 runner 按会话绑定模型调用。
 **Acceptance**：
-- [ ] 会话绑定模型后，该会话走绑定模型而非全局激活（有测试锁定）
-- [ ] 未绑定时 fallback 全局激活（零回归）
+- [x] 会话绑定模型后，该会话走绑定模型而非全局激活（有测试锁定）
+- [x] 未绑定时 fallback 全局激活（零回归）
 **Verify**：`make test-integration`（多会话模型路由）。
 **Dependencies**：None。**Files**：`agent/runner.py`、`llm/resolver.py`、`governance/models.py`。**Scope**：M。
 
@@ -123,8 +123,8 @@ runner 按会话绑定模型调用。
 **Description**：`run_agent` 与 `run_agent_stream` 两套高度相似流程易漂移。抽共享的"策略准备 → 执行 → 后处理 →
 审计"管线，两路共用（任务维度 event 已由 default_bus 闭合，此处闭合对话维度）。
 **Acceptance**：
-- [ ] 两路经同一 pipeline 入口，审计字段一致（有测试锁定）
-- [ ] 流式逐 token 语义不破坏（现有企微流式测试绿）
+- [x] 两路经同一 pipeline 入口，审计字段一致（有测试锁定）
+- [x] 流式逐 token 语义不破坏（现有企微流式测试绿）
 **Verify**：`make ci-local` 全绿 + 新增管线单测。
 **Dependencies**：None。**Files**：`agent/pipeline.py`（新）、`agent/runner.py`、`api/dataplane.py`。**Scope**：L。
 
@@ -132,8 +132,8 @@ runner 按会话绑定模型调用。
 **Description**：红线定义 `(agent_id, channel, tenant_id, user_id)`，当前 DB 主要是 `(user_id, channel)`。
 补显式隔离键，跨租户/跨 Agent 会话与记忆互不可见。
 **Acceptance**：
-- [ ] 会话、记忆、审批、审计、MCP、缓存均带 tenant/agent 隔离键
-- [ ] 跨租户会话与记忆互不可见（测试覆盖）
+- [x] 会话、记忆、审批、审计、MCP、缓存均带 tenant/agent 隔离键
+- [x] 跨租户会话与记忆互不可见（测试覆盖）
 **Verify**：`make test-integration`（多租户隔离）。
 **Dependencies**：None（DB 迁移，遵循"高风险改动先确认"）。**Files**：`governance/models.py`、`db.py`。**Scope**：L。
 
@@ -141,8 +141,8 @@ runner 按会话绑定模型调用。
 **Description**：当前脱敏依赖单个工具声明 redactor，MCP 靠 capability meta 自行鉴权。平台化：字段分级 +
 行级过滤 + 输出大小限制，**默认拒绝未声明的数据类型**。
 **Acceptance**：
-- [ ] 统一 redactor 策略层，未声明数据类型的工具返回默认被裁剪
-- [ ] 输出大小限制生效（防上下文撑爆）
+- [x] 统一 redactor 策略层，未声明数据类型的工具返回默认被裁剪
+- [x] 输出大小限制生效（防上下文撑爆）
 **Verify**：`make test-unit` + MCP 工具集成测试。
 **Dependencies**：None。**Files**：`tools/redactor.py`（新）、`tools/base.py`、`tools/gateway.py`。**Scope**：M。
 
@@ -156,58 +156,79 @@ runner 按会话绑定模型调用。
 **Description**：管理员选（用户, 资源, 动作, 上下文）→ 系统显示最终 allow/deny + 命中规则 + 能力集 + 过滤条件。
 治理结果不再靠读代码理解。
 **Acceptance**：
-- [ ] 控制面可独立验证治理结果，与数据面实际判定一致
-- [ ] 前端新页面 + 后端端点 + 单测
+- [x] 控制面可独立验证治理结果，与数据面实际判定一致
+- [x] 前端新页面 + 后端端点 + 单测
 **Verify**：`make test-unit` + 前端 `npm run build`。
 **Dependencies**：T1.1。**Files**：`admin/api.py`、`frontend/src/views/`（新页面）。**Scope**：M。
+
+#### T1.9 上下文预算与护栏（阶段 1 追加，2026-08-14 完成）
+**Description**：RAG 注入统一预算化（per-chunk 截断 / 跨 KB 去重 / 低相关过滤 / 总预算 / 相关性
+标注），per-role 上下文预算（``RoleConfig.context_budget``），投毒软降级 + 审计反馈环；
+多轮/单轮两路共用同一管线，消除旧“裸拼接抄两份”的缝隙。
+**Acceptance**：
+- [x] RAG 注入有字符/条数预算且审计留痕（context_report）
+- [x] 提示注入特征命中即标注降权 + 计入审计（软降级不硬删）
+- [x] per-role 预算可覆盖全局默认，存量配置零迁移
+**Verify**：`make ci-local` 全绿（见 `tests/unit/test_context_budget.py`、`test_prompt_injection_boundary.py`）。
+**Files**：`agent/context_budget.py`、`agent/session_store.py`、`agent/runner.py`、`governance/models.py`。**Scope**：M。
 
 **阶段 1 出口门**：`make ci-local` 全绿 + 六条缝隙全部闭合（`docs/gaps.md` 逐条勾掉）+ 策略模拟器可演示。
 
 ---
 
-### 阶段 2：评测与发布系统（第 5–8 周）
+### 阶段 2：评测与发布系统（第 5–8 周）✅ 已完成（2026-08-15）
 
 > 以"治理安全"为卖点，必须能**自动证明不越权、不回退**。
+> 实现决策见 ADR-0010；引擎 `src/bycall/evals/`，仓库入口 `evals/run.py`，
+> `make ci-local` 已含 `eval` + `eval-security`。
 
 #### T2.1 四类评测集骨架 + runner
 **Description**：知识质量 / 权限安全 / 执行质量 / 运营效果四类评测集骨架 + 可运行 runner。
 **Acceptance**：
-- [ ] 每类至少一个可运行样例（`make eval` 或单独入口）
-- [ ] 评测结果可量化输出（分数/通过率）
+- [x] 每类至少一个可运行样例（`make eval` 或单独入口）
+- [x] 评测结果可量化输出（分数/通过率）
 **Verify**：新增 `make eval` 目标可跑。
-**Dependencies**：阶段 1 出口门。**Files**：`evals/`（新目录 + runner）。**Scope**：M。
+**Dependencies**：阶段 1 出口门。**Files**：`evals/`（新目录 + runner）、`src/bycall/evals/`。**Scope**：M。
 
 #### T2.2 权限攻击用例集（红线级）
 **Description**：越权召回、跨用户记忆泄漏、提示词注入、工具越权、审批绕过五类攻击用例。
 **Acceptance**：
-- [ ] 每类至少 3 条用例，全部进入 CI（或独立 `make eval-security`）
-- [ ] 任一用例失败即红灯
+- [x] 每类至少 3 条用例，全部进入 CI（或独立 `make eval-security`）
+- [x] 任一用例失败即红灯
 **Verify**：`make eval-security` 全绿。
-**Dependencies**：T2.1。**Files**：`evals/security/`。**Scope**：M。
+**Dependencies**：T2.1。**Files**：`evals/security/`（`src/bycall/evals/cases_security.py`）。**Scope**：M。
 
 #### T2.3 离线回放 + 新旧对比
 **Description**：Prompt/Skill/模型/检索配置变更可离线回放，输出新旧 diff。
 **Acceptance**：
-- [ ] 变更前自动跑评测集，输出 diff
-- [ ] 支持按变更类型选择对应评测子集
+- [x] 变更前自动跑评测集，输出 diff
+- [x] 支持按变更类型选择对应评测子集
 **Dependencies**：T2.1。**Files**：`evals/` + 配置版本快照。**Scope**：M。
 
 #### T2.4 发布门 + 灰度 + 回滚
 **Description**：评测不通过禁止发布；支持灰度与一键回滚。
 **Acceptance**：
-- [ ] 一个失败用例即可阻断对应配置发布
-- [ ] 回滚 = 切换 is_active 到旧版本（复用现有 version + is_active 模式）
-**Dependencies**：T2.3。**Files**：`admin/api.py`、发布流程脚本。**Scope**：M。
+- [x] 一个失败用例即可阻断对应配置发布
+- [x] 回滚 = 切换 is_active 到旧版本（复用现有 version + is_active 模式）
+**Dependencies**：T2.3。**Files**：`admin/api.py`、发布流程脚本、`governance/release.py` + `ReleaseState` 表。**Scope**：M。
 
 #### T2.5 运营指标埋点
 **Description**：延迟/成本/人工接管率/失败率/重复执行率五维指标。
 **Acceptance**：
-- [ ] 复用 OTel/Prometheus 产出五维指标
-- [ ] 控制面看板可见（可作为试点阶段 D4 的底子）
+- [x] 复用 OTel/Prometheus 产出五维指标
+- [x] 控制面看板可见（可作为试点阶段 D4 的底子）
 **Verify**：`make dev` 后 `/metrics` 含目标指标。
-**Dependencies**：None。**Files**：`observability/metrics.py`、前端看板。**Scope**：S。
+**Dependencies**：None。**Files**：`observability/metrics.py`、`observability/usage.py`、前端看板（运营指标页）。**Scope**：S。
 
 **阶段 2 出口门**：一条命令回答"这次改 prompt 有没有造成越权或质量回退"。
+
+```
+# 出口门命令（快照 + 回放，任一新配置用例失败 → 退出码 1）
+python -m evals.run --snapshot evals/snapshots/old.json
+# ...修改配置...
+python -m evals.run --snapshot evals/snapshots/new.json
+python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
+```
 
 ---
 

@@ -57,9 +57,15 @@ def claim_message(session: Session, key: str) -> bool:
     """
     with _lock:
         if key in _inflight:
+            from bycall.observability.metrics import DUPLICATE_MESSAGES
+
+            DUPLICATE_MESSAGES.labels(layer="inflight").inc()
             return False
         existing = session.exec(IdempotencyRecord.select_by_key(key)).first()
         if existing is not None:
+            from bycall.observability.metrics import DUPLICATE_MESSAGES
+
+            DUPLICATE_MESSAGES.labels(layer="persisted").inc()
             return False
         _inflight.add(key)
 

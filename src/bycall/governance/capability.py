@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import event
 from sqlmodel import Session, select
 
-from bycall.governance.models import KnowledgeBase, Role, Skill, SystemPrompt, User
+from bycall.governance.models import KnowledgeBase, ReleaseState, Role, Skill, SystemPrompt, User
 from bycall.observability.metrics import CAPABILITY_CACHE
 
 logger = logging.getLogger(__name__)
@@ -220,7 +220,15 @@ def _format_kb_lines(kbs: list[tuple[str, str]]) -> str:
 _CAP_CACHE: dict[int | None, CapabilitySet] = {}
 
 # 能力集输入表——这些表的写提交即令缓存失效（输入变了，结果必变）。
-_CAP_RELEVANT_TYPES: tuple[type, ...] = (User, Role, SystemPrompt, Skill, KnowledgeBase)
+# ReleaseState 是 T2.4 灰度/回滚的输入（prompt canary 分流），故一并纳入。
+_CAP_RELEVANT_TYPES: tuple[type, ...] = (
+    User,
+    Role,
+    SystemPrompt,
+    Skill,
+    KnowledgeBase,
+    ReleaseState,
+)
 # 挂在 session.info 上的事务内标记：flush 发现相关脏实例即置位，commit 据它清缓存。
 _CAP_INVAL_KEY = "bycall_cap_invalidate"
 
@@ -313,7 +321,10 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         raise PermissionError("用户已被禁用")
 
     # 2. 全局激活的系统提示词（admin 用；普通用户若未绑定角色版本也作 fallback）。
-    global_prompt = get_active_system_prompt(session)
+    #    T2.4 灰度：prompt canary 期间按用户稳定哈希分流到候选版本。
+    from bycall.governance.release import resolve_prompt_content_for_user
+
+    global_prompt = resolve_prompt_content_for_user(session, user.id)
     # 2.5 组织内全部知识库——供 knowledge_scope_text 枚举具体知识域（让数字员工能
     #     据实列出"产品知识库/HR知识库"等，而非只说"全部"）。
     all_kbs = list(session.exec(KnowledgeBase.select_all()).all())

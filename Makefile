@@ -4,7 +4,7 @@ PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3.12)
 PKG := src/bycall
 VENV := .venv
 
-.PHONY: help venv install dev test test-unit test-integration lint fmt check ci-local seed-reference docker-up docker-down clean
+.PHONY: help venv install dev test test-unit test-integration lint fmt check ci-local eval eval-security seed-reference docker-up docker-down clean
 
 help:  ## 显示所有可用目标
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -29,19 +29,25 @@ test-integration:  ## 跑 integration 目录（当前无需 docker，均使用�
 	$(PY) -m pytest tests/integration -q
 
 lint:  ## 静态检查
-	$(PY) -m ruff check $(PKG) tests examples scripts
+	$(PY) -m ruff check $(PKG) tests evals examples scripts
 
 fmt:  ## 格式化
-	$(PY) -m ruff format $(PKG) tests examples scripts
-	$(PY) -m ruff check --fix $(PKG) tests examples scripts
+	$(PY) -m ruff format $(PKG) tests evals examples scripts
+	$(PY) -m ruff check --fix $(PKG) tests evals examples scripts
 
 check: lint  ## CI 本地等价检查（lint only；test/build 在 CI 里跑）
-	$(PY) -m ruff format --check $(PKG) tests examples scripts
+	$(PY) -m ruff format --check $(PKG) tests evals examples scripts
+
+eval:  ## 跑四类评测集（知识质量/权限安全/执行质量/运营效果）
+	PYTHONPATH=src $(PY) -m evals.run
+
+eval-security:  ## 只跑权限安全红线用例（任一失败即红灯）
+	PYTHONPATH=src $(PY) -m evals.run --security
 
 seed-reference:  ## 灌入参考场景包（示例角色/账号/MCP 连接器，幂等；见 ADR-0009）
 	PYTHONPATH=src $(PY) scripts/seed_reference.py
 
-ci-local: lint test  ## 本地模拟 CI：lint + 全部本地测试
+ci-local: lint test eval eval-security  ## 本地模拟 CI：lint + 全部测试 + 评测门
 
 docker-up:  ## 起 postgres + redis（内网无公网友好；zvec 嵌入式无独立服务）
 	docker compose up -d postgres redis

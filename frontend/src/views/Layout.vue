@@ -113,7 +113,8 @@ import { auth } from '../api'
 import { useTheme } from '../composables/useTheme'
 import {
   ChatDotRound, ChatLineRound, Collection, Connection, Cpu, DataLine,
-  Document, DocumentChecked, Files, Key, List, MagicStick, Setting, User,
+  Document, DocumentChecked, Files, Key, List, MagicStick, RefreshLeft,
+  Setting, TrendCharts, User,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -137,6 +138,7 @@ const navGroups = [
       { name: 'prompts', label: '提示词版本', icon: Document },
       { name: 'audit', label: '审计日志', icon: List },
       { name: 'policy-simulator', label: '策略模拟', icon: List },
+      { name: 'releases', label: '发布与回滚', icon: RefreshLeft },
     ],
   },
   {
@@ -164,6 +166,7 @@ const navGroups = [
     items: [
       { name: 'conversations', label: '会话管理', icon: ChatLineRound },
       { name: 'chat', label: '对话测试', icon: ChatDotRound },
+      { name: 'ops-metrics', label: '运营指标', icon: TrendCharts },
       { name: 'settings', label: '运行时设置', icon: Setting },
     ],
   },
@@ -186,6 +189,8 @@ const titles = {
   settings: '运行时设置',
   audit: '审计日志',
   'policy-simulator': '策略模拟',
+  releases: '发布与回滚',
+  'ops-metrics': '运营指标',
   chat: '对话测试',
 }
 

@@ -25,9 +25,11 @@
 ```bash
 make install          # 装依赖（editable + dev）到当前环境
 make dev              # 起 API（热重载 :8000，PYTHONPATH=src）
-make ci-local         # 本地模拟 CI：lint + unit test（无需外部服务）
+make ci-local         # 本地模拟 CI：lint + 全测试 + eval + eval-security（无需外部服务）
 make test-unit        # 仅单元测试
 make test-integration # integration 目录测试（当前使用临时依赖/mock，无需 docker）
+make eval             # 四类评测集（知识质量/权限安全/执行质量/运营效果）
+make eval-security    # 权限攻击红线用例（五类攻击 × ≥3，任一失败即红灯）
 make lint             # ruff check
 make fmt              # ruff format + check --fix
 make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）

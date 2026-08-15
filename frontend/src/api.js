@@ -204,6 +204,18 @@ export const admin = {
   deleteTaskSchedule: (id) => http.delete(`/api/admin/task-schedules/${id}`),
   fireTaskSchedule: (id) =>
     http.post(`/api/admin/task-schedules/${id}/fire`).then((r) => r.data),
+  // 发布门 + 灰度 + 一键回滚（T2.4）
+  listReleases: () => http.get('/api/admin/releases').then((r) => r.data),
+  publishPrompt: (version, data = { canary_percent: 0, skip_gate: false }) =>
+    http.post(`/api/admin/prompts/${version}/publish`, data).then((r) => r.data),
+  publishModel: (id, data = { canary_percent: 0, skip_gate: false }) =>
+    http.post(`/api/admin/models/${id}/publish`, data).then((r) => r.data),
+  promoteRelease: (kind) =>
+    http.post(`/api/admin/releases/${kind}/promote`).then((r) => r.data),
+  rollbackRelease: (kind) =>
+    http.post(`/api/admin/releases/${kind}/rollback`).then((r) => r.data),
+  // 五维运营指标（T2.5）
+  opsMetrics: () => http.get('/api/admin/ops-metrics').then((r) => r.data),
 }
 
 // ============ 数据面 /chat ============

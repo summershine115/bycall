@@ -54,7 +54,13 @@ from bycall.governance.capability import CapabilitySet, compute_capability_set
 from bycall.governance.models import AuditLog, Conversation, KnowledgeBase, User
 from bycall.llm.base import Message as LLMMessage
 from bycall.observability import get_tracer, traced
-from bycall.observability.metrics import LLM_CALL_DURATION, LLM_CALLS
+from bycall.observability.metrics import (
+    LLM_CALL_DURATION,
+    LLM_CALLS,
+    TURN_DURATION,
+    TURN_FAILURES,
+    TURNS_TOTAL,
+)
 from bycall.rag.retrieve import build_rag_messages
 from bycall.tools.gateway import filter_tools, to_langchain_tools
 from bycall.tools.registry import get_tool
@@ -128,8 +134,44 @@ class AgentResult:
     context_trace: str = ""  # 本轮上下文快照 JSON（system/RAG/记忆/摘要），排障用
 
 
+def _observe_turn(decision: str, start: float) -> None:
+    """记录一轮对话的 T2.5 运营指标：延迟 / 轮次 / 失败。"""
+    TURN_DURATION.observe(time.perf_counter() - start)
+    TURNS_TOTAL.labels(decision=decision or "unknown").inc()
+    if decision == "error":
+        TURN_FAILURES.labels(kind="llm_error").inc()
+
+
 @traced("bycall.run_agent")
 def run_agent(
+    *,
+    session: Session,
+    user: User,
+    question: str,
+    llm: BaseChatModel,
+    channel: str = "api",
+    conversation_id: int | None = None,
+    im_user_id: str = "",
+) -> AgentResult:
+    """执行一次完整的治理链路对话（观测包装）。
+
+    实际逻辑在 ``_run_agent_impl``；本包装只做轮次计时与 T2.5 指标落账。
+    """
+    start = time.perf_counter()
+    result = _run_agent_impl(
+        session=session,
+        user=user,
+        question=question,
+        llm=llm,
+        channel=channel,
+        conversation_id=conversation_id,
+        im_user_id=im_user_id,
+    )
+    _observe_turn(result.decision, start)
+    return result
+
+
+def _run_agent_impl(
     *,
     session: Session,
     user: User,
@@ -614,6 +656,37 @@ def _finalize_turn(
 
 
 async def run_agent_stream(
+    *,
+    session: Session,
+    user: User,
+    question: str,
+    llm: BaseChatModel,
+    channel: str = "api",
+    conversation_id: int | None = None,
+    im_user_id: str = "",
+):
+    """流式执行治理链路（观测包装）。
+
+    逐 token 透传 ``_run_agent_stream_impl`` 的输出，并在结束帧统一记 T2.5 轮次指标。
+    """
+    start = time.perf_counter()
+    final_result: AgentResult | None = None
+    async for chunk_text, is_final, result in _run_agent_stream_impl(
+        session=session,
+        user=user,
+        question=question,
+        llm=llm,
+        channel=channel,
+        conversation_id=conversation_id,
+        im_user_id=im_user_id,
+    ):
+        if is_final and result is not None:
+            final_result = result
+        yield chunk_text, is_final, result
+    _observe_turn(final_result.decision if final_result is not None else "error", start)
+
+
+async def _run_agent_stream_impl(
     *,
     session: Session,
     user: User,

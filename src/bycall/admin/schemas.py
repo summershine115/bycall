@@ -151,6 +151,38 @@ class PromptUpdate(BaseModel):
     content: str | None = None
 
 
+# ============ 发布门 + 灰度 + 回滚（T2.4） ============
+
+
+class ReleasePublishRequest(BaseModel):
+    """发布配置版本的请求（提示词 / chat 模型共用）。
+
+    ``canary_percent``：0 或 100 = 全量切换 is_active；1–99 = 灰度——保留旧版激活，
+    运行时按 scope 稳定哈希把该比例流量路由到候选版本。
+    ``skip_gate``：仅允许运维在已验证过门的同版本上跳过（前端默认 false）。
+    """
+
+    canary_percent: int = Field(default=0, ge=0, le=100, description="灰度比例（0/100=全量）")
+    skip_gate: bool = Field(default=False, description="是否跳过评测门（默认不跳过）")
+
+
+class ReleaseOut(BaseModel):
+    """发布状态响应（from_attributes，脱敏：只回传门报告摘要由调用方处理）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str
+    target_prompt_version: int | None = None
+    previous_prompt_version: int | None = None
+    target_model_id: int | None = None
+    previous_model_id: int | None = None
+    canary_percent: int
+    status: str
+    gate_report_json: str = "{}"
+    created_at: datetime
+    updated_at: datetime
+
+
 # ============ Skill（领域知识文档，对齐 OpenClaw SKILL）============
 
 
