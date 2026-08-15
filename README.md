@@ -49,12 +49,17 @@ make dev
 # 5. 跑测试
 make ci-local          # lint + unit test（全部本地可跑，无需外部服务）
 
-# 6.（可选）起 postgres + redis
+# 6.（可选）体验参考场景（示例 MCP 连接器 + 3 类角色 + demo 账号，见 ADR-0009）
+make seed-reference   # 幂等灌入；之后 make dev 会拉起 demo 工单/库存连接器
+
+# 7.（可选）起 postgres + redis
 make docker-up
 ```
 
 > 测试用真实 zvec（嵌入式，无需起服务）+ FastAPI TestClient，因此 `make ci-local`
 > 不依赖 postgres/redis/docker，开箱即跑。
+> 平台**场景无关**（ADR-0009）：`examples/connectors/` 是可整体删除的参考场景包，
+> 用于演示如何把业务系统接成 MCP 连接器并套上治理（白名单 / 高危审批 / 身份透传）。
 
 ## 里程碑进度
 

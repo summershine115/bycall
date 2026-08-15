@@ -15,6 +15,7 @@
 | ADR-0006 | 持久化任务系统（SQLModel 增量，不引独立工作流引擎） | ✅ 已采纳 | 2026-07-30 | `0006-task-system-incremental.md` |
 | ADR-0007 | 受治理认知——两平面信任模型（策略平面严苛 / 认知平面开放+发布门） | ✅ 已采纳 | 2026-08-06 | `0007-governed-cognition-two-plane.md` |
 | ADR-0008 | 持久化任务执行核心 S1a（`run_tool_loop` 作 Step 内核 + typed event 统一） | ✅ 已采纳 | 2026-08-06 | `0008-agent-task-execution.md` |
+| ADR-0009 | 平台场景无关——不锁定付费行业，以参考场景包支撑试点 | ✅ 已采纳 | 2026-08-15 | `0009-scenario-agnostic-platform.md` |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
@@ -36,7 +37,7 @@
 | 权限缓存：会话级（绑定时算一次能力集） | ✅ 已采纳（沿用现实现） | design §7 |
 | Admin 认证：账号密码起步，SSO 落 T1.7 | ✅ 已排期 | execution-plan T1.7 |
 | per-session 模型：全局激活 + 会话覆盖，落 T1.3 | ✅ 已排期 | execution-plan T1.3 |
-| 首个付费行业 | ⏸ 后置（阶段 3 启动前必须拍板） | execution-plan 阶段 3 |
+| 首个付费行业 | ✅ 已拍板（2026-08-15）：**不锁定行业**——平台场景无关（开源），垂直场景由采用者自定义，仓库交付参考场景包 | ADR-0009 |
 | M5 收口 vs 行业试点顺序：先收口后试点（严格 0→1→2→3） | ✅ 已拍板（2026-08-13） | execution-plan 阶段总览 |
 | 冻结清单：S3/S4（含 Skill 晋升闸门、自动提议）、行业包资产化、前端视觉/主题打磨、成本预算/推送 outbox、群聊共同授权；恢复条件见 execution-plan §4 | 🧊 已冻结 | execution-plan §4 |
 

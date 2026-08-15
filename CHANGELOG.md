@@ -16,6 +16,15 @@
 
 ### 变更
 
+- 平台定位拍板（ADR-0009，T3.1）：**场景无关的开源安全可控 agent 平台，不锁定付费行业**；
+  垂直场景由采用者自定义，行业词汇不进平台核心。原「首个付费行业」开放决策就此关闭。
+- 新增「参考场景包」（T3.1）：`examples/connectors/` 两个示例 MCP 连接器（demo 工单系统 +
+  demo 备件库存，零 Bycall 依赖、可独立运行/复制改造）+ 3 类示例角色（technician 一线 /
+  supervisor 主管 / guest 访客最小权限）+ 3 个 demo 账号；`make seed-reference` 一键幂等灌入。
+  治理语义全程在线：工具进 `allowed_tools` 白名单（guest 看不到任何工具）、高危工具
+  `destructiveHint` 自动转 HITL 审批、调用者身份经 MCP meta 透传（连接器可自行鉴权/审计）。
+- `make lint` / `make fmt` / CI 检查范围扩展至 `examples/` 与 `scripts/`。
+
 - RAG 注入预算化（阶段 1 · T1.9）：检索结果不再裸拼接，经统一预算化管线处理——per-chunk
   截断（防爆单条撑爆上下文）、跨 KB 内容去重（指纹去近似重复转载）、低相关过滤（按相对
   score 裁剪 distraction）、总字符预算裁剪、相关性分档标注（高/中/低）。多轮与单轮两路共用
