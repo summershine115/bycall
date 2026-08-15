@@ -4,7 +4,7 @@ PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3.12)
 PKG := src/bycall
 VENV := .venv
 
-.PHONY: help venv install dev test test-unit test-integration lint fmt check ci-local docker-up docker-down clean
+.PHONY: help venv install dev test test-unit test-integration lint fmt check ci-local seed-reference docker-up docker-down clean
 
 help:  ## 显示所有可用目标
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -29,14 +29,17 @@ test-integration:  ## 跑 integration 目录（当前无需 docker，均使用�
 	$(PY) -m pytest tests/integration -q
 
 lint:  ## 静态检查
-	$(PY) -m ruff check $(PKG) tests
+	$(PY) -m ruff check $(PKG) tests examples scripts
 
 fmt:  ## 格式化
-	$(PY) -m ruff format $(PKG) tests
-	$(PY) -m ruff check --fix $(PKG) tests
+	$(PY) -m ruff format $(PKG) tests examples scripts
+	$(PY) -m ruff check --fix $(PKG) tests examples scripts
 
 check: lint  ## CI 本地等价检查（lint only；test/build 在 CI 里跑）
-	$(PY) -m ruff format --check $(PKG) tests
+	$(PY) -m ruff format --check $(PKG) tests examples scripts
+
+seed-reference:  ## 灌入参考场景包（示例角色/账号/MCP 连接器，幂等；见 ADR-0009）
+	PYTHONPATH=src $(PY) scripts/seed_reference.py
 
 ci-local: lint test  ## 本地模拟 CI：lint + 全部本地测试
 
