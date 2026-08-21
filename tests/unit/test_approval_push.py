@@ -220,7 +220,7 @@ class TestApproveEndpointPushOrdering:
 
         result = admin_api.approve_approval(
             42,
-            SimpleNamespace(note="ok"),
+            SimpleNamespace(note="ok", grant_scope="once"),
             MagicMock(),
             session,
             None,
@@ -246,7 +246,7 @@ class TestApproveEndpointPushOrdering:
         with pytest.raises(RuntimeError, match="commit failed"):
             admin_api.approve_approval(
                 42,
-                SimpleNamespace(note="ok"),
+                SimpleNamespace(note="ok", grant_scope="once"),
                 MagicMock(),
                 session,
                 None,

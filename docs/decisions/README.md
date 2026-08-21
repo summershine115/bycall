@@ -17,6 +17,7 @@
 | ADR-0008 | 持久化任务执行核心 S1a（`run_tool_loop` 作 Step 内核 + typed event 统一） | ✅ 已采纳 | 2026-08-06 | `0008-agent-task-execution.md` |
 | ADR-0009 | 平台场景无关——不锁定付费行业，以参考场景包支撑试点 | ✅ 已采纳 | 2026-08-15 | `0009-scenario-agnostic-platform.md` |
 | ADR-0010 | 评测与发布门——离线四类评测集 + 灰度发布/一键回滚 | ✅ 已采纳 | 2026-08-15 | `0010-eval-release-gate.md` |
+| ADR-0011 | 审批授权三档（once/session/always）持久化与撤销 | ✅ 已采纳 | 2026-08-21 | `0011-approval-grant-tiers.md` |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
@@ -41,6 +42,7 @@
 | 首个付费行业 | ✅ 已拍板（2026-08-15）：**不锁定行业**——平台场景无关（开源），垂直场景由采用者自定义，仓库交付参考场景包 | ADR-0009 |
 | M5 收口 vs 行业试点顺序：先收口后试点（严格 0→1→2→3） | ✅ 已拍板（2026-08-13） | execution-plan 阶段总览 |
 | 阶段 2 评测与发布系统：四类离线评测集进 CI、快照回放 diff、发布门 + 稳定哈希灰度 + is_active 回滚、五维 Prometheus 指标 | ✅ 已落地（2026-08-15） | ADR-0010、execution-plan 阶段 2 |
+| 阶段 3 T3.3 审批授权三档：ApprovalGrant 持久化 + 审批门短路 + 台账/撤销 + 免审执行指标 | ✅ 已落地（2026-08-21） | ADR-0011、execution-plan T3.3 |
 | 冻结清单：S3/S4（含 Skill 晋升闸门、自动提议）、行业包资产化、前端视觉/主题打磨、成本预算/推送 outbox、群聊共同授权；恢复条件见 execution-plan §4 | 🧊 已冻结 | execution-plan §4 |
 
 ## 3. 开放决策清单（待拍板）
@@ -100,4 +102,5 @@
 | `docs/execution-plan.md` | **主方向（阶段 2 已落地）** | 阶段 0/1 已收口（含 T1.9 上下文预算），阶段 2（评测与发布系统 T2.1–T2.5）已完成；下一步进入阶段 3 试点与参考场景（行业无关，ADR-0009） |
 | `docs/gaps.md` | 已就绪（阶段 1 全部闭合） | 六条治理缝隙逐条已闭合并勾掉（T1.1–T1.6）；T1.9 为阶段 1 追加项（RAG 预算化/投毒软降级） |
 | `docs/decisions/0010-eval-release-gate.md` | ✅ 已采纳 | 阶段 2 评测与发布系统 ADR（离线用例 / 回放 diff / 发布门 / 灰度回滚 / 五维指标） |
+| `docs/decisions/0011-approval-grant-tiers.md` | ✅ 已采纳 | T3.3 审批授权三档 ADR（once/session/always / 审批门短路 / 台账撤销 / 治理边界） |
 | `evals/README.md` | 随阶段 2 落地 | 评测 CLI 使用说明（make eval / eval-security / --snapshot / --compare） |

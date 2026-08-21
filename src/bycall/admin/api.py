@@ -38,6 +38,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
+    ApprovalGrantOut,
     ApprovalOut,
     ApprovalReview,
     AuditOut,
@@ -3723,6 +3724,7 @@ def _approval_to_out(req) -> ApprovalOut:
         reviewed_by=req.reviewed_by,
         reviewed_at=req.reviewed_at,
         review_note=req.review_note,
+        grant_id=req.grant_id,
         result_text=req.result_text,
         executed_at=req.executed_at,
         created_at=req.created_at,
@@ -3747,6 +3749,91 @@ def list_approvals(
     else:
         rows = session.exec(ApprovalRequest.select_all()).all()
     return [_approval_to_out(r) for r in rows[:limit]]
+
+
+def _grant_to_out(grant) -> ApprovalGrantOut:
+    """ApprovalGrant ORM → ApprovalGrantOut。"""
+    return ApprovalGrantOut(
+        id=grant.id,
+        user_id=grant.user_id,
+        user_name=grant.user_name,
+        tool_name=grant.tool_name,
+        scope=grant.scope,
+        conversation_id=grant.conversation_id,
+        status=grant.status,
+        granted_by=grant.granted_by,
+        granted_at=grant.granted_at,
+        grant_note=grant.grant_note,
+        revoked_by=grant.revoked_by,
+        revoked_at=grant.revoked_at,
+        created_at=grant.created_at,
+        updated_at=grant.updated_at,
+    )
+
+
+@router.get("/approvals/grants", response_model=list[ApprovalGrantOut])
+def list_approval_grants(
+    status_filter: str | None = Query(
+        default=None, alias="status", description="按状态过滤（active/revoked）"
+    ),
+    user_id: int | None = Query(default=None, description="按用户过滤"),
+    tool_name: str | None = Query(default=None, description="按工具过滤"),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[ApprovalGrantOut]:
+    """列审批授权（T3.3 三档台账，默认全部，按授权时间倒序）。"""
+    from bycall.governance.models import ApprovalGrant
+
+    stmt = ApprovalGrant.select_all(status=status_filter)
+    if user_id is not None:
+        stmt = stmt.where(ApprovalGrant.user_id == user_id)
+    if tool_name:
+        stmt = stmt.where(ApprovalGrant.tool_name == tool_name)
+    rows = session.exec(stmt).all()
+    return [_grant_to_out(r) for r in rows[:limit]]
+
+
+@router.post("/approvals/grants/{grant_id}/revoke", response_model=ApprovalGrantOut)
+def revoke_approval_grant(
+    grant_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalGrantOut:
+    """撤销审批授权（软删：status=revoked + 撤销人/时间 + 审计）——立即恢复人审。
+
+    仅 active 可撤销；已撤销的 → 409。撤销即刻生效：审批门只认 active 授权。
+    """
+    from bycall.governance.models import ApprovalGrant
+
+    grant = session.get(ApprovalGrant, grant_id)
+    if grant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"审批授权不存在: {grant_id}",
+        )
+    if grant.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"审批授权已撤销（当前状态：{grant.status}），不可重复操作",
+        )
+
+    operator = _get_operator_name(request)
+    grant.status = "revoked"
+    grant.revoked_by = operator
+    grant.revoked_at = datetime.now(UTC)
+    session.add(grant)
+
+    _audit_admin(
+        session,
+        request,
+        "revoke_approval_grant",
+        f"ApprovalGrant(#{grant.id}, {grant.tool_name}, {grant.scope}, user={grant.user_name})",
+    )
+    session.commit()
+    session.refresh(grant)
+    return _grant_to_out(grant)
 
 
 @router.get("/approvals/{approval_id}", response_model=ApprovalOut)
@@ -3780,6 +3867,13 @@ def approve_approval(
             detail=f"审批请求已处理（当前状态：{req.status}），不可重复审批",
         )
 
+    # T3.3 三档：session 档必须绑定会话（REST 单轮无会话 → 语义不成立，明确拒绝）。
+    if payload.grant_scope == "session" and req.conversation_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="会话级授权需要会话上下文（该请求来自无会话的单轮调用），请选择仅本次或永久",
+        )
+
     # 执行工具（在独立 session + 独立 capability 上下文中）。
     from bycall.tools.approval import execute_approved_tool, push_approval_result
 
@@ -3799,6 +3893,13 @@ def approve_approval(
     req.review_note = payload.note
     session.add(req)
 
+    # T3.3：批准时按档位落授权（once 不落表；session/always 幂等 upsert，重复授权只刷新）。
+    # 本次执行走人审路径，grant_id 不写（该列只标注"授权免审短路执行"的台账记录）。
+    grant_desc = "once"
+    if payload.grant_scope in ("session", "always"):
+        grant = _upsert_approval_grant(session, req, payload, operator)
+        grant_desc = f"{payload.grant_scope}(#{grant.id})"
+
     # 追加执行结果到会话历史（用户下次交互可见）。
     if req.conversation_id is not None:
         from bycall.agent.session_store import save_message
@@ -3809,7 +3910,12 @@ def approve_approval(
             msg = f"❌ 审批 #{req.id} 已通过但执行失败：{result_text[:500]}"
         save_message(session, req.conversation_id, "assistant", msg)
 
-    _audit_admin(session, request, "approve_tool", f"ApprovalRequest(#{req.id}, {req.tool_name})")
+    _audit_admin(
+        session,
+        request,
+        "approve_tool",
+        f"ApprovalRequest(#{req.id}, {req.tool_name}, grant={grant_desc})",
+    )
     session.commit()
     session.refresh(req)
     # M6：只有审批状态、结果和会话历史成功提交后才通知；失败不回滚已提交事务。
@@ -3818,6 +3924,47 @@ def approve_approval(
     # S1b：任务内审批 → 恢复关联任务（resume 按审批结果推进 Step）。
     _resume_task_after_approval(session, req)
     return _approval_to_out(req)
+
+
+def _upsert_approval_grant(session: Session, req, payload: ApprovalReview, operator: str):
+    """按 (user, tool, scope, conversation) 幂等落一条授权（T3.3）。
+
+    已有同维度 active 授权时只刷新授予人/时间/备注（避免重复行堆叠）；否则新建。
+    撤销后的授权不会复活——再次批准会新建一条，历史授权轨迹完整保留。
+    """
+    from sqlmodel import select
+
+    from bycall.governance.models import ApprovalGrant
+
+    conversation_id = req.conversation_id if payload.grant_scope == "session" else None
+    existing = session.exec(
+        select(ApprovalGrant).where(
+            ApprovalGrant.user_id == req.user_id,
+            ApprovalGrant.tool_name == req.tool_name,
+            ApprovalGrant.scope == payload.grant_scope,
+            ApprovalGrant.conversation_id == conversation_id,  # type: ignore[arg-type]
+            ApprovalGrant.status == "active",
+        )
+    ).first()
+    if existing is not None:
+        existing.granted_by = operator
+        existing.granted_at = datetime.now(UTC)
+        existing.grant_note = payload.note
+        session.add(existing)
+        return existing
+    grant = ApprovalGrant(
+        user_id=req.user_id,
+        user_name=req.user_name,
+        tool_name=req.tool_name,
+        scope=payload.grant_scope,
+        conversation_id=conversation_id,
+        status="active",
+        granted_by=operator,
+        grant_note=payload.note,
+    )
+    session.add(grant)
+    session.flush()  # 拿到 id 供审计详情引用
+    return grant
 
 
 @router.post("/approvals/{approval_id}/reject", response_model=ApprovalOut)

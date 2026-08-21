@@ -119,11 +119,108 @@ def create_approval_request(ctx: ApprovalContext, tool_name: str, args: dict[str
     return req_id
 
 
-def make_approval_gated_func(spec: ToolSpec):
-    """构造审批门包装的 func：破坏性工具不执行，而是创建审批请求并返回"待审批"消息。
+@dataclass(frozen=True)
+class ActiveGrant:
+    """命中的 active 授权快照（值对象）——session 关闭后 ORM 实例即 detached，
+    在 session 内提取成纯值再返回，调用方安全访问。"""
 
+    id: int
+    scope: str
+    granted_by: str
+
+
+def find_active_grant(
+    user_id: int, tool_name: str, conversation_id: int | None
+) -> ActiveGrant | None:
+    """查命中当前调用的 active 授权，无命中返回 None（T3.3 三档判定）。
+
+    判定规则（ADR-0011）：
+    - ``always`` 档：同 user + 同工具即命中（与会话无关）。
+    - ``session`` 档：还要求 ``conversation_id`` 与授权绑定的会话一致——跨会话不命中，
+      防止 A 会话的授权串到 B 会话（红线 #2 会话隔离在审批授权上的投影）。
+    - 用户不同 / 工具不同 / 已撤销：一律不命中（回退人审）。
+
+    返回 ``ActiveGrant`` 值对象（非 ORM 实例，避免 detached 访问报错）。
+    """
+    from bycall.governance.models import ApprovalGrant
+
+    hit = None
+    with session_scope() as session:
+        grants = session.exec(ApprovalGrant.select_active(user_id, tool_name)).all()
+        for g in grants:
+            if g.scope == "always":
+                hit = g
+                break
+            if (
+                g.scope == "session"
+                and g.conversation_id is not None
+                and conversation_id is not None
+                and g.conversation_id == conversation_id
+            ):
+                hit = g
+                break
+        if hit is not None:
+            return ActiveGrant(id=hit.id, scope=hit.scope, granted_by=hit.granted_by)
+    return None
+
+
+def _record_grant_execution(
+    ctx: ApprovalContext, spec: ToolSpec, kwargs: dict[str, Any], grant, result_text: str
+) -> None:
+    """把授权免审执行写进审批台账（status=executed + grant_id）——免审 ≠ 免记录。
+
+    与 ``create_approval_request`` 同样的独立 ``session_scope`` + 立即提交模式。
+    ``reviewed_by`` 记 ``grant:{scope}#{id}``，admin 审批队列里可区分人审与授权执行。
+    """
+    from datetime import UTC, datetime
+
+    from bycall.governance.models import ApprovalRequest
+    from bycall.observability.metrics import APPROVAL_GRANT_BYPASS
+
+    args_json = json.dumps(kwargs, ensure_ascii=False, default=str)
+    now = datetime.now(UTC)
+    with session_scope() as session:
+        req = ApprovalRequest(
+            user_id=ctx.user_id,
+            user_name=ctx.user_name,
+            conversation_id=ctx.conversation_id,
+            channel=ctx.channel,
+            im_user_id=ctx.im_user_id,
+            task_id=ctx.task_id,
+            step_id=ctx.step_id,
+            tool_name=spec.name,
+            tool_args_json=args_json,
+            status="executed",
+            reviewed_by=f"grant:{grant.scope}#{grant.id}",
+            grant_id=grant.id,
+            executed_at=now,
+            review_note=f"授权免审执行（{grant.scope} 档，由 {grant.granted_by} 授权）",
+            result_text=result_text[:_RESULT_TRUNCATE],
+        )
+        session.add(req)
+    APPROVAL_GRANT_BYPASS.labels(scope=grant.scope).inc()
+    logger.info(
+        "授权免审执行: tool=%s user=%s grant=%s#%s",
+        spec.name,
+        ctx.user_name,
+        grant.scope,
+        grant.id,
+    )
+
+
+def make_approval_gated_func(spec: ToolSpec, cap=None):
+    """构造审批门包装的 func：破坏性工具默认创建审批请求，命中授权时免审直执行。
+
+    判定顺序（T3.3 三档）：
+    1. 无审批上下文（admin 连通性测试 / 单测直接调 func）→ 降级直接执行（既有语义）。
+    2. 命中 active 授权（always / session 且会话匹配）→ **当轮直接执行** + 脱敏 +
+       台账记录（``grant_id``）——跳过的只是 HITL 人审，工具可见性仍由权限矩阵在
+       graph 构建时决定（LLM 看不到的工具进不了这里，授权无法越权）。
+    3. 未命中 → 创建 pending 审批请求 + 返回"待审批"消息（既有语义）。
+
+    ``cap`` 用于免审执行路径的统一脱敏管道（与正常工具一致）；为 None 时跳过脱敏
+    （仅出现在不经过 ``to_langchain_tools`` 的直连测试场景）。
     ``StructuredTool`` 按 schema 反射调用（``**kwargs``），故签名用 ``**kwargs``。
-    无审批上下文时（管理连通性测试 / 单元测试直接调 func）降级为直接执行（不拦截）。
     """
 
     def _gated(**kwargs: Any) -> str:
@@ -131,6 +228,16 @@ def make_approval_gated_func(spec: ToolSpec):
         if ctx is None:
             # 无审批上下文（admin 测试连通性 / 单元测试直接调 func）→ 降级直接执行。
             return spec.func(**kwargs)
+        grant = find_active_grant(ctx.user_id, spec.name, ctx.conversation_id)
+        if grant is not None:
+            result = spec.func(**kwargs)
+            if cap is not None:
+                from bycall.tools.redactor import sanitize_tool_result
+
+                result = sanitize_tool_result(result, cap, redactor=spec.redactor)
+            result_text = str(result)
+            _record_grant_execution(ctx, spec, kwargs, grant, result_text)
+            return result_text
         req_id = create_approval_request(ctx, spec.name, kwargs)
         args_summary = _summarize_args(kwargs)
         return (
@@ -301,9 +408,11 @@ def _build_approval_push_markdown(req, result_text: str) -> str:
 
 
 __all__ = [
+    "ActiveGrant",
     "ApprovalContext",
     "create_approval_request",
     "execute_approved_tool",
+    "find_active_grant",
     "get_approval_context",
     "make_approval_gated_func",
     "push_approval_result",

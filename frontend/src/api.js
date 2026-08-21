@@ -187,10 +187,17 @@ export const admin = {
       .get('/api/admin/approvals', { params: status ? { status } : {} })
       .then((r) => r.data),
   getApproval: (id) => http.get(`/api/admin/approvals/${id}`).then((r) => r.data),
-  approveApproval: (id, note) =>
-    http.post(`/api/admin/approvals/${id}/approve`, { note }).then((r) => r.data),
+  approveApproval: (id, note, grantScope = 'once') =>
+    http
+      .post(`/api/admin/approvals/${id}/approve`, { note, grant_scope: grantScope })
+      .then((r) => r.data),
   rejectApproval: (id, note) =>
     http.post(`/api/admin/approvals/${id}/reject`, { note }).then((r) => r.data),
+  // 审批授权（T3.3 三档 once/session/always）：台账列表 + 撤销
+  listApprovalGrants: (params = {}) =>
+    http.get('/api/admin/approvals/grants', { params }).then((r) => r.data),
+  revokeApprovalGrant: (id) =>
+    http.post(`/api/admin/approvals/grants/${id}/revoke`).then((r) => r.data),
   // 任务执行（S1）：多步任务列表 / 详情 / SSE 进度
   listTasks: (params = {}) => http.get('/api/admin/tasks', { params }).then((r) => r.data),
   getTask: (id) => http.get(`/api/admin/tasks/${id}`).then((r) => r.data),

@@ -1,6 +1,6 @@
 # Bycall 下一阶段执行计划（Execution Plan）
 
-> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 试点与参考场景进行中——T3.1 代码部分已落地）** · 更新：2026-08-15 · 关联：[决策登记册](decisions/README.md)
+> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码与 T3.3 审批授权三档已落地）** · 更新：2026-08-21 · 关联：[决策登记册](decisions/README.md)
 > 本文是 Bycall 当前唯一的**执行级工作方向**。它取代"继续按里程碑 M7+ / S3-S4 堆能力"的默认，
 > 改为"先收口、再评测、后试点"。所有新任务必须对齐本文的阶段与任务编号，未列入冻结清单的新
 > 能力不得动工。里程碑路线图的历史沿革仍见 `product-design.md` §6，本文与其冲突时以本文为准。
@@ -257,12 +257,16 @@ ADR-0009 替换为自己的流程；不再绑定具体行业）。
 - [ ] 复用 T2.2 权限用例对参考场景配置做安全回归
 **Dependencies**：T3.1。**Files**：流程配置包（角色+提示词+Skill+知识库结构+连接器）。**Scope**：L。
 
-#### T3.3 一条高风险 HITL 审批链
-**Description**：停机/参数修改等操作必须人审，全程可追溯。
+#### T3.3 一条高风险 HITL 审批链 —— ✅ 已完成（2026-08-21，ADR-0011）
+**Description**：停机/参数修改等操作必须人审，全程可追溯；批准时可按档位授权
+（once/session/always），授权与撤销全程落库可审计。
 **Acceptance**：
-- [ ] 审批三档（once/session/always）持久化
-- [ ] 审批结果主动推送发起员工，全程审计可追溯
-**Dependencies**：T3.1。**Files**：审批策略 + `tools/approval.py` 调优。**Scope**：M。
+- [x] 审批三档（once/session/always）持久化（`ApprovalGrant` 表 + 审批门短路 + 台账）
+- [x] 审批结果主动推送发起员工，全程审计可追溯（M6 推送已有；免审执行亦入台账
+  `grant_id` + `reviewed_by=grant:*`；新增 3 条授权越权安全用例锁定边界）
+**Dependencies**：T3.1。**Files**：`governance/models.py`（ApprovalGrant）、
+`tools/approval.py`（短路/台账）、`admin/api.py`（grants 端点）、
+`views/Approvals.vue`（档位 + 授权管理）。**Scope**：M。
 
 #### T3.4 业务效果看板
 **Description**：首修率 / 故障处理时间 / 工单成功率 / 人工接管率。

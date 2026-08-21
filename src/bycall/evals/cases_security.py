@@ -5,7 +5,8 @@
 2. 跨用户记忆泄漏：会话归属校验、per-user session_key、可信/不可信记忆分层；
 3. 提示词注入：用户消息 / RAG / 摘要不可提权 + 投毒标注 + 运行时披露护栏；
 4. 工具越权：白名单过滤、LLM 只见授权工具、capability meta、未注册名容错；
-5. 审批绕过：审批门拦截、执行前重算能力集、工具失效拒绝执行。
+5. 审批绕过：审批门拦截、执行前重算能力集、工具失效拒绝执行、授权三档边界
+   （会话隔离 / 用户隔离 / 撤销即失效，T3.3）。
 """
 
 from __future__ import annotations
@@ -454,12 +455,18 @@ def _sec_approval_gate_intercepts(_ctx) -> None:
                 channel="api",
             )
         )
-        with patch(
-            "bycall.tools.approval.create_approval_request",
-            side_effect=lambda ctx, tool_name, args: (
-                captured.append({"tool_name": tool_name, "args": args}),
-                101,
-            )[1],
+        # T3.3 后审批门先查授权表（session_scope）再决定拦截——指向隔离空库：
+        # 真实执行 find_active_grant 且必然无命中，验证无授权时仍走人审拦截。
+        with (
+            eval_session() as session,
+            patch("bycall.tools.approval.session_scope", _session_scope_factory(session)),
+            patch(
+                "bycall.tools.approval.create_approval_request",
+                side_effect=lambda ctx, tool_name, args: (
+                    captured.append({"tool_name": tool_name, "args": args}),
+                    101,
+                )[1],
+            ),
         ):
             result = make_approval_gated_func(spec)(target="prod-db")
     finally:
@@ -541,6 +548,146 @@ def _sec_approval_unavailable_tool_denied(_ctx) -> None:
 
     assert_true(not ok, "已删除工具的审批执行未被拒绝", result=result)
     assert_true("不再可用" in result, "拒绝原因缺失", result=result)
+
+
+def _seed_grant_user(session, name: str) -> int:
+    """在评测 session 里插入用户，返回 id。"""
+    session.add(User(name=name, role="member", is_active=True))
+    session.commit()
+    user = session.exec(User.select_by_name(name)).first()
+    assert user is not None
+    return user.id
+
+
+def _run_gate(spec, user_id: int, conversation_id: int | None) -> str:
+    """在审批上下文里调用审批门（用例内小工具，减少重复）。"""
+    from bycall.tools.approval import (
+        ApprovalContext,
+        make_approval_gated_func,
+        reset_approval_context,
+        set_approval_context,
+    )
+
+    token = set_approval_context(
+        ApprovalContext(
+            user_id=user_id,
+            user_name="eval",
+            conversation_id=conversation_id,
+            channel="api",
+        )
+    )
+    try:
+        return make_approval_gated_func(spec)(target="prod")
+    finally:
+        reset_approval_context(token)
+
+
+def _sec_approval_grant_session_isolated(_ctx) -> None:
+    """T3.3 授权不越权（会话边界）：session 档授权只在绑定会话内生效，跨会话回退人审。"""
+    from bycall.governance.models import ApprovalGrant
+    from bycall.tools.registry import unregister
+
+    executed: list[str] = []
+    spec = _register_eval_tool(
+        "eval_sec_grant_session_tool",
+        requires_approval=True,
+        func=lambda target: (executed.append(target), f"done:{target}")[1],
+    )
+    try:
+        with eval_session() as session:
+            uid = _seed_grant_user(session, "grant_user")
+            session.add(
+                ApprovalGrant(
+                    user_id=uid,
+                    user_name="grant_user",
+                    tool_name=spec.name,
+                    scope="session",
+                    conversation_id=1,
+                    status="active",
+                    granted_by="admin",
+                )
+            )
+            session.commit()
+            with patch("bycall.tools.approval.session_scope", _session_scope_factory(session)):
+                # 同会话 → 命中授权直接执行。
+                in_scope = _run_gate(spec, uid, conversation_id=1)
+                # 跨会话 → 必须回退人审，不得执行。
+                out_scope = _run_gate(spec, uid, conversation_id=2)
+
+        assert_true(executed == ["prod"], "session 授权跨会话仍执行（越权）", executed=executed)
+        assert_true("done:prod" in in_scope, "同会话授权未直接执行", result=in_scope)
+        assert_true("需要管理员审批" in out_scope, "跨会话调用未回退人审", result=out_scope)
+    finally:
+        unregister(spec.name)
+
+
+def _sec_approval_grant_no_cross_user(_ctx) -> None:
+    """T3.3 授权不越权（用户边界）：A 的 always 授权不能让 B 免审执行。"""
+    from bycall.governance.models import ApprovalGrant
+    from bycall.tools.registry import unregister
+
+    executed: list[str] = []
+    spec = _register_eval_tool(
+        "eval_sec_grant_user_tool",
+        requires_approval=True,
+        func=lambda target: (executed.append(target), f"done:{target}")[1],
+    )
+    try:
+        with eval_session() as session:
+            uid_a = _seed_grant_user(session, "grant_alice")
+            uid_b = _seed_grant_user(session, "grant_bob")
+            session.add(
+                ApprovalGrant(
+                    user_id=uid_a,
+                    user_name="grant_alice",
+                    tool_name=spec.name,
+                    scope="always",
+                    status="active",
+                    granted_by="admin",
+                )
+            )
+            session.commit()
+            with patch("bycall.tools.approval.session_scope", _session_scope_factory(session)):
+                result = _run_gate(spec, uid_b, conversation_id=1)
+
+        assert_true(executed == [], "他人授权被共享执行（越权）", executed=executed)
+        assert_true("需要管理员审批" in result, "未授权用户未回退人审", result=result)
+    finally:
+        unregister(spec.name)
+
+
+def _sec_approval_grant_revoked_falls_back(_ctx) -> None:
+    """T3.3 授权不越权（可撤销）：撤销后的授权立即失效，恢复人审。"""
+    from bycall.governance.models import ApprovalGrant
+    from bycall.tools.registry import unregister
+
+    executed: list[str] = []
+    spec = _register_eval_tool(
+        "eval_sec_grant_revoked_tool",
+        requires_approval=True,
+        func=lambda target: (executed.append(target), f"done:{target}")[1],
+    )
+    try:
+        with eval_session() as session:
+            uid = _seed_grant_user(session, "grant_carol")
+            session.add(
+                ApprovalGrant(
+                    user_id=uid,
+                    user_name="grant_carol",
+                    tool_name=spec.name,
+                    scope="always",
+                    status="revoked",  # 已撤销
+                    granted_by="admin",
+                )
+            )
+            session.commit()
+            with patch("bycall.tools.approval.session_scope", _session_scope_factory(session)):
+                result = _run_gate(spec, uid, conversation_id=1)
+
+        assert_true(executed == [], "已撤销授权仍免审执行（越权）", executed=executed)
+        assert_true("需要管理员审批" in result, "撤销后未回退人审", result=result)
+    finally:
+        unregister(spec.name)
 
 
 CASES = [
@@ -691,6 +838,30 @@ CASES = [
         category="permission_security",
         description="审批对应的工具已删除/下架 → 拒绝执行",
         run=_sec_approval_unavailable_tool_denied,
+        change_types=("tool",),
+    ),
+    EvalCase(
+        id="security_approval_grant_session_isolated",
+        name="审批绕过：授权会话边界",
+        category="permission_security",
+        description="session 档授权只在绑定会话生效，跨会话回退人审（T3.3）",
+        run=_sec_approval_grant_session_isolated,
+        change_types=("tool", "role"),
+    ),
+    EvalCase(
+        id="security_approval_grant_no_cross_user",
+        name="审批绕过：授权用户边界",
+        category="permission_security",
+        description="A 的 always 授权不能让 B 免审执行（T3.3）",
+        run=_sec_approval_grant_no_cross_user,
+        change_types=("tool", "role"),
+    ),
+    EvalCase(
+        id="security_approval_grant_revoked_falls_back",
+        name="审批绕过：授权撤销即失效",
+        category="permission_security",
+        description="撤销后的授权立即恢复人审，不留免审后门（T3.3）",
+        run=_sec_approval_grant_revoked_falls_back,
         change_types=("tool",),
     ),
 ]

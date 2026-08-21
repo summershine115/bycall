@@ -69,15 +69,17 @@ def to_langchain_tools(specs: list[ToolSpec], cap: CapabilitySet) -> list[BaseTo
     声明了 ``redactor`` 的工具，返回值经 ``redactor(raw, cap)`` 脱敏后才进 LLM 上下文；
     未声明的原样透传。``CapabilitySet`` 透传到此处即不再回查 DB。
 
-    HITL 审批门（M4 Slice C）：``requires_approval=True`` 的工具（MCP destructiveHint）
-    不走脱敏包装，改走审批门（``make_approval_gated_func``）——调用时不执行，而是创建
-    ``ApprovalRequest(pending)`` 并返回"待审批"消息给 LLM。审批通过后的实际执行 +
-    脱敏在 ``execute_approved_tool`` 中独立处理（绕过 StructuredTool 直接调 spec.func）。
+    HITL 审批门（M4 Slice C + T3.3 三档）：``requires_approval=True`` 的工具（MCP
+    destructiveHint）不走脱敏包装，改走审批门（``make_approval_gated_func``）——默认
+    创建 ``ApprovalRequest(pending)`` 并返回"待审批"消息给 LLM；命中 active 授权
+    （session/always 档）时当轮直接执行（``cap`` 传入供免审路径统一脱敏）。
+    审批通过后的实际执行 + 脱敏在 ``execute_approved_tool`` 中独立处理（绕过
+    StructuredTool 直接调 spec.func）。
     """
     tools: list[BaseTool] = []
     for spec in specs:
         if spec.requires_approval:
-            func = make_approval_gated_func(spec)
+            func = make_approval_gated_func(spec, cap)
         else:
             func = _wrap_with_redactor(spec, cap)
         tools.append(

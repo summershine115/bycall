@@ -427,6 +427,9 @@ class ApprovalRequest(SQLModel, table=True):
     tool_args_json: str = "{}"
     status: str = Field(default="pending", index=True)
     reviewed_by: str = ""
+    # T3.3：授权免审执行（grant 短路）时记录命中的 ApprovalGrant.id + reviewed_by
+    # 标注 "grant:{scope}#{id}"——免审执行同样进审批台账，全程可追溯。
+    grant_id: int | None = Field(default=None, index=True)
     reviewed_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
     review_note: str = ""
     result_text: str = ""
@@ -478,6 +481,65 @@ class ApprovalRequest(SQLModel, table=True):
         from sqlmodel import select
 
         return select(ApprovalRequest).order_by(ApprovalRequest.created_at.desc())
+
+
+class ApprovalGrant(SQLModel, table=True):
+    """审批授权（T3.3 三档 once/session/always 的持久化）。
+
+    管理员批准一次审批时可选择附加授权档位：
+    - ``once``：不落本表——仅本次执行（既有语义，零新增风险）。
+    - ``session``：本会话内同工具免审（绑定 ``conversation_id``，跨会话/跨用户无效）。
+    - ``always``：该用户该工具永久免审（可随时撤销，撤销即恢复人审）。
+
+    治理边界（ADR-0011，红线 #5 的补充而非放松）：
+    - 授权只跳过 **HITL 人审**，不跳过权限矩阵——工具仍必须在该用户能力集白名单内
+      （LLM 看不到的工具根本进不了审批门，授权无从生效）。
+    - ``session`` 档以 ``conversation_id`` 为边界：换会话即失效，防止跨会话串权。
+    - 撤销是软删（status=revoked + revoked_by/at）——授权生命周期全程可审计。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    user_name: str = ""
+    tool_name: str = Field(index=True)
+    scope: str = Field(index=True)  # session / always（once 不落表）
+    conversation_id: int | None = Field(default=None, index=True)  # session 档必填
+    status: str = Field(default="active", index=True)  # active / revoked
+    granted_by: str = ""
+    granted_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    grant_note: str = ""
+    revoked_by: str = ""
+    revoked_at: datetime | None = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_active(user_id: int, tool_name: str):
+        """查某用户某工具的全部 active 授权（审批门短路判定用，数据量极小）。"""
+        from sqlmodel import select
+
+        return select(ApprovalGrant).where(
+            ApprovalGrant.user_id == user_id,
+            ApprovalGrant.tool_name == tool_name,
+            ApprovalGrant.status == "active",
+        )
+
+    @staticmethod
+    def select_all(status: str | None = None):
+        """列授权（可按状态过滤，按授权时间倒序）。"""
+        from sqlmodel import select
+
+        stmt = select(ApprovalGrant)
+        if status:
+            stmt = stmt.where(ApprovalGrant.status == status)
+        return stmt.order_by(ApprovalGrant.granted_at.desc())
 
 
 # ============ KnowledgeBase：知识库实体（参考 WeKnora，per-KB embedding + collection）============

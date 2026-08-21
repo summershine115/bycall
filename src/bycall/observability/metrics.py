@@ -99,6 +99,12 @@ DUPLICATE_MESSAGES = Counter(
     "幂等去重拦截的重复消息数",
     ["layer"],  # layer: inflight/persisted（低基数）
 )
+# T3.3 授权免审执行次数（人工接管率的下降来源：session/always 档授权命中的直执行）。
+APPROVAL_GRANT_BYPASS = Counter(
+    "bycall_approval_grant_bypass_total",
+    "审批授权（session/always 档）免审直接执行次数",
+    ["scope"],  # scope: session/always（低基数）
+)
 # 对话轮次总数（按 decision 标签，供失败率/接管率做分母）。
 TURNS_TOTAL = Counter(
     "bycall_turns_total",
@@ -174,6 +180,7 @@ def ops_metrics_snapshot() -> dict:
                 key = kind_to_key.get(sample.labels.get("kind", ""))
                 if key is not None:
                     takeover[key] += sample.value
+    grant_bypass = _counter_sum("bycall_approval_grant_bypass")
     turns = _counter_sum("bycall_turns")
     failures = _counter_sum("bycall_turn_failures")
     duplicates = _counter_sum("bycall_duplicate_messages")
@@ -196,6 +203,7 @@ def ops_metrics_snapshot() -> dict:
             "requested": int(takeover["requested"]),
             "approved": int(takeover["approved"]),
             "rejected": int(takeover["rejected"]),
+            "grant_bypass": int(grant_bypass),
             "rate": _rate(takeover["requested"], turns),
         },
         "failure": {

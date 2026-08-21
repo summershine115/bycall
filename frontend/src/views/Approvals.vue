@@ -22,58 +22,131 @@
     <ContentLoader v-if="loading" :rows="8" />
 
     <div v-else class="bc-panel">
-      <EmptyState
-        v-if="!approvals.length"
-        icon="DocumentChecked"
-        :title="statusFilter ? '该状态下暂无审批请求' : '暂无审批请求'"
-        description="数字员工调用敏感工具时会产生审批请求，在此批准或拒绝后才会真正执行。"
-      />
+      <el-tabs v-model="activeTab">
+        <!-- Tab 1：审批队列 -->
+        <el-tab-pane label="审批队列" name="queue">
+          <EmptyState
+            v-if="!approvals.length"
+            icon="DocumentChecked"
+            :title="statusFilter ? '该状态下暂无审批请求' : '暂无审批请求'"
+            description="数字员工调用敏感工具时会产生审批请求，在此批准或拒绝后才会真正执行。"
+          />
 
-      <el-table v-else :data="approvals">
-        <el-table-column prop="id" label="ID" width="70" align="center" />
-        <el-table-column label="用户" width="120">
-          <template #default="{ row }">
-            <span class="bc-strong">{{ row.user_name || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="工具" min-width="200">
-          <template #default="{ row }">
-            <span class="mono bc-text-xs">{{ row.tool_name }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="参数" min-width="200">
-          <template #default="{ row }">
-            <span v-if="hasArgs(row.tool_args)" class="mono bc-text-xs bc-muted">
-              {{ truncateArgs(row.tool_args) }}
-            </span>
-            <span v-else class="bc-empty">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="审批人" width="120">
-          <template #default="{ row }">
-            <span class="bc-text-sm">{{ row.reviewed_by || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170">
-          <template #default="{ row }">
-            <span class="bc-text-sm">{{ fmtTime(row.created_at) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <template v-if="row.status === 'pending'">
-              <el-button size="small" type="primary" @click="openReview(row, 'approve')">批准</el-button>
-              <el-button size="small" type="danger" plain @click="openReview(row, 'reject')">拒绝</el-button>
-            </template>
-            <el-button v-else size="small" @click="openDetail(row)">详情</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          <el-table v-else :data="approvals">
+            <el-table-column prop="id" label="ID" width="70" align="center" />
+            <el-table-column label="用户" width="120">
+              <template #default="{ row }">
+                <span class="bc-strong">{{ row.user_name || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="工具" min-width="200">
+              <template #default="{ row }">
+                <span class="mono bc-text-xs">{{ row.tool_name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="参数" min-width="200">
+              <template #default="{ row }">
+                <span v-if="hasArgs(row.tool_args)" class="mono bc-text-xs bc-muted">
+                  {{ truncateArgs(row.tool_args) }}
+                </span>
+                <span v-else class="bc-empty">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="审批人" width="150">
+              <template #default="{ row }">
+                <span class="bc-text-sm">{{ row.reviewed_by || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="170">
+              <template #default="{ row }">
+                <span class="bc-text-sm">{{ fmtTime(row.created_at) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="200" fixed="right">
+              <template #default="{ row }">
+                <template v-if="row.status === 'pending'">
+                  <el-button size="small" type="primary" @click="openReview(row, 'approve')">批准</el-button>
+                  <el-button size="small" type="danger" plain @click="openReview(row, 'reject')">拒绝</el-button>
+                </template>
+                <el-button v-else size="small" @click="openDetail(row)">详情</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <!-- Tab 2：授权管理（T3.3 三档台账） -->
+        <el-tab-pane label="授权管理" name="grants">
+          <EmptyState
+            v-if="!grants.length"
+            icon="Key"
+            title="暂无审批授权"
+            description="批准审批时选择「本会话免审」或「永久免审」会在此登记，可随时撤销以恢复人审。"
+          />
+          <el-table v-else :data="grants">
+            <el-table-column prop="id" label="ID" width="70" align="center" />
+            <el-table-column label="用户" width="120">
+              <template #default="{ row }">
+                <span class="bc-strong">{{ row.user_name || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="工具" min-width="200">
+              <template #default="{ row }">
+                <span class="mono bc-text-xs">{{ row.tool_name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="档位" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.scope === 'always' ? 'danger' : 'warning'" size="small">
+                  {{ scopeLabel(row.scope) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="生效范围" min-width="140">
+              <template #default="{ row }">
+                <span class="bc-text-sm">
+                  {{ row.scope === 'session' ? `会话 #${row.conversation_id}` : '全部会话' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'active' ? 'success' : 'info'" size="small">
+                  {{ row.status === 'active' ? '生效中' : '已撤销' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="授予人" width="120">
+              <template #default="{ row }">
+                <span class="bc-text-sm">{{ row.granted_by || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="授予时间" width="170">
+              <template #default="{ row }">
+                <span class="bc-text-sm">{{ fmtTime(row.granted_at) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'active'"
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="onRevokeGrant(row)"
+                >
+                  撤销
+                </el-button>
+                <span v-else class="bc-empty bc-text-xs">{{ fmtTime(row.revoked_at) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </div>
 
     <!-- 审批对话框（批准 / 拒绝共用） -->
@@ -87,6 +160,16 @@
         <span class="mono bc-text-sm bc-strong">{{ reviewRow?.tool_name }}</span>
       </div>
       <el-form label-position="top" style="margin-top: var(--bc-space-3)">
+        <el-form-item v-if="reviewAction === 'approve'" label="授权档位">
+          <el-radio-group v-model="reviewGrantScope">
+            <el-radio value="once">仅本次</el-radio>
+            <el-radio value="session" :disabled="reviewRow?.conversation_id == null">
+              本会话免审
+            </el-radio>
+            <el-radio value="always">永久免审</el-radio>
+          </el-radio-group>
+          <div class="grant-hint bc-text-xs bc-muted">{{ grantHint }}</div>
+        </el-form-item>
         <el-form-item label="审批备注">
           <el-input
             v-model="reviewNote"
@@ -138,8 +221,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime as fmtTime } from '../utils/format'
@@ -150,12 +233,18 @@ import EmptyState from '../components/EmptyState.vue'
 const approvals = ref([])
 const loading = ref(false)
 const statusFilter = ref('')
+const activeTab = ref('queue')
+
+// 授权管理（T3.3 三档台账）
+const grants = ref([])
+const grantStatusFilter = ref('')
 
 // 审批对话框状态
 const reviewVisible = ref(false)
 const reviewAction = ref('approve') // approve | reject
 const reviewRow = ref(null)
 const reviewNote = ref('')
+const reviewGrantScope = ref('once') // once | session | always
 const reviewing = ref(false)
 
 // 详情对话框状态
@@ -165,10 +254,20 @@ const detailRow = ref(null)
 async function load() {
   loading.value = true
   try {
-    approvals.value = await admin.listApprovals(statusFilter.value)
+    await Promise.all([loadApprovals(), loadGrants()])
   } finally {
     loading.value = false
   }
+}
+
+async function loadApprovals() {
+  approvals.value = await admin.listApprovals(statusFilter.value)
+}
+
+async function loadGrants() {
+  grants.value = await admin.listApprovalGrants(
+    grantStatusFilter.value ? { status: grantStatusFilter.value } : {}
+  )
 }
 
 onMounted(load)
@@ -203,8 +302,17 @@ function openReview(row, action) {
   reviewRow.value = row
   reviewAction.value = action
   reviewNote.value = ''
+  reviewGrantScope.value = 'once'
   reviewVisible.value = true
 }
+
+// 授权档位说明（批准对话框内联提示，避免误选 always）
+const grantHints = {
+  once: '仅本次执行需要人审（默认）；后续同类调用仍会进审批队列。',
+  session: `本会话（#${reviewRow.value?.conversation_id}）内该工具免审直执行；跨会话仍需人审。`,
+  always: '该用户此后调用该工具一律免审直执行（仍受权限矩阵约束）；可随时在「授权管理」撤销。',
+}
+const grantHint = computed(() => grantHints[reviewGrantScope.value] || '')
 
 async function onReview() {
   reviewing.value = true
@@ -212,9 +320,11 @@ async function onReview() {
     const row = reviewRow.value
     if (reviewAction.value === 'approve') {
       // 批准会触发工具执行；后端可能返回 executed 或 failed（工具不存在时）
-      const result = await admin.approveApproval(row.id, reviewNote.value)
+      const result = await admin.approveApproval(row.id, reviewNote.value, reviewGrantScope.value)
       if (result.status === 'failed') {
         ElMessage.warning('已批准，但工具执行失败')
+      } else if (reviewGrantScope.value !== 'once') {
+        ElMessage.success(`已批准并执行；已登记${scopeLabel(reviewGrantScope.value)}授权`)
       } else {
         ElMessage.success('已批准并执行')
       }
@@ -229,6 +339,26 @@ async function onReview() {
   }
 }
 
+// —— 授权档位展示 ——
+function scopeLabel(scope) {
+  return { session: '会话级', always: '永久' }[scope] || scope
+}
+
+async function onRevokeGrant(row) {
+  try {
+    await ElMessageBox.confirm(
+      `撤销后 ${row.user_name || '该用户'} 调用 ${row.tool_name} 将立即恢复人审。`,
+      '撤销授权',
+      { type: 'warning', confirmButtonText: '撤销', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  await admin.revokeApprovalGrant(row.id)
+  ElMessage.success('授权已撤销，恢复人审')
+  await loadGrants()
+}
+
 // —— 详情 ——
 function openDetail(row) {
   detailRow.value = row
@@ -241,6 +371,10 @@ function openDetail(row) {
   display: flex;
   align-items: center;
   gap: var(--bc-space-2);
+}
+.grant-hint {
+  margin-top: var(--bc-space-1);
+  line-height: 1.5;
 }
 .json-block {
   margin: 0;

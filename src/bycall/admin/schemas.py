@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -838,14 +838,41 @@ class ApprovalOut(BaseModel):
     review_note: str = ""
     result_text: str = ""
     executed_at: datetime | None = None
+    grant_id: int | None = None  # T3.3：授权免审执行命中的 ApprovalGrant.id
     created_at: datetime
     updated_at: datetime
 
 
 class ApprovalReview(BaseModel):
-    """审批操作请求体（approve / reject 共用）。"""
+    """审批操作请求体（approve / reject 共用）。
+
+    ``grant_scope`` 仅 approve 生效（T3.3 三档）：once=仅本次（默认，既有语义）；
+    session=本会话内同工具免审；always=该用户该工具永久免审（可随时撤销）。
+    """
 
     note: str = Field(default="", description="审批备注（可选）")
+    grant_scope: Literal["once", "session", "always"] = Field(
+        default="once", description="授权档位：once/session/always（仅批准时生效）"
+    )
+
+
+class ApprovalGrantOut(BaseModel):
+    """审批授权响应（T3.3 三档的持久化记录）。"""
+
+    id: int
+    user_id: int
+    user_name: str = ""
+    tool_name: str
+    scope: str  # session / always
+    conversation_id: int | None = None
+    status: str  # active / revoked
+    granted_by: str = ""
+    granted_at: datetime
+    grant_note: str = ""
+    revoked_by: str = ""
+    revoked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 # ============ Skill 导入导出 ============
