@@ -147,12 +147,16 @@ def _read_db(key: str, session: Session | None) -> str | None:
 
 
 def mask_secret(value: str) -> str:
-    """脱敏：只显示前 4 + 后 4，中间用 * 代替。空值返回 '(未设置)'。"""
+    """脱敏：只显示前 4 + 后 4，中间固定 8 个 *。
+
+    星号数量不随原文长度变化：既避免长 token（如 JWT）刷屏，也不泄露密钥长度。
+    空值返回 '(未设置)'；短值（≤16）不足以同时露头尾，整体打码。
+    """
     if not value:
         return "(未设置)"
-    if len(value) <= 12:
+    if len(value) <= 16:
         return "*" * len(value)
-    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+    return value[:4] + "*" * 8 + value[-4:]
 
 
 __all__ = [
