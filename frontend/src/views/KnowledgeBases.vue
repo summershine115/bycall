@@ -9,7 +9,27 @@
 
     <ContentLoader v-if="loading" :rows="3" />
 
-    <div v-else class="bc-panel">
+    <template v-else>
+      <!-- ============ KPI 行（真实数据派生） ============ -->
+      <div class="kpis">
+        <div class="kpi bc-panel">
+          <div class="kpi__label">知识库</div>
+          <div class="kpi__value mono">{{ kbs.length }}</div>
+          <div class="kpi__meta">库间检索完全隔离</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">文档总数</div>
+          <div class="kpi__value mono">{{ fmtSum(kpi.docs) }}</div>
+          <div class="kpi__meta">已索引入库</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">切块总数</div>
+          <div class="kpi__value mono">{{ fmtSum(kpi.chunks) }}</div>
+          <div class="kpi__meta">父子块启用 {{ kpi.parentChild }} 库</div>
+        </div>
+      </div>
+
+      <div class="bc-panel">
       <EmptyState
         v-if="!kbs.length"
         icon="Files"
@@ -59,7 +79,13 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div class="table-foot">
+        <span>嵌入模型建库后不可更换（维度已固定）；新建库默认 auto 切块</span>
+        <span class="mono">{{ kbs.length }} 库</span>
+      </div>
     </div>
+    </template>
 
     <!-- 新建/编辑知识库对话框 -->
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑知识库' : '新建知识库'" width="580px">
@@ -137,7 +163,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
@@ -151,6 +177,14 @@ import EmptyState from '../components/EmptyState.vue'
 const router = useRouter()
 const kbs = ref([])
 const embedModels = ref([])
+
+// KPI（真实数据派生）
+const kpi = computed(() => ({
+  docs: kbs.value.reduce((s, k) => s + (k.document_count ?? 0), 0),
+  chunks: kbs.value.reduce((s, k) => s + (k.chunk_count ?? 0), 0),
+  parentChild: kbs.value.filter((k) => k.enable_parent_child).length,
+}))
+const fmtSum = (n) => (n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = useCrud({
   emptyForm: () => ({
     name: '', description: '', embedding_model_id: null,
@@ -248,6 +282,51 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* ============ KPI 行（设计稿语言） ============ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.kpi {
+  padding: var(--bc-space-4);
+  transition: box-shadow 0.15s var(--bc-ease, ease-out);
+}
+.kpi:hover {
+  box-shadow: var(--bc-shadow-sm);
+}
+.kpi__label {
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  letter-spacing: 0.02em;
+}
+.kpi__value {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-3xl);
+  font-weight: var(--bc-weight-semibold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.kpi__meta {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+
+/* ============ 表脚 ============ */
+.table-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border-top: 1px solid var(--bc-border);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+
 .kb-cell {
   display: flex;
   flex-direction: column;

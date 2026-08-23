@@ -7,7 +7,34 @@
       <el-button :icon="Refresh" circle aria-label="刷新" @click="loadTasks" />
     </PageHeader>
 
-    <el-tabs v-model="activeTab">
+    <!-- ============ KPI 行（设计稿：label + mono 大数 + 真实脚注） ============ -->
+    <div class="kpis">
+      <div class="kpi bc-panel">
+        <div class="kpi__label">启用调度</div>
+        <div class="kpi__value mono">{{ kpiData.enabledSchedules }}</div>
+        <div class="kpi__meta">cron × {{ kpiData.cronCount }} · 事件 × {{ kpiData.eventCount }}</div>
+      </div>
+      <div class="kpi bc-panel">
+        <div class="kpi__label">今日任务</div>
+        <div class="kpi__value mono">{{ kpiData.todayTasks }}</div>
+        <div class="kpi__meta">含对话 / 定时 / 事件触发</div>
+      </div>
+      <div class="kpi bc-panel">
+        <div class="kpi__label">进行中</div>
+        <div class="kpi__value mono">{{ kpiData.activeTasks }}</div>
+        <div class="kpi__meta">规划 + 执行 + 暂停待审批</div>
+      </div>
+      <div class="kpi bc-panel">
+        <div class="kpi__label">近期失败</div>
+        <div class="kpi__value mono">{{ kpiData.failedTasks }}</div>
+        <div class="kpi__meta">
+          <span v-if="kpiData.failedTasks" class="kpi__pill kpi__pill--warn">需处理</span>
+          <span v-else class="kpi__pill kpi__pill--ok">无积压</span>
+        </div>
+      </div>
+    </div>
+
+    <el-tabs v-model="activeTab" class="tasks-tabs">
       <!-- ==================== 任务列表 ==================== -->
       <el-tab-pane label="任务列表" name="tasks">
         <ContentLoader v-if="tasksLoading" :rows="6" />
@@ -67,6 +94,19 @@
               新建调度
             </el-button>
           </div>
+          <!-- 触发类型 chips（设计稿：filterbar 带计数胶囊） -->
+          <div class="filterbar">
+            <button
+              v-for="c in scheduleChips"
+              :key="c.value"
+              type="button"
+              class="fchip"
+              :class="{ 'is-on': scheduleFilter === c.value }"
+              @click="scheduleFilter = c.value"
+            >
+              {{ c.label }} <span class="n">{{ c.count }}</span>
+            </button>
+          </div>
           <ContentLoader v-if="schedulesLoading" :rows="4" />
           <EmptyState
             v-else-if="!schedules.length"
@@ -74,7 +114,7 @@
             title="暂无调度"
             description="新建 cron 定时任务或事件入口（外部系统 POST /api/events/{event_source} 触发）。"
           />
-          <el-table v-else :data="schedules">
+          <el-table v-else :data="filteredSchedules">
             <el-table-column prop="id" label="ID" width="70" align="center" />
             <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
             <el-table-column label="类型" width="90">
@@ -259,6 +299,50 @@ import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 const activeTab = ref('tasks')
+
+// ==================== KPI（真实数据派生） ====================
+const isToday = (iso) => {
+  if (!iso) return false
+  const d = new Date(iso)
+  const now = new Date()
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  )
+}
+const kpiData = computed(() => {
+  const enabled = schedules.value.filter((s) => s.is_enabled)
+  return {
+    enabledSchedules: enabled.length,
+    cronCount: enabled.filter((s) => s.trigger_type === 'cron').length,
+    eventCount: enabled.filter((s) => s.trigger_type !== 'cron').length,
+    todayTasks: tasks.value.filter((t) => isToday(t.created_at)).length,
+    activeTasks: tasks.value.filter((t) => ['planning', 'running', 'paused'].includes(t.status)).length,
+    failedTasks: tasks.value.filter((t) => t.status === 'failed').length,
+  }
+})
+
+// ==================== 调度类型筛选（chips） ====================
+const scheduleFilter = ref('all')
+const filteredSchedules = computed(() =>
+  scheduleFilter.value === 'all'
+    ? schedules.value
+    : schedules.value.filter((s) => s.trigger_type === scheduleFilter.value),
+)
+const scheduleChips = computed(() => [
+  { label: '全部', value: 'all', count: schedules.value.length },
+  {
+    label: '定时 cron',
+    value: 'cron',
+    count: schedules.value.filter((s) => s.trigger_type === 'cron').length,
+  },
+  {
+    label: '事件 webhook',
+    value: 'event',
+    count: schedules.value.filter((s) => s.trigger_type !== 'cron').length,
+  },
+])
 
 // ==================== 任务列表 ====================
 const tasks = ref([])
@@ -553,6 +637,107 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ============ KPI 行（设计稿语言：label + mono 大数 + 脚注） ============ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.kpi {
+  padding: var(--bc-space-4);
+  transition: box-shadow 0.15s var(--bc-ease, ease-out);
+}
+.kpi:hover {
+  box-shadow: var(--bc-shadow-sm);
+}
+.kpi__label {
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  letter-spacing: 0.02em;
+}
+.kpi__value {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-3xl);
+  font-weight: var(--bc-weight-semibold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.kpi__meta {
+  margin-top: var(--bc-space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+.kpi__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--bc-space-2);
+  border-radius: var(--bc-radius-full);
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+}
+.kpi__pill--warn {
+  background: var(--bc-warning-bg);
+  color: var(--bc-warning-text);
+}
+.kpi__pill--ok {
+  background: var(--bc-success-bg);
+  color: var(--bc-success-text);
+}
+
+/* ============ 触发类型 chips ============ */
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--bc-space-3);
+}
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-full);
+  background: transparent;
+  color: var(--bc-text-2);
+  font-family: inherit;
+  font-size: var(--bc-text-xs);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s var(--bc-ease, ease-out);
+}
+.fchip .n {
+  font-family: var(--bc-font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-text-3);
+}
+.fchip:hover {
+  border-color: var(--bc-border-strong);
+  color: var(--bc-text-1);
+}
+.fchip.is-on {
+  background: var(--bc-primary-6);
+  border-color: var(--bc-primary-6);
+  color: var(--bc-on-primary, #fff);
+}
+.fchip.is-on .n {
+  color: var(--bc-on-primary, #fff);
+  opacity: 0.72;
+}
+
+.tasks-tabs {
+  margin-top: var(--bc-space-2);
+}
 .toolbar {
   display: flex;
   align-items: center;

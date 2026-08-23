@@ -27,6 +27,27 @@
     </div>
 
     <div v-if="!loading" class="bc-panel">
+      <div class="filterbar">
+        <button
+          v-for="c in statusChips"
+          :key="c.value"
+          type="button"
+          class="fchip"
+          :class="{ 'is-on': statusFilter === c.value }"
+          @click="statusFilter = c.value"
+        >
+          {{ c.label }} <span class="n">{{ c.count }}</span>
+        </button>
+        <span class="filter-spacer"></span>
+        <el-input
+          v-model="searchQ"
+          size="small"
+          clearable
+          :prefix-icon="Search"
+          placeholder="按名称 / 描述搜索"
+          class="filter-search"
+        />
+      </div>
       <EmptyState
         v-if="!skills.length"
         icon="MagicStick"
@@ -36,7 +57,15 @@
         <el-button type="primary" :icon="Plus" @click="openCreate">新建第一个技能</el-button>
       </EmptyState>
 
-      <el-table v-else ref="tableRef" :data="skills" @selection-change="onSelectionChange">
+      <!-- 筛选无匹配空态 -->
+      <EmptyState
+        v-if="skills.length && !filteredSkills.length"
+        icon="Search"
+        title="没有匹配的技能"
+        :description="`${statusFilterLabel}${searchQ ? ' × 「' + searchQ + '」' : ''}组合下无结果，试试切回全部或清空关键词`"
+      />
+
+      <el-table v-if="filteredSkills.length" ref="tableRef" :data="filteredSkills" @selection-change="onSelectionChange">
         <el-table-column type="selection" width="50" />
         <el-table-column label="技能名" width="180">
           <template #default="{ row }">
@@ -49,6 +78,13 @@
         <el-table-column label="内容" min-width="300">
           <template #default="{ row }">
             <div class="bc-cell-clamp">{{ row.content }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="披露方式" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.disclosure === 'on_demand' ? 'warning' : 'info'" effect="plain">
+              {{ row.disclosure === 'on_demand' ? '按需加载' : '常驻注入' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="启用" width="90" align="center">
@@ -68,6 +104,11 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div v-if="filteredSkills.length" class="table-foot">
+        <span>「按需加载」只注入索引，全文经工具按需取，适合大量参考文档</span>
+        <span class="mono">{{ enabledCount }} / {{ skills.length }} 启用</span>
+      </div>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑技能' : '新建技能'" width="680px">
@@ -109,7 +150,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime } from '../utils/format'
 import { useCrud } from '../composables/useCrud'
@@ -138,6 +179,33 @@ const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = 
 // 选中项计数与 names
 const selectedCount = computed(() => selectedRows.value.length)
 const selectedNames = computed(() => selectedRows.value.map((r) => r.name))
+
+// ==================== 筛选（chips + 搜索，即时过滤） ====================
+const statusFilter = ref('all')
+const searchQ = ref('')
+const enabledCount = computed(() => skills.value.filter((s) => s.is_enabled).length)
+const statusChips = computed(() => [
+  { label: '全部', value: 'all', count: skills.value.length },
+  { label: '已启用', value: 'on', count: enabledCount.value },
+  { label: '已停用', value: 'off', count: skills.value.length - enabledCount.value },
+])
+const statusFilterLabel = computed(
+  () => ({ all: '全部', on: '已启用', off: '已停用' })[statusFilter.value] || '',
+)
+const filteredSkills = computed(() => {
+  let list = skills.value
+  if (statusFilter.value === 'on') list = list.filter((s) => s.is_enabled)
+  else if (statusFilter.value === 'off') list = list.filter((s) => !s.is_enabled)
+  const q = searchQ.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(
+      (s) =>
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.description || '').toLowerCase().includes(q),
+    )
+  }
+  return list
+})
 
 // 导出（全部或选中）
 async function onExportClick() {
@@ -281,6 +349,67 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* ============ 筛选栏（设计稿：chips + 搜索同栏） ============ */
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-wrap: wrap;
+  padding: var(--bc-space-4) var(--bc-space-4) var(--bc-space-3);
+}
+.filter-spacer {
+  flex: 1;
+}
+.filter-search {
+  width: 220px;
+}
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--bc-border);
+  border-radius: var(--bc-radius-full);
+  background: transparent;
+  color: var(--bc-text-2);
+  font-family: inherit;
+  font-size: var(--bc-text-xs);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s var(--bc-ease, ease-out);
+}
+.fchip .n {
+  font-family: var(--bc-font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-text-3);
+}
+.fchip:hover {
+  border-color: var(--bc-border-strong);
+  color: var(--bc-text-1);
+}
+.fchip.is-on {
+  background: var(--bc-primary-6);
+  border-color: var(--bc-primary-6);
+  color: var(--bc-on-primary, #fff);
+}
+.fchip.is-on .n {
+  color: var(--bc-on-primary, #fff);
+  opacity: 0.72;
+}
+
+/* ============ 表脚 ============ */
+.table-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border-top: 1px solid var(--bc-border);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+
 .bc-batch-bar {
   display: flex;
   align-items: center;

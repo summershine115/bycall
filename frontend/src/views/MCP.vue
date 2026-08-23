@@ -10,7 +10,30 @@
 
     <ContentLoader v-if="loading" :rows="3" />
 
-    <div v-else class="bc-panel">
+    <template v-else>
+      <!-- ============ KPI 行（设计稿：label + mono 大数 + 真实脚注） ============ -->
+      <div class="kpis">
+        <div class="kpi bc-panel">
+          <div class="kpi__label">已连接</div>
+          <div class="kpi__value mono">{{ kpi.connected }}</div>
+          <div class="kpi__meta">stdio × {{ kpi.stdio }} · http × {{ kpi.http }}</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">暴露工具数</div>
+          <div class="kpi__value mono">{{ kpi.tools }}</div>
+          <div class="kpi__meta">经角色白名单二次过滤</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">未连接</div>
+          <div class="kpi__value mono">{{ kpi.disconnected }}</div>
+          <div class="kpi__meta">
+            <span v-if="kpi.disconnectedNames" class="kpi__pill kpi__pill--warn">{{ kpi.disconnectedNames }}</span>
+            <span v-else class="kpi__pill kpi__pill--ok">全部在线</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bc-panel">
       <EmptyState
         v-if="!servers.length"
         icon="Connection"
@@ -69,6 +92,7 @@
         </el-table-column>
       </el-table>
     </div>
+    </template>
 
     <!-- 注册/编辑对话框 -->
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑 MCP Server' : '注册 MCP Server'" width="620px">
@@ -148,7 +172,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
@@ -159,6 +183,21 @@ import StatusBadge from '../components/StatusBadge.vue'
 
 const servers = ref([])
 const loading = ref(false)
+
+// KPI（真实数据派生）
+const kpi = computed(() => {
+  const list = servers.value
+  const connected = list.filter((s) => s.connected)
+  const disconnected = list.filter((s) => !s.connected)
+  return {
+    connected: connected.length,
+    stdio: connected.filter((s) => s.transport === 'stdio').length,
+    http: connected.filter((s) => s.transport !== 'stdio').length,
+    tools: list.reduce((sum, s) => sum + (s.tool_count || 0), 0),
+    disconnected: disconnected.length,
+    disconnectedNames: disconnected.map((s) => s.name).join(' · ').slice(0, 30) || '',
+  }
+})
 const saving = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -293,6 +332,65 @@ async function toggleEnabled(row, enabled) {
 </script>
 
 <style scoped>
+/* ============ KPI 行（设计稿语言：label + mono 大数 + 脚注） ============ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.kpi {
+  padding: var(--bc-space-4);
+  transition: box-shadow 0.15s var(--bc-ease, ease-out);
+}
+.kpi:hover {
+  box-shadow: var(--bc-shadow-sm);
+}
+.kpi__label {
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  letter-spacing: 0.02em;
+}
+.kpi__value {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-3xl);
+  font-weight: var(--bc-weight-semibold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.kpi__meta {
+  margin-top: var(--bc-space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  min-width: 0;
+}
+.kpi__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--bc-space-2);
+  border-radius: var(--bc-radius-full);
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kpi__pill--warn {
+  background: var(--bc-warning-bg);
+  color: var(--bc-warning-text);
+}
+.kpi__pill--ok {
+  background: var(--bc-success-bg);
+  color: var(--bc-success-text);
+}
+
 .srv-cell {
   display: flex;
   flex-direction: column;

@@ -375,3 +375,80 @@ body {
   --el-skeleton-color: var(--bc-gray-2);
   --el-skeleton-to-color: var(--bc-gray-3);
 }
+
+/* ============================================================
+ * 设计语言校准层 —— 对齐高保真设计稿（双主题导览版）的组件规格。
+ * 只校准观感参数（密度/圆角/数字排版），不动组件结构。
+ * ============================================================ */
+
+/* ---- 表格密度：48px 行 / 44px 表头（信息密度即功能） ---- */
+.el-table .el-table__row {
+  height: 48px;
+}
+.el-table th.el-table__cell {
+  height: 44px;
+}
+.el-table .el-table__cell {
+  padding: var(--bc-space-2);
+}
+
+/* ---- 状态 pill：全圆角胶囊（999px），对齐设计稿状态语言 ---- */
+.el-tag {
+  border-radius: var(--bc-radius-full, 999px);
+  padding: 0 var(--bc-space-3);
+  height: 22px;
+  line-height: 20px;
+  font-size: var(--bc-text-xs);
+  gap: var(--bc-space-1);
+}
+.el-tag .el-tag__close {
+  /* 收紧关闭钮与文字的间距，保持胶囊紧凑 */
+  margin-left: var(--bc-space-1);
+}
+
+/* ---- 数字排版：度量值等宽（tabular-nums），表格/分页/描述全局生效 ---- */
+.el-table .cell,
+.el-pagination,
+.el-descriptions__body {
+  font-variant-numeric: tabular-nums;
+}
+/* 表格内时间戳/ID 列在源码中约定加 .num 类时启用 mono，避免中文列误伤 */
+.el-table .cell .num,
+.stat-card__num,
+.page-header .metric {
+  font-family: var(--bc-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 分页：字号收敛到正文次级，按钮圆角统一 ---- */
+.el-pagination {
+  font-size: var(--bc-text-sm);
+  --el-pagination-button-bg-color: transparent;
+}
+.el-pagination .el-pager li {
+  border-radius: var(--bc-radius-md);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- kbd：快捷键呈现（设计稿表格操作列的 ⌘R 等场景） ---- */
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--bc-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--bc-radius-sm);
+  background: var(--bc-bg-sunken, var(--bc-gray-1));
+  color: var(--bc-text-3);
+  font: 500 var(--bc-text-xs)/1.4 var(--bc-font-mono);
+}
+
+/* ---- 微动效统一：150ms 指数缓出（respects reduced-motion） ---- */
+@media (prefers-reduced-motion: reduce) {
+  .el-button:active:not(.is-disabled) {
+    transform: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

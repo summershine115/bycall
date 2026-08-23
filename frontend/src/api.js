@@ -22,7 +22,9 @@ http.interceptors.response.use(
         window.location.hash = '#/login'
       }
     } else if (status >= 400) {
-      ElMessage.error(`请求失败 (${status}): ${detail}`)
+      const method = (error.config?.method || 'get').toUpperCase()
+      const url = error.config?.url || ''
+      ElMessage.error(`请求失败 (${status}) ${method} ${url}: ${detail}`)
     }
     return Promise.reject(error)
   },

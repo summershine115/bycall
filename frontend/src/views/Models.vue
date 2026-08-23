@@ -4,31 +4,124 @@
       title="模型管理"
       description="对话 / 向量 / 重排模型是独立可管理资源，可配多个、各选服务商；激活的模型即当前生效配置。"
     >
-      <el-button type="primary" :icon="Plus" @click="openCreate(activeTab)">添加模型</el-button>
+      <el-button type="primary" :icon="Plus" @click="openCreate(activeKind === 'all' ? 'chat' : activeKind)">
+        添加模型
+      </el-button>
     </PageHeader>
 
     <ContentLoader v-if="loading" :rows="4" />
 
-    <div v-else class="bc-panel models-panel">
-      <el-tabs v-model="activeTab" class="models-tabs">
-        <el-tab-pane v-for="t in typeTabs" :key="t.name" :name="t.name">
-          <template #label>
-            {{ t.label }}
-            <span class="models-tabs__count">{{ modelsByType(t.name).length }}</span>
-            <span v-if="activeOfType(t.name)" class="models-tabs__active" title="已有激活模型" />
-          </template>
-          <ModelTable
-            :model-type="t.name"
-            :models="modelsByType(t.name)"
-            @add="openCreate(t.name)"
-            @edit="openEdit"
-            @activate="onActivate"
-            @test="onTest"
-            @delete="onDelete"
-          />
-        </el-tab-pane>
-      </el-tabs>
-    </div>
+    <template v-else>
+      <!-- ============ KPI 行（设计稿：label + mono 大数 + 真实脚注） ============ -->
+      <div class="kpis">
+        <div class="kpi bc-panel">
+          <div class="kpi__label">已接入</div>
+          <div class="kpi__value mono">{{ allModels.length }}</div>
+          <div class="kpi__meta">{{ providerCount }} 家服务商</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">激活中</div>
+          <div class="kpi__value mono">{{ activeCount }}</div>
+          <div class="kpi__meta">{{ activeSummary }}</div>
+        </div>
+        <div class="kpi bc-panel">
+          <div class="kpi__label">向量维度</div>
+          <div class="kpi__value mono">{{ activeEmbedDim || '—' }}</div>
+          <div class="kpi__meta">{{ activeEmbedName || '未激活向量模型' }}</div>
+        </div>
+      </div>
+
+      <!-- ============ 模型列表（chips 分类筛选 + 统一表格） ============ -->
+      <div class="bc-panel models-panel">
+        <div class="models-panel__head">
+          <span class="models-panel__title">模型列表</span>
+          <span class="models-panel__count mono">{{ filteredModels.length }} 个模型</span>
+        </div>
+        <div class="filterbar">
+          <button
+            v-for="c in kindChips"
+            :key="c.value"
+            type="button"
+            class="fchip"
+            :class="{ 'is-on': activeKind === c.value }"
+            @click="activeKind = c.value"
+          >
+            {{ c.label }} <span class="n">{{ c.count }}</span>
+          </button>
+        </div>
+
+        <EmptyState
+          v-if="!filteredModels.length"
+          icon="Cpu"
+          title="该类型下还没有模型"
+          description="添加模型后可测试连接、激活使用；激活的模型即当前生效配置。"
+        >
+          <el-button type="primary" :icon="Plus" @click="openCreate(activeKind === 'all' ? 'chat' : activeKind)">
+            添加模型
+          </el-button>
+        </EmptyState>
+
+        <el-table v-else :data="filteredModels">
+          <el-table-column label="模型名称" min-width="200">
+            <template #default="{ row }">
+              <div class="model-cell">
+                <span class="bc-strong mono">{{ row.name }}</span>
+                <span class="bc-muted bc-text-xs">{{ row.display_name || '—' }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="类型" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.model_type === 'chat' ? 'primary' : 'info'">
+                {{ kindLabel(row.model_type) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="provider" label="服务商" width="130">
+            <template #default="{ row }">
+              <span class="bc-text-sm">{{ row.provider }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="API 地址" min-width="220">
+            <template #default="{ row }">
+              <span class="bc-text-sm bc-muted mono addr">{{ row.base_url || '(空)' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="维度" width="80" align="center">
+            <template #default="{ row }">
+              <span v-if="row.model_type === 'embedding'" class="mono">{{ row.embed_dimension || '—' }}</span>
+              <span v-else class="bc-muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <StatusBadge v-if="row.is_active" type="ok" text="激活中" />
+              <span v-else class="bc-muted bc-text-sm">未激活</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="270" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                size="small"
+                :type="row.is_active ? 'info' : 'success'"
+                :plain="!row.is_active"
+                :disabled="row.is_active"
+                @click="onActivate(row)"
+              >
+                {{ row.is_active ? '已激活' : '激活' }}
+              </el-button>
+              <el-button size="small" @click="onTest(row)">测试</el-button>
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" plain @click="onDelete(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="models-panel__foot">
+          <span>API Key 仅在创建时可查看，此后以掩码存储；切换向量模型需重建索引</span>
+        </div>
+      </div>
+    </template>
 
     <!-- 新建/编辑模型对话框 -->
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑模型' : '添加模型'" width="600px">
@@ -93,10 +186,11 @@ import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
-import ModelTable from '../components/ModelTable.vue'
+import EmptyState from '../components/EmptyState.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 
 const loading = ref(true)
-const activeTab = ref('chat')
+const activeKind = ref('all')
 const allModels = ref([])
 const providers = ref([])
 const dialogVisible = ref(false)
@@ -116,11 +210,37 @@ const form = reactive({
   is_active: false,
 })
 
-const typeTabs = [
-  { name: 'chat', label: '对话模型' },
-  { name: 'embedding', label: '向量模型' },
-  { name: 'rerank', label: '重排模型' },
-]
+const KIND_LABELS = { chat: '对话', embedding: '向量', rerank: '重排' }
+const kindLabel = (t) => KIND_LABELS[t] || t
+
+const kindChips = computed(() => [
+  { label: '全部', value: 'all', count: allModels.value.length },
+  ...['chat', 'embedding', 'rerank'].map((t) => ({
+    label: `${kindLabel(t)}模型`,
+    value: t,
+    count: allModels.value.filter((m) => m.model_type === t).length,
+  })),
+])
+
+const filteredModels = computed(() =>
+  activeKind.value === 'all'
+    ? allModels.value
+    : allModels.value.filter((m) => m.model_type === activeKind.value),
+)
+
+const providerCount = computed(
+  () => new Set(allModels.value.filter((m) => m.provider).map((m) => m.provider)).size,
+)
+const activeModels = computed(() => allModels.value.filter((m) => m.is_active))
+const activeCount = computed(() => activeModels.value.length)
+const activeSummary = computed(() =>
+  activeModels.value.length
+    ? activeModels.value.map((m) => kindLabel(m.model_type)).join(' × ')
+    : '尚无激活模型',
+)
+const activeEmbed = computed(() => activeModels.value.find((m) => m.model_type === 'embedding'))
+const activeEmbedDim = computed(() => activeEmbed.value?.embed_dimension || 0)
+const activeEmbedName = computed(() => activeEmbed.value?.name || '')
 
 const providerOptions = computed(() =>
   providers.value.filter((p) => p.model_types.includes(form.model_type)),
@@ -136,13 +256,6 @@ const apiMaskHint = computed(() => {
   const m = allModels.value.find((x) => x.id === form.id)
   return m?.api_key_masked || '(已设)'
 })
-
-function modelsByType(type) {
-  return allModels.value.filter((m) => m.model_type === type)
-}
-function activeOfType(type) {
-  return allModels.value.some((m) => m.model_type === type && m.is_active)
-}
 
 async function load() {
   loading.value = true
@@ -314,25 +427,120 @@ onMounted(load)
 </script>
 
 <style scoped>
-.models-panel {
-  padding: 0 var(--bc-space-5) var(--bc-space-5);
-}
-.models-tabs :deep(.el-tabs__header) {
+/* ============ KPI 行（设计稿语言：label + mono 大数 + 脚注） ============ */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--bc-space-4);
   margin-bottom: var(--bc-space-4);
 }
-.models-tabs__count {
-  font-size: var(--bc-text-xs);
-  color: var(--bc-text-4);
-  margin-left: var(--bc-space-1);
+.kpi {
+  padding: var(--bc-space-4);
+  transition: box-shadow 0.15s var(--bc-ease, ease-out);
 }
-.models-tabs__active {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
+.kpi:hover {
+  box-shadow: var(--bc-shadow-sm);
+}
+.kpi__label {
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  letter-spacing: 0.02em;
+}
+.kpi__value {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-3xl);
+  font-weight: var(--bc-weight-semibold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.kpi__meta {
+  margin-top: var(--bc-space-2);
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+
+/* ============ 模型列表面板 ============ */
+.models-panel {
+  padding: 0 0 var(--bc-space-3);
+}
+.models-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--bc-space-4) var(--bc-space-5) 0;
+}
+.models-panel__title {
+  font-size: var(--bc-text-md);
+  font-weight: var(--bc-weight-semibold);
+  color: var(--bc-text-1);
+}
+.models-panel__count {
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.models-panel__foot {
+  padding: var(--bc-space-3) var(--bc-space-5) 0;
+  font-size: var(--bc-text-xs);
+  color: var(--bc-text-3);
+}
+.models-panel .empty-state {
+  margin: var(--bc-space-2) 0;
+}
+
+/* ============ 类型 chips ============ */
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-wrap: wrap;
+  padding: var(--bc-space-3) var(--bc-space-5);
+}
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--bc-border);
   border-radius: var(--bc-radius-full);
-  background: var(--bc-success);
-  margin-left: var(--bc-space-1);
-  vertical-align: 2px;
+  background: transparent;
+  color: var(--bc-text-2);
+  font-family: inherit;
+  font-size: var(--bc-text-xs);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s var(--bc-ease, ease-out);
+}
+.fchip .n {
+  font-family: var(--bc-font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--bc-text-3);
+}
+.fchip:hover {
+  border-color: var(--bc-border-strong);
+  color: var(--bc-text-1);
+}
+.fchip.is-on {
+  background: var(--bc-primary-6);
+  border-color: var(--bc-primary-6);
+  color: var(--bc-on-primary, #fff);
+}
+.fchip.is-on .n {
+  color: var(--bc-on-primary, #fff);
+  opacity: 0.72;
+}
+
+.model-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.4;
+}
+.addr {
+  font-size: var(--bc-text-xs);
 }
 .form-row {
   display: grid;
