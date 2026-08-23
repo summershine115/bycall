@@ -108,6 +108,9 @@ pre,
   color: var(--bc-text-3);
   line-height: var(--bc-leading-normal);
   margin-top: var(--bc-space-2);
+  /* el-form-item__content 是 flex 行容器：占满整行，强制换行到控件下方
+     （否则开关等窄控件会把提示挤到右侧同一行） */
+  flex-basis: 100%;
 }
 
 /* 长文本截断单元格（表格内复用） */
