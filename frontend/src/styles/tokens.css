@@ -144,13 +144,14 @@
   --bc-text-3: var(--bc-gray-6);
   --bc-text-4: var(--bc-gray-5);
 
-  /* 侧栏：纯黑底（mono 的标志性锚点） */
-  --bc-sidebar-bg: #000000;
-  --bc-sidebar-text: #a3a3a3;
-  --bc-sidebar-text-strong: #fafafa;
-  --bc-sidebar-hover: rgba(255, 255, 255, 0.08);
-  --bc-sidebar-active: rgba(255, 255, 255, 0.14);
-  --bc-sidebar-border: rgba(255, 255, 255, 0.1);
+  /* 侧栏：纯白 ——「纯白主题」锚点。与画布同色，靠发丝线分层；
+     品牌标经 sidebar-text-strong / sidebar-bg 组合自然反转为黑底白字 */
+  --bc-sidebar-bg: #ffffff;
+  --bc-sidebar-text: #525252;
+  --bc-sidebar-text-strong: #111111;
+  --bc-sidebar-hover: rgba(0, 0, 0, 0.05);
+  --bc-sidebar-active: rgba(0, 0, 0, 0.08);
+  --bc-sidebar-border: #e5e5e5;
 
   /* 阴影：弥散、低透明，模拟纸浮于桌面 */
   --bc-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -165,7 +166,9 @@
 }
 
 /* ================================================================
- * Mono 主题 · 深色
+ * Mono 主题 · 深色 = 纯黑主题
+ * 全画布近黑（避开 #000 振动），面板与沉底拉开层次，
+ * 语义色底改半透明色渍，主操作反转白底。
  * ================================================================ */
 :root[data-theme='mono'][data-mode='dark'] {
   color-scheme: dark;
@@ -192,35 +195,37 @@
   --bc-primary-9: #ffffff;
 
   --bc-success: #22c55e;
-  --bc-success-bg: #052e16;
+  --bc-success-bg: rgba(34, 197, 94, 0.14);
   --bc-success-text: #4ade80;
   --bc-warning: #f59e0b;
-  --bc-warning-bg: #451a03;
+  --bc-warning-bg: rgba(245, 158, 11, 0.14);
   --bc-warning-text: #fbbf24;
   --bc-warning-strong: #fcd34d;
   --bc-warning-border: #78350f;
   --bc-danger: #ef4444;
-  --bc-danger-bg: #450a0a;
+  --bc-danger-bg: rgba(239, 68, 68, 0.14);
   --bc-danger-text: #f87171;
   --bc-info: #a3a3a3;
-  --bc-info-bg: #262626;
+  --bc-info-bg: rgba(255, 255, 255, 0.07);
   --bc-on-dark-1: #111111;
 
-  --bc-bg-page: #000000;
-  --bc-bg-surface: #0f0f0f;
-  --bc-bg-sunken: #141414;
+  /* 表面：整体上移一阶，避开大面积 #000 振动 */
+  --bc-bg-page: #0a0a0a;
+  --bc-bg-surface: #111111;
+  --bc-bg-sunken: #1a1a1a;
   --bc-border: #262626;
-  --bc-border-strong: #404040;
+  --bc-border-strong: #383838;
   --bc-text-1: var(--bc-gray-9);
   --bc-text-2: var(--bc-gray-7);
   --bc-text-3: var(--bc-gray-6);
   --bc-text-4: var(--bc-gray-5);
 
+  /* 侧栏：与画布同色（纯黑锚点），发丝线分层 */
   --bc-sidebar-bg: #0a0a0a;
-  --bc-sidebar-text: #737373;
+  --bc-sidebar-text: #a3a3a3;
   --bc-sidebar-text-strong: #f5f5f5;
-  --bc-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --bc-sidebar-active: rgba(255, 255, 255, 0.1);
+  --bc-sidebar-hover: rgba(255, 255, 255, 0.07);
+  --bc-sidebar-active: rgba(255, 255, 255, 0.12);
   --bc-sidebar-border: #1f1f1f;
 
   --bc-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -231,6 +236,9 @@
 
   --bc-topbar-bg: rgba(10, 10, 10, 0.72);
   --bc-overlay-bg: rgba(0, 0, 0, 0.6);
+
+  /* 白底主按钮上的近黑文字（深色下主色反转为白） */
+  --bc-on-primary: #0a0a0a;
 }
 
 /* ================================================================
@@ -460,7 +468,4 @@
 
   /* mono 主按钮的文字色（浅色主题下黑底白字；深色下白底黑字） */
   --bc-on-primary: #ffffff;
-}
-:root[data-theme='mono'][data-mode='dark'] {
-  --bc-on-primary: #111111;
 }

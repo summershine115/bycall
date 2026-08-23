@@ -10,9 +10,12 @@ import 'element-plus/theme-chalk/el-message-box.css'
 import 'element-plus/theme-chalk/el-message.css'
 import 'element-plus/theme-chalk/el-notification.css'
 import 'element-plus/theme-chalk/el-loading.css'
-// 设计系统：token → Element 主题覆盖 → 全局基础（顺序不可换）
+// EP 官方暗色基座：暗色组件样式通过 html.dark 作用域激活（useTheme 负责同步该类）
+import 'element-plus/theme-chalk/dark/css-vars.css'
+// 设计系统：token → Element 主题覆盖 → 全局基础 → EP 双主题映射（顺序不可换）
 import './styles/tokens.css'
 import './styles/element-overrides.css'
+import './styles/element-dual-theme.css'
 import './styles/base.css'
 
 import App from './App.vue'

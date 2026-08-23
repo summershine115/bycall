@@ -16,6 +16,8 @@
         }
         document.documentElement.dataset.theme = theme
         document.documentElement.dataset.mode = mode
+        // 联动 EP 暗色基座（html.dark 作用域）
+        document.documentElement.classList.toggle('dark', mode === 'dark')
       })()
     </script>
   </head>

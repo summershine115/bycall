@@ -77,6 +77,8 @@
             <span class="topbar__theme-swatch" :class="`topbar__theme-swatch--${theme}`" aria-hidden="true" />
             <span class="topbar__theme-label">{{ theme === 'mono' ? '黑白' : '常绿' }}</span>
           </button>
+          <!-- 明暗切换：light ⇄ dark（手动切换覆盖 auto 并持久化） -->
+          <ModeToggle />
           <span class="topbar__env">{{ envLabel }}</span>
           <el-dropdown trigger="click" @command="onUserCommand">
             <button class="topbar__user" type="button" aria-label="账户菜单">
@@ -111,6 +113,7 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
 import { useTheme } from '../composables/useTheme'
+import ModeToggle from '../components/ModeToggle.vue'
 import {
   ChatDotRound, ChatLineRound, Collection, Connection, Cpu, DataLine,
   Document, DocumentChecked, Files, Key, List, MagicStick, RefreshLeft,

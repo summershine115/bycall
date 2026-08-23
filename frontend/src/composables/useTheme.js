@@ -30,6 +30,8 @@ function apply() {
   const el = document.documentElement
   el.dataset.theme = theme.value
   el.dataset.mode = resolvedMode()
+  // 联动 EP 暗色基座（dark/css-vars.css 以 html.dark 作用域生效）
+  el.classList.toggle('dark', resolvedMode() === 'dark')
 }
 
 const onSystemChange = () => {
