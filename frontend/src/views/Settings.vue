@@ -4,6 +4,7 @@
       title="运行时设置"
       description="IM 渠道凭证与文档解析引擎配置；保存即时生效，无需重启服务。"
     >
+      <el-button :loading="loading" @click="load">重置</el-button>
       <el-button :loading="reloading" :icon="Refresh" @click="onReconnect">立即重连</el-button>
       <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
     </PageHeader>
@@ -113,7 +114,7 @@
           <div v-else-if="activeEngine === 'mineru'" class="bc-panel parse-subpanel">
             <h4 class="parse-subpanel__title">MinerU 远程 API</h4>
             <el-form label-position="top">
-              <div class="parse-row parse-row--lead">
+              <div class="parse-row">
                 <el-form-item label="部署模式">
                   <el-select v-model="form['parse.mineru_mode']" style="width: 100%">
                     <el-option label="自建（mineru-api /tasks 协议）" value="selfhost" />
@@ -131,6 +132,8 @@
                     "
                   />
                 </el-form-item>
+              </div>
+              <div class="parse-row parse-row--full">
                 <el-form-item label="鉴权 token（Bearer）">
                   <el-input
                     v-model="form['parse.mineru_api_token']"
@@ -212,11 +215,6 @@
             </el-form>
           </div>
         </div>
-      </div>
-
-      <div class="settings-actions">
-        <el-button @click="load">重置</el-button>
-        <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
       </div>
     </template>
   </div>
@@ -350,14 +348,6 @@ onMounted(load)
   gap: 0 var(--bc-space-5);
   align-items: start;
 }
-.settings-actions {
-  margin-top: var(--bc-space-5);
-  padding-top: var(--bc-space-4);
-  border-top: 1px solid var(--bc-border);
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--bc-space-3);
-}
 /* ---- 解析引擎面板 ---- */
 .parse-panel {
   margin-top: var(--bc-space-4);
@@ -439,9 +429,9 @@ onMounted(load)
   grid-template-columns: 1fr 1fr;
   gap: var(--bc-space-4);
 }
-/* 首行：部署模式（窄）+ 基地址 + token（宽），避免下拉独占整行的空旷 */
-.parse-row--lead {
-  grid-template-columns: minmax(200px, 240px) 1fr 1fr;
+/* 长输入（Bearer token）独占整行，避免与下拉/地址挤压 */
+.parse-row--full {
+  grid-template-columns: 1fr;
 }
 .parse-row--3 {
   grid-template-columns: repeat(3, 1fr);
@@ -451,7 +441,7 @@ onMounted(load)
     grid-template-columns: 1fr;
   }
   .parse-row,
-  .parse-row--lead,
+  .parse-row--full,
   .parse-row--3 {
     grid-template-columns: 1fr;
   }
