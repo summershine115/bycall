@@ -11,26 +11,22 @@
     <ContentLoader v-if="loading" :rows="4" />
 
     <template v-else>
-      <div class="settings-grid">
-        <!-- 连接状态卡 -->
-        <div class="bc-panel status-card">
-          <div class="status-card__head">
-            <h3>连接状态</h3>
-            <StatusBadge :type="imEnable ? 'ok' : 'idle'" :text="imEnable ? '已启用' : '未启用'" />
+      <!-- IM 渠道：状态与凭证合一 -->
+      <div class="bc-panel im-card">
+        <div class="im-card__head">
+          <div>
+            <h3>IM 渠道 · 企业微信</h3>
+            <p class="bc-muted bc-text-sm">
+              企微智能机器人长连接；LLM / 向量 / 重排模型在「模型管理」页配置
+            </p>
           </div>
-          <p class="bc-muted bc-text-sm status-card__desc">
-            企微智能机器人长连接状态。LLM / 向量 / 重排模型请在「模型管理」页配置。
-          </p>
+          <div class="im-card__status">
+            <StatusBadge :type="imEnable ? 'ok' : 'idle'" :text="imEnable ? '已启用' : '未启用'" />
+            <el-switch v-model="imEnable" active-text="启用" inactive-text="停用" />
+          </div>
         </div>
-
-        <!-- 凭证表单卡 -->
-        <div class="bc-panel form-card">
-          <h3 class="form-card__title">企业微信凭证</h3>
-          <el-form label-position="top">
-            <el-form-item label="启用 IM 渠道">
-              <el-switch v-model="imEnable" active-text="启用" inactive-text="停用" />
-              <div class="bc-hint">开启后建立企微长连接；凭证从下方字段读取</div>
-            </el-form-item>
+        <el-form label-position="top" class="im-card__form">
+          <div class="im-row">
             <el-form-item label="企微 bot_id">
               <el-input v-model="form['im.wecom_bot_id']" placeholder="企业微信后台「智能机器人」获取" />
             </el-form-item>
@@ -44,8 +40,8 @@
                 当前已设置：{{ masks['im.wecom_bot_secret'] }} —— 不修改则留空保存
               </div>
             </el-form-item>
-          </el-form>
-        </div>
+          </div>
+        </el-form>
       </div>
 
       <!-- 解析引擎配置（与模型管理同思路：可选引擎 + 参数，DB 优先于 .env） -->
@@ -94,9 +90,16 @@
           </el-form-item>
         </el-form>
 
-        <div class="parse-cols">
-          <!-- MarkItDown 参数 -->
-          <div class="bc-panel parse-subpanel">
+        <div class="parse-params">
+          <p
+            v-if="activeEngine !== 'markitdown' && activeEngine !== 'mineru'"
+            class="bc-muted bc-text-sm parse-empty"
+          >
+            builtin 引擎无额外参数；MarkItDown / MinerU 的参数在选择对应引擎后在此配置。
+          </p>
+
+          <!-- MarkItDown 参数（选中该引擎时显示） -->
+          <div v-else-if="activeEngine === 'markitdown'" class="bc-panel parse-subpanel">
             <h4 class="parse-subpanel__title">MarkItDown 选项</h4>
             <el-form label-position="top">
               <el-form-item label="启用第三方插件">
@@ -106,39 +109,39 @@
             </el-form>
           </div>
 
-          <!-- MinerU 参数 -->
-          <div class="bc-panel parse-subpanel">
+          <!-- MinerU 参数（选中该引擎时显示） -->
+          <div v-else-if="activeEngine === 'mineru'" class="bc-panel parse-subpanel">
             <h4 class="parse-subpanel__title">MinerU 远程 API</h4>
             <el-form label-position="top">
-              <el-form-item label="部署模式">
-                <el-select v-model="form['parse.mineru_mode']" style="width: 100%">
-                  <el-option label="自建（mineru-api /tasks 协议）" value="selfhost" />
-                  <el-option label="云端（mineru.net /api/v4 协议）" value="cloud" />
-                </el-select>
-                <div class="bc-hint">
-                  自建：本地/内网部署的 MinerU 服务；云端：mineru.net 精准解析 API（两套协议不同）
-                </div>
-              </el-form-item>
-              <el-form-item label="服务基地址（base_url）">
-                <el-input
-                  v-model="form['parse.mineru_base_url']"
-                  :placeholder="
-                    mineruIsCloud
-                      ? '如 https://mineru.net（空 → 默认 mineru.net）'
-                      : '如 http://127.0.0.1:8000；空 → 引擎不可用'
-                  "
-                />
-              </el-form-item>
-              <el-form-item label="鉴权 token（Bearer）">
-                <el-input
-                  v-model="form['parse.mineru_api_token']"
-                  :placeholder="masks['parse.mineru_api_token'] || (mineruIsCloud ? '云端必填' : '自建多数可留空')"
-                  show-password
-                />
-                <div v-if="masks['parse.mineru_api_token']" class="bc-hint">
-                  当前已设置：{{ masks['parse.mineru_api_token'] }} —— 不修改则留空保存
-                </div>
-              </el-form-item>
+              <div class="parse-row parse-row--lead">
+                <el-form-item label="部署模式">
+                  <el-select v-model="form['parse.mineru_mode']" style="width: 100%">
+                    <el-option label="自建（mineru-api /tasks 协议）" value="selfhost" />
+                    <el-option label="云端（mineru.net /api/v4 协议）" value="cloud" />
+                  </el-select>
+                  <div class="bc-hint">两套协议互不兼容</div>
+                </el-form-item>
+                <el-form-item label="服务基地址（base_url）">
+                  <el-input
+                    v-model="form['parse.mineru_base_url']"
+                    :placeholder="
+                      mineruIsCloud
+                        ? '如 https://mineru.net（空 → 默认 mineru.net）'
+                        : '如 http://127.0.0.1:8000；空 → 引擎不可用'
+                    "
+                  />
+                </el-form-item>
+                <el-form-item label="鉴权 token（Bearer）">
+                  <el-input
+                    v-model="form['parse.mineru_api_token']"
+                    :placeholder="masks['parse.mineru_api_token'] || (mineruIsCloud ? '云端必填' : '自建多数可留空')"
+                    show-password
+                  />
+                  <div v-if="masks['parse.mineru_api_token']" class="bc-hint">
+                    当前已设置：{{ masks['parse.mineru_api_token'] }} —— 不修改则留空保存
+                  </div>
+                </el-form-item>
+              </div>
 
               <!-- selfhost 专用参数 -->
               <template v-if="!mineruIsCloud">
@@ -180,7 +183,7 @@
                 </div>
               </template>
 
-              <div class="parse-row">
+              <div class="parse-row parse-row--3">
                 <el-form-item label="OCR 语言组">
                   <el-input v-model="form['parse.mineru_lang']" placeholder="ch / en / korean / japan" />
                 </el-form-item>
@@ -194,26 +197,26 @@
                     @update:model-value="(v) => (form['parse.mineru_timeout'] = String(v))"
                   />
                 </el-form-item>
+                <el-form-item label="轮询间隔（秒）">
+                  <el-input-number
+                    :model-value="Number(form['parse.mineru_poll_interval']) || 2"
+                    :min="0.1"
+                    :step="0.5"
+                    :precision="1"
+                    controls-position="right"
+                    style="width: 100%"
+                    @update:model-value="(v) => (form['parse.mineru_poll_interval'] = String(v))"
+                  />
+                </el-form-item>
               </div>
-              <el-form-item label="轮询间隔（秒）">
-                <el-input-number
-                  :model-value="Number(form['parse.mineru_poll_interval']) || 2"
-                  :min="0.1"
-                  :step="0.5"
-                  :precision="1"
-                  controls-position="right"
-                  style="width: 180px"
-                  @update:model-value="(v) => (form['parse.mineru_poll_interval'] = String(v))"
-                />
-              </el-form-item>
             </el-form>
           </div>
         </div>
       </div>
 
       <div class="settings-actions">
-        <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
         <el-button @click="load">重置</el-button>
+        <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
       </div>
     </template>
   </div>
@@ -238,6 +241,7 @@ const engines = ref([])
 const markitdownPlugins = ref(false)
 const mineruIsOcr = ref(false)
 const mineruIsCloud = computed(() => form['parse.mineru_mode'] === 'cloud')
+const activeEngine = computed(() => form['parse.engine'] || '')
 // 影响长连接的 IM 字段：任一变化才需要重连（避免未改凭证也每次弹重连）。
 const IM_KEYS = ['im.enable', 'im.wecom_bot_id', 'im.wecom_bot_secret']
 const imSnapshot = reactive({})
@@ -266,6 +270,9 @@ async function load() {
     // 快照 IM 连接字段：secret 未改时 form 里是空串，与下次空串相等 → 判为未变。
     IM_KEYS.forEach((k) => { imSnapshot[k] = form[k] ?? '' })
     engines.value = await admin.listParseEngines()
+    if (!form['parse.engine']) {
+      form['parse.engine'] = engines.value.find((e) => e.is_default)?.name || 'builtin'
+    }
   } finally {
     loading.value = false
   }
@@ -310,39 +317,46 @@ onMounted(load)
 </script>
 
 <style scoped>
-.settings-grid {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: var(--bc-space-4);
-  align-items: start;
+.im-card {
+  padding: var(--bc-space-5) var(--bc-space-6);
 }
-.status-card {
-  padding: var(--bc-space-5);
-}
-.status-card__head {
+.im-card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--bc-space-4);
+  padding-bottom: var(--bc-space-4);
+  border-bottom: 1px solid var(--bc-border);
 }
-.status-card__desc {
-  margin: var(--bc-space-3) 0 0;
+.im-card__head h3 {
+  margin: 0;
+}
+.im-card__head p {
+  margin: var(--bc-space-1) 0 0;
   line-height: var(--bc-leading-relaxed);
 }
-.form-card {
-  padding: var(--bc-space-5) var(--bc-space-6);
+.im-card__form {
+  margin-top: var(--bc-space-4);
 }
-.form-card__title {
-  margin: 0 0 var(--bc-space-5);
+.im-card__status {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  flex-shrink: 0;
+}
+.im-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--bc-space-5);
+  align-items: start;
 }
 .settings-actions {
   margin-top: var(--bc-space-5);
+  padding-top: var(--bc-space-4);
+  border-top: 1px solid var(--bc-border);
   display: flex;
+  justify-content: flex-end;
   gap: var(--bc-space-3);
-}
-@media (max-width: 1280px) {
-  .settings-grid {
-    grid-template-columns: 1fr;
-  }
 }
 /* ---- 解析引擎面板 ---- */
 .parse-panel {
@@ -358,7 +372,8 @@ onMounted(load)
 }
 .engine-radios {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 自适应列数：内容区宽放几列放几列，避免固定 3 列在窄屏塌成 1 列的断档 */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--bc-space-3);
   width: 100%;
 }
@@ -401,11 +416,15 @@ onMounted(load)
   padding-left: var(--bc-space-6);
   color: var(--bc-warning-text);
 }
-.parse-cols {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: var(--bc-space-4);
-  align-items: start;
+.parse-params {
+  margin-top: var(--bc-space-2);
+}
+.parse-empty {
+  margin: 0;
+  padding: var(--bc-space-3) var(--bc-space-4);
+  border: 1px dashed var(--bc-border);
+  border-radius: var(--bc-radius-md);
+  line-height: var(--bc-leading-relaxed);
 }
 .parse-subpanel {
   padding: var(--bc-space-4) var(--bc-space-5);
@@ -420,15 +439,25 @@ onMounted(load)
   grid-template-columns: 1fr 1fr;
   gap: var(--bc-space-4);
 }
-@media (max-width: 1280px) {
-  .engine-radios {
+/* 首行：部署模式（窄）+ 基地址 + token（宽），避免下拉独占整行的空旷 */
+.parse-row--lead {
+  grid-template-columns: minmax(200px, 240px) 1fr 1fr;
+}
+.parse-row--3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 960px) {
+  .im-row {
     grid-template-columns: 1fr;
   }
-  .parse-cols {
+  .parse-row,
+  .parse-row--lead,
+  .parse-row--3 {
     grid-template-columns: 1fr;
   }
-  .parse-row {
-    grid-template-columns: 1fr;
+  .im-card__head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>
