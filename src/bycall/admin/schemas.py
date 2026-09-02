@@ -201,6 +201,10 @@ class SkillCreate(BaseModel):
         default=None,
         description="披露模式：always（始终注入 system prompt）| on_demand（按需加载，默认 always）",
     )
+    is_enabled: bool = Field(
+        default=True,
+        description="创建时是否启用（默认启用）；对齐前端新建对话框的启用开关",
+    )
 
 
 class SkillUpdate(BaseModel):

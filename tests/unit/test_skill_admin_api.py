@@ -71,6 +71,15 @@ class TestSkillCRUD:
         names = {s["name"] for s in listing}
         assert {"sales-playbook", "greeting-guide"} <= names
 
+    def test_create_disabled(self, client: TestClient):
+        """创建时 is_enabled=False 直接落库为停用（对齐前端启用开关）。"""
+        resp = client.post(
+            "/api/admin/skills",
+            json={"name": "wip-skill", "content": "草稿内容", "is_enabled": False},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["is_enabled"] is False
+
     def test_get_by_name(self, client: TestClient):
         """按 name 查详情。"""
         client.post(

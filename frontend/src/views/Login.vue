@@ -116,6 +116,8 @@ const points = [
 ]
 
 async function onLogin() {
+  // 回车会同时触发原生 submit 和 keyup.enter：loading 守卫防止双重提交
+  if (loading.value) return
   if (!formRef.value) return
   try {
     await formRef.value.validate()

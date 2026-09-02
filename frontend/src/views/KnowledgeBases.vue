@@ -264,11 +264,12 @@ async function onSave() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `确定删除知识库「${row.name}」？将级联删除其下全部文档和向量集合，不可恢复。`,
     '确认删除',
     { type: 'error' },
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteKnowledgeBase(row.id)
   ElMessage.success('已删除')
   await load()

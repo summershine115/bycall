@@ -178,28 +178,30 @@ async function load() {
 }
 
 async function promote(kind) {
-  await ElMessageBox.confirm(`确认将「${kindLabel(kind)}」灰度发布转为全量？`, '转全量')
+  const ok = await ElMessageBox.confirm(`确认将「${kindLabel(kind)}」灰度发布转为全量？`, '转全量').catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.promoteRelease(kind)
   ElMessage.success('已转全量')
-  load()
+  await load().catch(() => {})
 }
 
 async function rollback(kind) {
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `确认回滚「${kindLabel(kind)}」到上一版本？is_active 将立即切回。`,
     '一键回滚',
     { type: 'warning' },
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.rollbackRelease(kind)
   ElMessage.success('已回滚')
-  load()
+  await load().catch(() => {})
 }
 
 function kindLabel(kind) {
   return kind === 'prompt' ? '系统提示词' : 'chat 模型'
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>

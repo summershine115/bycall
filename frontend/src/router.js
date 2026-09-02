@@ -28,6 +28,8 @@ const routes = [
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },
     ],
   },
+  // 404 兜底：未知路径回仪表盘（hash 模式下无此路由则整页空白且无导航可点）
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
 const router = createRouter({
@@ -54,6 +56,12 @@ router.beforeEach(() => {
   bar.classList.add('route-progress--active')
 })
 router.afterEach(() => {
+  const bar = ensureProgressBar()
+  bar.classList.remove('route-progress--active')
+  bar.classList.add('route-progress--done')
+})
+// 懒加载失败（如重新部署后旧 chunk 404）不会触发 afterEach：这里收掉进度条并提示刷新
+router.onError(() => {
   const bar = ensureProgressBar()
   bar.classList.remove('route-progress--active')
   bar.classList.add('route-progress--done')

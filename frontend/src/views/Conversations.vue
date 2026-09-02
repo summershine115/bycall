@@ -251,22 +251,24 @@ async function onViewMessages(row) {
 }
 
 async function onReset(row) {
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `确定重置会话 ${shortKey(row.session_key)}？将清空全部消息和摘要，但保留会话本身。`,
     '确认重置',
     { type: 'warning' },
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.resetConversation(row.id)
   ElMessage.success('已重置')
   await load()
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `确定删除会话 ${shortKey(row.session_key)}？将永久删除全部消息和会话记录（不可恢复）。`,
     '确认删除',
     { type: 'warning' },
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteConversation(row.id)
   ElMessage.success('已删除')
   await load()

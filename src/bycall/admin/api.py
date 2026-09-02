@@ -948,13 +948,13 @@ def create_skill(
     """创建 Skill。``name`` 全局唯一，冲突 → 409。
 
     Skill 是 admin 管控的领域知识文档（对齐 OpenClaw SKILL），注入 system prompt 指导
-    LLM 完成某领域任务。创建后默认 ``is_enabled=True``，admin 可在角色配置里绑定。
+    LLM 完成某领域任务。默认 ``is_enabled=True``，创建时可显式指定（对齐前端启用开关）。
     """
     skill = Skill(
         name=payload.name,
         description=payload.description,
         content=payload.content,
-        is_enabled=True,
+        is_enabled=payload.is_enabled,
     )
     if payload.disclosure is not None:
         skill.disclosure = payload.disclosure

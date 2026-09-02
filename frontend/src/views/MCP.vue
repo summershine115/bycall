@@ -229,7 +229,7 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 
 function openCreate() {
   editing.value = false
@@ -300,9 +300,10 @@ async function onSave() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确认删除 MCP server「${row.name}」？其工具将从治理管道移除。`, '删除', {
+  const ok = await ElMessageBox.confirm(`确认删除 MCP server「${row.name}」？其工具将从治理管道移除。`, '删除', {
     type: 'warning',
-  })
+  }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteMcpServer(row.id)
   ElMessage.success('已删除')
   await load()
@@ -313,13 +314,16 @@ async function onTest(row) {
   try {
     testResult.value = await admin.testMcpServer(row.id)
     testVisible.value = true
+  } catch {
+    // 失败已由拦截器 toast；这里保证 loading 复位
   } finally {
     row._testing = false
   }
 }
 
 async function onReload(row) {
-  const r = await admin.reloadMcpServer(row.id)
+  const r = await admin.reloadMcpServer(row.id).catch(() => null)
+  if (!r) return
   ElMessage[r.ok ? 'success' : 'warning'](r.message)
   await load()
 }

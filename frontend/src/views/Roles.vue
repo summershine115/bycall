@@ -312,7 +312,8 @@ function openEdit(row) {
 }
 
 function parseList(str) {
-  return str.split(',').map((s) => s.trim()).filter(Boolean)
+  // 去重：重复值会产生重复 chip / 重复 v-for key，且原样写库无意义
+  return [...new Set(str.split(',').map((s) => s.trim()).filter(Boolean))]
 }
 
 async function onSave() {
@@ -339,13 +340,14 @@ async function onSave() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确定删除角色「${row.name}」？`, '确认', { type: 'warning' })
+  const ok = await ElMessageBox.confirm(`确定删除角色「${row.name}」？`, '确认', { type: 'warning' }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteRole(row.name)
   ElMessage.success('已删除')
   await load()
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>

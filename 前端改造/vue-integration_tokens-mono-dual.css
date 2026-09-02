@@ -1,0 +1,168 @@
+/**
+ * Bycall · mono 主题双轨值（纯白 / 纯黑）—— 接入补丁
+ *
+ * 用法：用下面两个块整体替换 tokens.css 中
+ *   :root[data-theme='mono'][data-mode='light'] { … }   （约 95–169 行）
+ *   :root[data-theme='mono'][data-mode='dark']  { … }   （约 170–238 行）
+ * 并删除文件末尾的追加块（--bc-on-primary: #111111，已并入下方 dark 块）。
+ *
+ * 改动行以「←」标注；未标注行与现值一致，一并给出是为了整块粘贴安全。
+ * evergreen 两个块不动。
+ */
+
+/* ================================================================
+ * Mono 主题 · 浅色 = 纯白主题
+ * 侧栏由黑锚点改为纯白：与画布同色，靠发丝线分层，主操作仍是近黑。
+ * ================================================================ */
+:root[data-theme='mono'][data-mode='light'] {
+  color-scheme: light;
+
+  /* 中性色阶梯（冷灰，9 级；未动） */
+  --bc-gray-1: #fafafa;
+  --bc-gray-2: #f5f5f5;
+  --bc-gray-3: #e5e5e5;
+  --bc-gray-4: #d4d4d4;
+  --bc-gray-5: #a3a3a3;
+  --bc-gray-6: #737373;
+  --bc-gray-7: #525252;
+  --bc-gray-8: #262626;
+  --bc-gray-9: #111111;
+
+  /* 品牌主色：近黑（未动） */
+  --bc-primary-1: #f5f5f5;
+  --bc-primary-2: #e5e5e5;
+  --bc-primary-3: #d4d4d4;
+  --bc-primary-4: #a3a3a3;
+  --bc-primary-5: #525252;
+  --bc-primary-6: #111111;
+  --bc-primary-7: #000000;
+  --bc-primary-8: #000000;
+  --bc-primary-9: #000000;
+
+  /* 语义色（未动，与设计稿同源） */
+  --bc-success: #16a34a;
+  --bc-success-bg: #f0fdf4;
+  --bc-success-text: #15803d;
+  --bc-warning: #d97706;
+  --bc-warning-bg: #fffbeb;
+  --bc-warning-text: #b45309;
+  --bc-warning-strong: #92400e;
+  --bc-warning-border: #fde68a;
+  --bc-danger: #dc2626;
+  --bc-danger-bg: #fef2f2;
+  --bc-danger-text: #b91c1c;
+  --bc-info: #525252;
+  --bc-info-bg: #f5f5f5;
+  --bc-on-dark-1: #fafafa;
+
+  /* 表面与文字（未动） */
+  --bc-bg-page: #fafafa;
+  --bc-bg-surface: #ffffff;
+  --bc-bg-sunken: #f5f5f5;
+  --bc-border: #e5e5e5;
+  --bc-border-strong: #d4d4d4;
+  --bc-text-1: var(--bc-gray-9);
+  --bc-text-2: var(--bc-gray-7);
+  --bc-text-3: var(--bc-gray-6);
+  --bc-text-4: var(--bc-gray-5);
+
+  /* 侧栏：纯白 ——「纯白主题」锚点。与画布同色，发丝线分层；
+     品牌标经 sidebar-text-strong / sidebar-bg 组合自然反转为黑底白字 */
+  --bc-sidebar-bg: #ffffff; /* ← 原 #000000 */
+  --bc-sidebar-text: #525252; /* ← 原 #a3a3a3（白底上 7.2:1） */
+  --bc-sidebar-text-strong: #111111; /* ← 原 #fafafa */
+  --bc-sidebar-hover: rgba(0, 0, 0, 0.05); /* ← 原白系高光 */
+  --bc-sidebar-active: rgba(0, 0, 0, 0.08); /* ← 原白系高光 */
+  --bc-sidebar-border: #e5e5e5; /* ← 原 rgba(255,255,255,0.1) */
+
+  /* 阴影（未动） */
+  --bc-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --bc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --bc-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --bc-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.07), 0 16px 48px rgba(0, 0, 0, 0.1);
+  --bc-shadow-color: rgba(0, 0, 0, 0.05);
+
+  /* 顶栏与遮罩（未动） */
+  --bc-topbar-bg: rgba(250, 250, 250, 0.72);
+  --bc-overlay-bg: rgba(0, 0, 0, 0.4);
+}
+
+/* ================================================================
+ * Mono 主题 · 深色 = 纯黑主题
+ * 全画布近黑（避开 #000 振动），面板与沉底拉开层次，
+ * 语义色底改半透明色渍，主操作反转白底。
+ * ================================================================ */
+:root[data-theme='mono'][data-mode='dark'] {
+  color-scheme: dark;
+
+  /* 灰阶（未动；亮度分层交给下方表面变量） */
+  --bc-gray-1: #0a0a0a;
+  --bc-gray-2: #141414;
+  --bc-gray-3: #262626;
+  --bc-gray-4: #404040;
+  --bc-gray-5: #737373;
+  --bc-gray-6: #a3a3a3;
+  --bc-gray-7: #d4d4d4;
+  --bc-gray-8: #e5e5e5;
+  --bc-gray-9: #f5f5f5;
+
+  /* 深色下主色反转为白（未动） */
+  --bc-primary-1: #262626;
+  --bc-primary-2: #404040;
+  --bc-primary-3: #525252;
+  --bc-primary-4: #737373;
+  --bc-primary-5: #d4d4d4;
+  --bc-primary-6: #f5f5f5;
+  --bc-primary-7: #ffffff;
+  --bc-primary-8: #ffffff;
+  --bc-primary-9: #ffffff;
+
+  /* 语义色：实底深色 tint → 半透明色渍，近黑面板上不发灰 */
+  --bc-success: #22c55e;
+  --bc-success-bg: rgba(34, 197, 94, 0.14); /* ← 原 #052e16 */
+  --bc-success-text: #4ade80;
+  --bc-warning: #f59e0b;
+  --bc-warning-bg: rgba(245, 158, 11, 0.14); /* ← 原 #451a03 */
+  --bc-warning-text: #fbbf24;
+  --bc-warning-strong: #fcd34d;
+  --bc-warning-border: #78350f;
+  --bc-danger: #ef4444;
+  --bc-danger-bg: rgba(239, 68, 68, 0.14); /* ← 原 #450a0a */
+  --bc-danger-text: #f87171;
+  --bc-info: #a3a3a3;
+  --bc-info-bg: rgba(255, 255, 255, 0.07); /* ← 原 #262626 */
+  --bc-on-dark-1: #111111;
+
+  /* 表面：整体上移一阶，避开大面积 #000 振动 */
+  --bc-bg-page: #0a0a0a; /* ← 原 #000000 */
+  --bc-bg-surface: #111111; /* ← 原 #0f0f0f */
+  --bc-bg-sunken: #1a1a1a; /* ← 原 #141414 */
+  --bc-border: #262626;
+  --bc-border-strong: #383838; /* ← 原 #404040 */
+  --bc-text-1: var(--bc-gray-9);
+  --bc-text-2: var(--bc-gray-7);
+  --bc-text-3: var(--bc-gray-6);
+  --bc-text-4: var(--bc-gray-5);
+
+  /* 侧栏：与画布同色（纯黑锚点），发丝线分层 */
+  --bc-sidebar-bg: #0a0a0a; /* 未变，与新 bg-page 对齐 */
+  --bc-sidebar-text: #a3a3a3; /* ← 原 #737373（7.6:1，导航更清晰） */
+  --bc-sidebar-text-strong: #f5f5f5;
+  --bc-sidebar-hover: rgba(255, 255, 255, 0.07); /* ← 0.06 微提 */
+  --bc-sidebar-active: rgba(255, 255, 255, 0.12); /* ← 0.1 微提 */
+  --bc-sidebar-border: #1f1f1f;
+
+  /* 阴影（未动） */
+  --bc-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --bc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --bc-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.4);
+  --bc-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.5);
+  --bc-shadow-color: rgba(0, 0, 0, 0.4);
+
+  /* 顶栏与遮罩（未动） */
+  --bc-topbar-bg: rgba(10, 10, 10, 0.72);
+  --bc-overlay-bg: rgba(0, 0, 0, 0.6);
+
+  /* 白底主按钮上的近黑文字（并入原文件末尾追加块，删除那一块） */
+  --bc-on-primary: #0a0a0a; /* ← 原 #111111 */
+}

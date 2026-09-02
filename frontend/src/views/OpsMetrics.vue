@@ -225,6 +225,10 @@ onMounted(load)
   .kpis {
     grid-template-columns: repeat(2, 1fr);
   }
+  /* 5 卡在 2 列下会剩一张孤儿：第五张整行铺满，避免 2+2+1 的失衡 */
+  .kpis > :last-child {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 640px) {
   .kpis {

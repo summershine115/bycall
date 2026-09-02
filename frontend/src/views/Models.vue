@@ -394,11 +394,12 @@ async function onActivate(model) {
     const result = await admin.activateModel(model.id)
     if (result.need_rebuild) {
       // 维度变化 → 确认重建
-      await ElMessageBox.confirm(
+      const ok = await ElMessageBox.confirm(
         `向量维度从 ${result.old_dim} 变为 ${result.new_dim}，激活后需重建知识库索引（已有数据会重新向量化）。是否继续？`,
         '维度变化确认',
         { confirmButtonText: '确认重建并激活', cancelButtonText: '取消', type: 'warning' },
-      )
+      ).catch(() => null)
+      if (!ok) return  // 用户取消
       await admin.activateModel(model.id, true)
       ElMessage.success('已激活（需重新导入知识库文档以重建索引）')
     } else {
@@ -415,9 +416,10 @@ async function onDelete(model) {
   if (model.is_active) {
     msg = `模型「${model.display_name || model.name}」当前正在使用中，删除后该类型将无激活模型，确定删除？`
   }
-  await ElMessageBox.confirm(msg, model.is_active ? '删除激活模型' : '确认', {
+  const ok = await ElMessageBox.confirm(msg, model.is_active ? '删除激活模型' : '确认', {
     type: model.is_active ? 'error' : 'warning',
-  })
+  }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteModel(model.id)
   ElMessage.success('已删除')
   await load()

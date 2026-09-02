@@ -1,0 +1,87 @@
+/**
+ * Element Plus · 双主题映射层（纯白 / 纯黑）
+ *
+ * 职责：把 EP 的组件变量全部挂到 --bc-* 令牌上——令牌随
+ * data-theme / data-mode 属性翻转，这套映射自动跟着翻，两模式共用一份。
+ * `html.dark` 选择器与 EP 官方暗色基座（dark/css-vars.css）同优先级，
+ * 本文件在 main.js 中后置引入，按源序胜出——EP 默认的 #141414 系
+ * 会被覆盖为我们的 #0a0a0a / #111 体系。
+ *
+ * 前置（main.js 引入顺序，不可换）：
+ *   1. element-plus/theme-chalk/base.css（已有）
+ *   2. 程序化组件样式 el-overlay / el-message-box 等（已有）
+ *   3. element-plus/theme-chalk/dark/css-vars.css  ← 新增
+ *   4. ./styles/tokens.css（已有）
+ *   5. ./styles/element-overrides.css（已有）
+ *   6. ./styles/element-dual-theme.css              ← 本文件，放最后
+ *   7. ./styles/base.css（已有）
+ *
+ * 配套：useTheme.apply() 与 index.html 防闪烁脚本需同步 html.dark 类。
+ */
+
+:root,
+html.dark {
+  /* ---- 主色（mono：浅色近黑 / 深色反白） ---- */
+  --el-color-primary: var(--bc-primary-6);
+  --el-color-primary-light-3: var(--bc-primary-4);
+  --el-color-primary-light-5: var(--bc-primary-3);
+  --el-color-primary-light-7: var(--bc-primary-2);
+  --el-color-primary-light-8: var(--bc-primary-2);
+  --el-color-primary-light-9: var(--bc-primary-1);
+  --el-color-primary-dark-2: var(--bc-primary-7);
+
+  /* ---- 语义色 ---- */
+  --el-color-success: var(--bc-success);
+  --el-color-success-light-9: var(--bc-success-bg);
+  --el-color-warning: var(--bc-warning);
+  --el-color-warning-light-9: var(--bc-warning-bg);
+  --el-color-danger: var(--bc-danger);
+  --el-color-danger-light-9: var(--bc-danger-bg);
+  --el-color-error: var(--bc-danger);
+  --el-color-error-light-9: var(--bc-danger-bg);
+  --el-color-info: var(--bc-text-3);
+
+  /* ---- 表面（浅色白系 / 深色 #0a·#11 体系，随令牌自动翻转） ---- */
+  --el-bg-color: var(--bc-bg-surface);
+  --el-bg-color-page: var(--bc-bg-page);
+  --el-bg-color-overlay: var(--bc-bg-surface);
+
+  /* ---- 文字 ---- */
+  --el-text-color-primary: var(--bc-text-1);
+  --el-text-color-regular: var(--bc-text-2);
+  --el-text-color-secondary: var(--bc-text-3);
+  --el-text-color-placeholder: var(--bc-text-4);
+  --el-text-color-disabled: var(--bc-text-4);
+
+  /* ---- 边框 ---- */
+  --el-border-color: var(--bc-border);
+  --el-border-color-light: var(--bc-border);
+  --el-border-color-lighter: var(--bc-border);
+  --el-border-color-extra-light: var(--bc-bg-sunken);
+  --el-border-color-dark: var(--bc-border-strong);
+  --el-border-color-darker: var(--bc-border-strong);
+
+  /* ---- 填充（hover / 禁用 / 下拉底） ---- */
+  --el-fill-color: var(--bc-bg-sunken);
+  --el-fill-color-light: var(--bc-bg-sunken);
+  --el-fill-color-lighter: var(--bc-bg-sunken);
+  --el-fill-color-extra-light: var(--bc-bg-surface);
+  --el-fill-color-dark: var(--bc-border);
+  --el-fill-color-darker: var(--bc-border-strong);
+  --el-fill-color-blank: var(--bc-bg-surface);
+
+  /* ---- 遮罩与禁用 ---- */
+  --el-mask-color: var(--bc-overlay-bg);
+  --el-mask-color-extra-light: var(--bc-overlay-bg);
+  --el-disabled-bg-color: var(--bc-bg-sunken);
+  --el-disabled-text-color: var(--bc-text-4);
+  --el-disabled-border-color: var(--bc-border);
+}
+
+/* 深色专属微调：弹层/下拉在近黑面板上比 EP 默认略深一阶，
+   与 sunken 层次一致（浅色模式无需，EP 默认即白系） */
+html.dark {
+  --el-bg-color-overlay: #161616; /* 下拉 / 气泡浮层，介于 surface 与 sunken 之间 */
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.55);
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
