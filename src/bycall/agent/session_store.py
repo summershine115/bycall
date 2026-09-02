@@ -52,13 +52,28 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3)
 
 
-def get_or_create_conversation(session: Session, user_id: int, channel: str) -> Conversation:
-    """按 session_key = ``{channel}:{user_id}`` 查/建会话。
+def _build_session_key(channel: str, user_id: int, agent_id: int | None) -> str:
+    """构造确定性 session_key（含 agent_id 时隔离到实例粒度）。
 
-    永不过期：一个 (user_id, channel) 永远对应一条 Conversation。
-    不存在则创建（首次消息时触发）。
+    - ``agent_id is None`` → ``f"{channel}:{user_id}"``（默认实例/历史兼容）
+    - ``agent_id=int`` → ``f"{channel}:{user_id}:agent:{agent_id}"``（实例级隔离，红线 #2）
     """
-    session_key = f"{channel}:{user_id}"
+    if agent_id is None:
+        return f"{channel}:{user_id}"
+    return f"{channel}:{user_id}:agent:{agent_id}"
+
+
+def get_or_create_conversation(
+    session: Session, user_id: int, channel: str, agent_id: int | None = None
+) -> Conversation:
+    """按 session_key 查/建会话（支持 per-Agent 隔离）。
+
+    - 默认（``agent_id is None``）：``{channel}:{user_id}`` → 全局默认实例，兼容历史。
+    - 指定实例：``{channel}:{user_id}:agent:{agent_id}`` → 每个实例×用户×渠道 独立会话
+      （红线 #2 完整键 ``(agent_id, channel, tenant_id, user_id)`` 的实例维度落地）。
+    永不过期：一个 ``(agent_id, channel, user_id)`` 永远对应一条 Conversation。
+    """
+    session_key = _build_session_key(channel, user_id, agent_id)
     conv = session.exec(Conversation.select_by_session_key(session_key)).first()
     if conv is not None:
         return conv
@@ -67,12 +82,23 @@ def get_or_create_conversation(session: Session, user_id: int, channel: str) -> 
         user_id=user_id,
         channel=channel,
         session_key=session_key,
+        agent_id=agent_id,
     )
     session.add(conv)
     session.commit()
     session.refresh(conv)
-    logger.info("创建新会话: session_key=%s, conv_id=%s", session_key, conv.id)
+    logger.info(
+        "创建新会话: session_key=%s, conv_id=%s, agent_id=%s", session_key, conv.id, agent_id
+    )
     return conv
+
+
+def get_or_create_conversation_for_agent(
+    session: Session, user_id: int, channel: str, agent: object | None
+) -> Conversation:
+    """按 Agent 实体查/建会话（封装 agent_id 提取，便于 runner/IM 层调用）。"""
+    agent_id = getattr(agent, "id", None) if agent is not None else None
+    return get_or_create_conversation(session, user_id, channel, agent_id=agent_id)
 
 
 def load_message_history(

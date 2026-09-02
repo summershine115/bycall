@@ -176,6 +176,28 @@ def _ensure_schema_compatibility() -> None:
         if "agent_id" not in columns:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE conversation ADD COLUMN "agent_id" INTEGER'))
+    # agent: 首次落地数字员工实例表（全托管）。旧库补列，幂等。
+    if "agent" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("agent")}
+        agent_migrations = [
+            ("avatar_url", "VARCHAR NOT NULL DEFAULT ''"),
+            ("system_prompt_version", "INTEGER"),
+            ("model_id", "INTEGER"),
+            ("skills", "VARCHAR"),
+            ("knowledge_scope_tags", "VARCHAR"),
+            ("allowed_tools", "VARCHAR"),
+            ("visible_roles", "VARCHAR"),
+            ("channel", "VARCHAR NOT NULL DEFAULT 'api'"),
+            ("im_config_encrypted", "VARCHAR NOT NULL DEFAULT ''"),
+            ("approval_policy", "VARCHAR"),
+            ("is_enabled", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("is_default", "BOOLEAN NOT NULL DEFAULT 0"),
+        ]
+        missing = [(n, ddl) for n, ddl in agent_migrations if n not in columns]
+        if missing:
+            with engine.begin() as connection:
+                for n, ddl in missing:
+                    connection.execute(text(f'ALTER TABLE agent ADD COLUMN "{n}" {ddl}'))
 
     # document: 补 level 列（T1.1 密级/职级 ABAC：文档密级，检索按 level <= user_level 过滤）。
     if "document" in inspector.get_table_names():
@@ -338,6 +360,20 @@ def _seed_defaults() -> None:
                         "- 转人工话术：「这个问题我转给人工同事跟进，稍后联系您。」"
                     ),
                     is_enabled=True,
+                )
+            )
+        # 数字员工实例：默认 Agent（组织首个可演进的实例，全托管起点）
+        from bycall.governance.models import Agent
+
+        if session.exec(Agent.select_by_name("default")).first() is None:
+            session.add(
+                Agent(
+                    name="default",
+                    display_name="默认助手",
+                    description="组织默认数字员工（开箱即用，可改名/改人格/改模型）",
+                    channel="api",
+                    is_enabled=True,
+                    is_default=True,
                 )
             )
         # IM 配置保留在 SystemSetting（渠道凭证，非模型）

@@ -43,10 +43,13 @@ class ChatRequest(BaseModel):
     """数据面对话请求。
 
     ``conversation_id`` 为空 → 新建 api 会话；非空 → 继续该会话（校验归属）。
+    ``agent_id`` 指定数字员工实例（为空→默认实例/历史兼容）；新建会话时归属该实例，
+    继续会话时会校验会话归属实例一致（跨实例串会话直接 404）。
     """
 
     question: str
     conversation_id: int | None = None
+    agent_id: int | None = None
 
 
 class ChatResponse(BaseModel):
@@ -129,21 +132,35 @@ def _check_rate_limit(user: User) -> None:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
 
 
-def _new_api_conversation(session: Session, user: User) -> Conversation:
-    """新建一个 api 渠道会话。
+def _new_api_conversation(
+    session: Session, user: User, agent_id: int | None = None
+) -> Conversation:
+    """新建一个 api 渠道会话（支持 per-Agent 归属）。
 
     api 渠道支持多会话：每次新建用唯一 session_key（``api:{uid}:{rand}``），
-    不与 IM 渠道的 ``{channel}:{uid}`` 单会话查找冲突。
+    不与 IM 渠道的 ``{channel}:{uid}`` 单会话查找冲突。``agent_id`` 非空时写
+    ``Conversation.agent_id``，实现实例级隔离（红线 #2）。
     """
+    # 校验实例存在且启用（避免新建到不存在/禁用的实例上）
+    if agent_id is not None:
+        from bycall.governance.models import Agent
+
+        agent = session.get(Agent, agent_id)
+        if agent is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"数字员工不存在: {agent_id}")
+        if not agent.is_enabled:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"数字员工已禁用: {agent.name}")
+    # 多会话场景：session_key 仍用随机后缀保证唯一，但 agent_id 列区分归属
     conv = Conversation(
         user_id=user.id,  # type: ignore[arg-type]
         channel="api",
         session_key=f"api:{user.id}:{uuid.uuid4().hex[:8]}",
+        agent_id=agent_id,
     )
     session.add(conv)
     session.commit()
     session.refresh(conv)
-    logger.info("新建 api 会话: conv_id=%s user=%s", conv.id, user.name)
+    logger.info("新建 api 会话: conv_id=%s user=%s agent_id=%s", conv.id, user.name, agent_id)
     return conv
 
 
@@ -155,11 +172,29 @@ def _get_owned_conversation(session: Session, user: User, conv_id: int) -> Conve
     return conv
 
 
-def _resolve_conversation(session: Session, user: User, conv_id: int | None) -> Conversation:
-    """按 conversation_id 决定新建或继续（/chat 与 /chat/stream 共用）。"""
+def _resolve_conversation(
+    session: Session, user: User, conv_id: int | None, agent_id: int | None = None
+) -> Conversation:
+    """按 conversation_id 决定新建或继续（/chat 与 /chat/stream 共用）。
+
+    ``agent_id`` 仅在新建时生效；继续时若会话已有归属，则校验一致性（跨实例串会话 404）。
+    """
     if conv_id is not None:
-        return _get_owned_conversation(session, user, conv_id)
-    return _new_api_conversation(session, user)
+        conv = _get_owned_conversation(session, user, conv_id)
+        if agent_id is not None and conv.agent_id is not None and conv.agent_id != agent_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"会话 {conv_id} 归属数字员工 {conv.agent_id}，与请求 agent_id={agent_id} 不一致",
+            )
+        # 若会话无归属（历史）但请求带 agent_id，则把会话懒绑定到该实例（兼容老数据）
+        if agent_id is not None and conv.agent_id is None:
+            conv.agent_id = agent_id
+            # 同步更新 session_key 以保持确定性？多会话随机 key 已唯一，无需改 key，仅补列
+            session.add(conv)
+            session.commit()
+            session.refresh(conv)
+        return conv
+    return _new_api_conversation(session, user, agent_id=agent_id)
 
 
 def _to_response(result, conv_id: int | None) -> ChatResponse:
@@ -201,7 +236,7 @@ def chat(
 
     user = _current_user(request, session)
     _check_rate_limit(user)
-    conv = _resolve_conversation(session, user, body.conversation_id)
+    conv = _resolve_conversation(session, user, body.conversation_id, agent_id=body.agent_id)
     chat_model = _resolve_chat_model(session, conv)
 
     result = run_agent(
@@ -211,6 +246,7 @@ def chat(
         llm=chat_model,
         channel="api",
         conversation_id=conv.id,
+        agent_id=conv.agent_id,
     )
     return _to_response(result, conv.id)
 
@@ -243,8 +279,9 @@ async def chat_stream(
     try:
         user = _current_user(request, session)
         _check_rate_limit(user)
-        conv = _resolve_conversation(session, user, body.conversation_id)
+        conv = _resolve_conversation(session, user, body.conversation_id, agent_id=body.agent_id)
         conv_id = conv.id
+        conv_agent_id = conv.agent_id
         chat_model = _resolve_chat_model(session, conv)
     except BaseException:
         ctx.__exit__(None, None, None)
@@ -259,6 +296,7 @@ async def chat_stream(
                 llm=chat_model,
                 channel="api",
                 conversation_id=conv_id,
+                agent_id=conv_agent_id,
             ):
                 if is_final and result is not None:
                     yield _sse("done", _to_response(result, conv_id).model_dump_json())

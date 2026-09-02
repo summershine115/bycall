@@ -334,6 +334,94 @@ class Model(SQLModel, table=True):
         return select(Model).where(Model.model_type == model_type).order_by(Model.id)
 
 
+# ============ Agent：数字员工实例（全托管：人格/模型/技能/知识域/渠道/审批策略）============
+
+
+class Agent(SQLModel, table=True):
+    """数字员工实例——组织管控的、可独立演进的 Agent 实体。
+
+    一个 Agent = 一套人格（SystemPrompt）+ 能力（Model/Skill/工具白名单）
+    + 知识边界（knowledge_scope_tags）+ 可见性（visible_roles）+ 渠道绑定
+    + 审批策略。会话键 ``session_key`` 按 ``(agent_id, channel, tenant_id, user_id)``
+    落地隔离（红线 #2），每个 ``(agent_id, user, channel)`` 独立会话。
+
+    设计要点（全托管）：
+    - ``name`` 唯一 slug（如 ``sales-assistant``），作 API 与 IMP 寻址键，创建后不可改。
+    - ``system_prompt_version``：绑定的提示词版本（``SystemPrompt.version``），空→fallback
+      角色绑定→全局激活（与 ``RoleConfig.system_prompt_version`` 同fallback 链）。
+    - ``model_id``：绑定的对话模型（``Model.id``，``model_type=chat``），空→fallback
+      ``Conversation.model_id``→全局激活（与 per-session 模型同链）。
+    - ``skills``/``knowledge_scope_tags``/``allowed_tools``：per-Agent 白名单。若为空/空列表，
+      视为"未覆盖"→沿用角色能力；非空则与角色能力取交集/并集（收紧而非放宽——角色是天花板）。
+    - ``visible_roles``：哪些角色可见该 Agent（空/None=全部角色可见），放在能力集之前判定。
+    - ``channel``：该实例主要服务的渠道（``api``/``wecom``/``feishu``），多渠道可扩展为列表。
+    - ``im_config``：per-Agent IM 凭证覆盖（``{wecom: {bot_id, secret_encrypted}}`` 等），
+      加密存库，API 脱敏返回（与 ``Model.api_key`` 同机制）。单 Bot 阶段可为空。
+    - ``approval_policy``：per-Agent 审批策略覆盖（``{require_approval_tools:[...]}``），
+      与全局工具 ``destructiveHint`` 正交，取并集。
+    - ``is_enabled``：禁用后新会话拒绝、历史会话只读（软关闭）。
+    - ``is_default``：组织默认 Agent（唯一，fallback 用）；首次 ``init_db`` 灌一个。
+    """
+
+    __table_args__ = (UniqueConstraint("name", name="uq_agent_name"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)  # slug，唯一，如 sales-assistant
+    display_name: str = ""  # 人类可读名
+    description: str = ""
+    avatar_url: str = ""  # 头像 URL（可选，前端展示用）
+    # 绑定：人格 / 模型
+    system_prompt_version: int | None = Field(default=None, index=True)  # SystemPrompt.version
+    model_id: int | None = Field(default=None, index=True)  # Model.id (chat)
+    # 能力覆盖（空/None = 未覆盖，沿用角色；非空 = 与角色取交集/并集收紧）
+    skills: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))
+    knowledge_scope_tags: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))
+    allowed_tools: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))
+    # 可见性（空/None = 全部角色可见）
+    visible_roles: list[str] | None = Field(default=None, sa_column=Column(ListJSONType))
+    # 渠道与 per-Agent 凭证/策略（JSON，加密字段单独存密文列）
+    channel: str = Field(default="api", index=True)  # api / wecom / feishu
+    im_config_encrypted: str = ""  # Fernet 密文（JSON dict），per-Agent IM 覆盖
+    approval_policy: dict | None = Field(default=None, sa_column=Column(DictJSONType))
+    is_enabled: bool = Field(default=True, index=True)
+    is_default: bool = Field(default=False, index=True)
+    created_at: datetime = Field(
+        default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
+    )
+    updated_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime, default=_now_utc, onupdate=_now_utc),
+    )
+
+    @staticmethod
+    def select_all():
+        """全部 Agent，按 id 正序（创建时间顺序）。"""
+        from sqlmodel import select
+
+        return select(Agent).order_by(Agent.id)
+
+    @staticmethod
+    def select_enabled():
+        """启用的 Agent（数据面列表/IM 入口过滤用）。"""
+        from sqlmodel import select
+
+        return select(Agent).where(Agent.is_enabled == True).order_by(Agent.id)  # noqa: E712
+
+    @staticmethod
+    def select_by_name(name: str):
+        """按 slug 查。"""
+        from sqlmodel import select
+
+        return select(Agent).where(Agent.name == name)
+
+    @staticmethod
+    def select_default():
+        """默认 Agent（唯一）。"""
+        from sqlmodel import select
+
+        return select(Agent).where(Agent.is_default == True)  # noqa: E712
+
+
 # ============ MCPServer：MCP 工具服务器（M4 工具网关）============
 
 

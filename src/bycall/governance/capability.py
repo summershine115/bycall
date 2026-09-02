@@ -43,7 +43,15 @@ from dataclasses import dataclass, field
 from sqlalchemy import event
 from sqlmodel import Session, select
 
-from bycall.governance.models import KnowledgeBase, ReleaseState, Role, Skill, SystemPrompt, User
+from bycall.governance.models import (
+    Agent,
+    KnowledgeBase,
+    ReleaseState,
+    Role,
+    Skill,
+    SystemPrompt,
+    User,
+)
 from bycall.observability.metrics import CAPABILITY_CACHE
 
 logger = logging.getLogger(__name__)
@@ -93,6 +101,7 @@ class CapabilitySet:
     - ``context_budget_overrides``：从 ``RoleConfig.context_budget`` 透传的预算覆盖 dict。
       runner 经 ``resolve_budget`` 合并进默认 ``ContextBudget``——历史/记忆/RAG 预算按角色可调。
       admin 内置角色为空（用全局默认）。
+    - ``agent_id`` / ``agent_name``：本次会话归属的数字员工实例（为空=默认实例/历史兼容）。
     """
 
     user_id: int | None
@@ -109,6 +118,8 @@ class CapabilitySet:
     visible_kb_ids: list[int] = field(default_factory=list)
     is_admin: bool = False
     context_budget_overrides: dict = field(default_factory=dict)
+    agent_id: int | None = None
+    agent_name: str = ""
 
 
 def get_active_system_prompt(session: Session) -> str:
@@ -216,12 +227,14 @@ def _format_kb_lines(kbs: list[tuple[str, str]]) -> str:
 
 
 # ============ 能力集缓存（M5 性能调优）============
-# user.id → CapabilitySet（master，永不直接返回；命中/写入均 deepcopy 副本）。
-_CAP_CACHE: dict[int | None, CapabilitySet] = {}
+# (user.id, agent_id) → CapabilitySet（master，永不直接返回；命中/写入均 deepcopy 副本）。
+_CAP_CACHE: dict[tuple[int | None, int | None], CapabilitySet] = {}
 
 # 能力集输入表——这些表的写提交即令缓存失效（输入变了，结果必变）。
 # ReleaseState 是 T2.4 灰度/回滚的输入（prompt canary 分流），故一并纳入。
+# Agent 是数字员工实例输入（per-Agent 人格/模型/技能/知识域覆盖），任何实例变更即清缓存。
 _CAP_RELEVANT_TYPES: tuple[type, ...] = (
+    Agent,
     User,
     Role,
     SystemPrompt,
@@ -242,22 +255,52 @@ def clear_capability_cache() -> None:
     _CAP_CACHE.clear()
 
 
-def compute_capability_set(session: Session, user: User) -> CapabilitySet:
-    """从用户记录计算当前能力集（带 ``user.id`` 级缓存）。
+def compute_capability_set(
+    session: Session, user: User, agent: Agent | int | None = None
+) -> CapabilitySet:
+    """从用户记录计算当前能力集（带 ``(user.id, agent_id)`` 级缓存）。
 
-    缓存语义见模块 docstring。命中或首次计算均返回 ``deepcopy``——调用方拿到独立
-    副本，改动不回写缓存（保值对象契约）。``PermissionError``（禁用 / 角色未定义）
-    **不缓存**：这些是"当前不该有"的拒绝，用户状态变更后下次即重算，不留陈旧拒绝。
+    ``agent`` 可为 ``Agent`` 实体、``agent_id`` 或 ``None``（默认实例/历史兼容）。
+    指定实例时，能力集在角色基线之上做 **收紧式** 合并（角色是天花板，实例只能收窄
+    或叠加技能，不能突破角色边界——红线 #1/#5 的实例形态）。
+    缓存语义同前，但 key 扩展为 ``(user.id, agent_id)``，避免实例间串权。
+    ``PermissionError``（禁用 / 角色未定义 / 实例不可见/禁用）**不缓存**。
     """
-    cached = _CAP_CACHE.get(user.id)
+    # 解析 agent
+    agent_obj: Agent | None = None
+    agent_id: int | None = None
+    if isinstance(agent, int):
+        agent_id = agent
+        agent_obj = session.get(Agent, agent_id)
+        if agent_obj is None:
+            raise PermissionError(f"数字员工不存在: {agent_id}")
+    elif isinstance(agent, Agent):
+        agent_obj = agent
+        agent_id = agent.id
+
+    cache_key = (user.id, agent_id)
+    cached = _CAP_CACHE.get(cache_key)
     if cached is not None:
         CAPABILITY_CACHE.labels(result="hit").inc()
         return copy.deepcopy(cached)
 
     CAPABILITY_CACHE.labels(result="miss").inc()
-    cap = _compute_capability_set_uncached(session, user)
-    _CAP_CACHE[user.id] = cap
+    cap = _compute_capability_set_uncached(session, user, agent_obj)
+    # 仅缓存成功结果（PermissionError 会抛，不落缓存）
+    _CAP_CACHE[cache_key] = cap
     return copy.deepcopy(cap)
+
+
+def compute_capability_set_for_agent(
+    session: Session, user: User, agent_id: int | None
+) -> CapabilitySet:
+    """按 agent_id 取能力集的显式入口（供 runner/dataplane 按会话所属实例调用）。"""
+    if agent_id is None:
+        return compute_capability_set(session, user, None)
+    agent = session.get(Agent, agent_id)
+    if agent is None:
+        raise PermissionError(f"数字员工不存在: {agent_id}")
+    return compute_capability_set(session, user, agent)
 
 
 def reload_user_and_compute_cap(session: Session, user_id: int) -> CapabilitySet:
@@ -302,8 +345,10 @@ def _cap_discard_flag_on_rollback(session: Session) -> None:
     session.info.pop(_CAP_INVAL_KEY, None)
 
 
-def _compute_capability_set_uncached(session: Session, user: User) -> CapabilitySet:
-    """从用户记录计算当前能力集。
+def _compute_capability_set_uncached(
+    session: Session, user: User, agent: Agent | None = None
+) -> CapabilitySet:
+    """从用户记录计算当前能力集（含可选的 per-Agent 收紧合并）。
 
     - 普通用户：取 ``user.role`` 对应的 ``Role.config``（allowed_tools /
       knowledge_scope_tags / level / system_prompt_version）。若角色绑定了
@@ -313,9 +358,23 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
       （admin 是运维角色，不按业务角色定制提示词）。
     - ``is_active=False`` 用户：抛 ``PermissionError("用户已被禁用")``。
     - role 对应的 Role 记录不存在（除 admin 外）：抛 ``PermissionError("角色未定义: {role}")``。
+    - 指定 ``agent`` 时：在角色基线之上做收紧式合并（见 ``compute_capability_set`` 文档）；
+      若实例禁用/用户角色不可见该实例，直接 ``PermissionError``（fail-closed）。
 
     所有策略集中在此函数，是治理脊柱与 LLM 之间唯一的翻译层。
     """
+    # 0. 若指定实例，先校验实例状态与可见性（fail-closed，不泄漏是否存在）。
+    if agent is not None:
+        if not agent.is_enabled:
+            raise PermissionError(f"数字员工已禁用: {agent.name}")
+        if (
+            agent.visible_roles is not None
+            and len(agent.visible_roles) > 0
+            and user.role != "admin"
+            and user.role not in agent.visible_roles
+        ):
+            raise PermissionError(f"角色 {user.role} 无权访问数字员工 {agent.name}")
+
     # 1. 先校验用户状态——禁用用户无论角色都拒绝，不泄漏后续判定细节。
     if not user.is_active:
         raise PermissionError("用户已被禁用")
@@ -331,8 +390,13 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
     kb_infos = [(kb.name, kb.description) for kb in all_kbs]
 
     # 3. admin 内置角色：不走 Role 表，直接给通配 + 最高职级。
-    #    admin 是运维角色，不注入 skill（与不定制 prompt 一致）。
+    #    admin 是运维角色，不注入 skill（与不定制 prompt 一致），但若指定实例且实例有人格绑定，则用实例人格。
     if user.role == "admin":
+        system_prompt_admin = global_prompt
+        if agent is not None and agent.system_prompt_version is not None:
+            ag_prompt = get_system_prompt_by_version(session, agent.system_prompt_version)
+            if ag_prompt is not None:
+                system_prompt_admin = ag_prompt
         # admin 全部可见，visible_kb_ids 留空 = 无限制
         return CapabilitySet(
             user_id=user.id,
@@ -341,13 +405,15 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
             allowed_tools=["*"],
             knowledge_scope_tags=["*"],
             level=999,
-            system_prompt=global_prompt,
+            system_prompt=system_prompt_admin,
             skills=[],
             skill_markdown="",
             knowledge_scope_text=build_knowledge_scope_text(["*"], True, kb_infos),
             on_demand_skills=[],
             visible_kb_ids=[],  # 空 = 全部可见
             is_admin=True,
+            agent_id=agent.id if agent else None,
+            agent_name=agent.name if agent else "",
         )
 
     # 4. 普通用户：必须能找到对应的 Role 记录，否则视为配置错误，拒绝。
@@ -369,10 +435,33 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
                 user.role,
                 config.system_prompt_version,
             )
+    # 实例人格覆盖（优先级：实例 > 角色 > 全局）
+    if agent is not None and agent.system_prompt_version is not None:
+        ag_prompt = get_system_prompt_by_version(session, agent.system_prompt_version)
+        if ag_prompt is not None:
+            system_prompt = ag_prompt
+        else:
+            logger.warning(
+                "实例 %s 绑定的提示词版本 %s 不存在，fallback 角色/全局",
+                agent.name,
+                agent.system_prompt_version,
+            )
 
-    # 角色绑定的 SKILL：按 disclosure 拆分注入方式。
+    # 角色绑定的 SKILL + 实例 SKILL 联合（实例可补充领域能力）
     # 未注册/已禁用的 name 静默忽略（容错，与 allowed_tools 一致）。
-    bound_skills = get_enabled_skills_by_names(session, config.skills)
+    role_skills = get_enabled_skills_by_names(session, config.skills)
+    if agent is not None and agent.skills is not None and len(agent.skills) > 0:
+        agent_skills = get_enabled_skills_by_names(session, agent.skills)
+        # 合并去重：实例在前、角色在后，保留首次出现顺序（实例技能优先）
+        seen = set()
+        merged = []
+        for s in list(agent_skills) + list(role_skills):
+            if s.name not in seen:
+                seen.add(s.name)
+                merged.append(s)
+        bound_skills = merged
+    else:
+        bound_skills = role_skills
     # 按 disclosure 拆分：always → 全文进 skill_markdown；on_demand → 索引进 skill_markdown，全文进 on_demand_skills。
     always = [s for s in bound_skills if s.disclosure != "on_demand"]
     on_demand = [
@@ -383,6 +472,25 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
     skill_markdown = build_skill_markdown(always, on_demand)
     # 实际生效的 skill name 列表（审计可见）。
     effective_skill_names = [s.name for s in bound_skills]
+
+    # 知识域：实例若有覆盖则与角色取交集（收紧，角色是天花板）
+    effective_tags = list(config.knowledge_scope_tags)
+    if (
+        agent is not None
+        and agent.knowledge_scope_tags is not None
+        and len(agent.knowledge_scope_tags) > 0
+    ):
+        if "*" in effective_tags:
+            effective_tags = list(agent.knowledge_scope_tags)
+        else:
+            effective_tags = [t for t in agent.knowledge_scope_tags if t in effective_tags]
+    # 工具：实例若有覆盖则与角色取交集（收紧）
+    effective_tools = list(config.allowed_tools)
+    if agent is not None and agent.allowed_tools is not None and len(agent.allowed_tools) > 0:
+        if "*" in effective_tools:
+            effective_tools = list(agent.allowed_tools)
+        else:
+            effective_tools = [t for t in agent.allowed_tools if t in effective_tools]
 
     # 6. 可见知识库：KB 级 ACL — 过滤 visible_to_roles 含本角色或为空（全角色可见）的 KB。
     #    all_kbs 在上文（步骤 2.5）已加载，这里复用计算 visible_kb_ids。
@@ -397,17 +505,17 @@ def _compute_capability_set_uncached(session: Session, user: User) -> Capability
         user_id=user.id,
         user_name=user.name,
         role=user.role,
-        allowed_tools=list(config.allowed_tools),
-        knowledge_scope_tags=list(config.knowledge_scope_tags),
+        allowed_tools=effective_tools,
+        knowledge_scope_tags=effective_tags,
         level=config.level,
         system_prompt=system_prompt,
         skills=effective_skill_names,
         on_demand_skills=on_demand,
         skill_markdown=skill_markdown,
-        knowledge_scope_text=build_knowledge_scope_text(
-            list(config.knowledge_scope_tags), False, visible_kb_infos
-        ),
+        knowledge_scope_text=build_knowledge_scope_text(effective_tags, False, visible_kb_infos),
         visible_kb_ids=visible_kb_ids,
         is_admin=False,
         context_budget_overrides=dict(config.context_budget),
+        agent_id=agent.id if agent else None,
+        agent_name=agent.name if agent else "",
     )

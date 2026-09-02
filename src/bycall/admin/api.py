@@ -38,6 +38,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from bycall.admin.schemas import (
+    AgentCreate,
+    AgentOut,
+    AgentUpdate,
     ApprovalGrantOut,
     ApprovalOut,
     ApprovalReview,
@@ -108,6 +111,7 @@ from bycall.admin.schemas import (
 )
 from bycall.db import get_session, session_scope
 from bycall.governance.models import (
+    Agent,
     AuditLog,
     Conversation,
     Document,
@@ -1834,6 +1838,273 @@ def test_model(
         latency_ms = int((time.perf_counter() - start) * 1000)
         msg = str(exc) or exc.__class__.__name__
         return ModelTestResult(ok=False, latency_ms=latency_ms, error=msg[:500])
+
+
+# ============ 数字员工实例管理（Agent 全托管：CRUD + 启停 + 默认）============
+
+
+def _agent_to_out(agent: Agent) -> AgentOut:
+    """把 Agent ORM 行转 AgentOut：im_config 脱敏。"""
+    import json as _json
+
+    from bycall.governance.secrets import decrypt_secret
+
+    has_im = bool(agent.im_config_encrypted)
+    preview: dict = {}
+    if has_im:
+        try:
+            raw = decrypt_secret(agent.im_config_encrypted)
+            data = _json.loads(raw) if raw else {}
+            # 脱敏：只露 key 名，值打码
+            preview = {k: ("***" if v else "") for k, v in data.items()}
+        except Exception:
+            preview = {"_error": "<decrypt failed>"}
+    return AgentOut(
+        id=agent.id,  # type: ignore[arg-type]
+        name=agent.name,
+        display_name=agent.display_name,
+        description=agent.description,
+        avatar_url=agent.avatar_url,
+        system_prompt_version=agent.system_prompt_version,
+        model_id=agent.model_id,
+        skills=agent.skills,
+        knowledge_scope_tags=agent.knowledge_scope_tags,
+        allowed_tools=agent.allowed_tools,
+        visible_roles=agent.visible_roles,
+        channel=agent.channel,
+        has_im_config=has_im,
+        im_config_preview=preview,
+        approval_policy=agent.approval_policy,
+        is_enabled=agent.is_enabled,
+        is_default=agent.is_default,
+        created_at=agent.created_at,
+        updated_at=agent.updated_at,
+    )
+
+
+def _get_agent_or_404(session: Session, agent_id: int) -> Agent:
+    """按 id 取 Agent，不存在 → 404。"""
+    agent = session.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"数字员工不存在: {agent_id}",
+        )
+    return agent
+
+
+def _validate_agent_refs(session: Session, payload: AgentCreate | AgentUpdate) -> None:
+    """校验 Agent 引用的外键有效性（model_id / system_prompt_version / skills）。"""
+    # model_id 若指定，必须存在且为 chat 类型
+    mid = getattr(payload, "model_id", None)
+    if mid is not None:
+        model = session.get(Model, mid)
+        if model is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"模型不存在: {mid}")
+        if model.model_type != "chat":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"Agent 只能绑定 chat 模型，当前为 {model.model_type}"
+            )
+    # system_prompt_version 若指定，必须存在
+    ver = getattr(payload, "system_prompt_version", None)
+    if ver is not None:
+        prompt = session.exec(select(SystemPrompt).where(SystemPrompt.version == ver)).first()
+        if prompt is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"提示词版本不存在: {ver}")
+    # skills 若指定，逐个校验存在且启用（未启用也允许，但给 warning）
+    skills = getattr(payload, "skills", None)
+    if skills is not None:
+        for name in skills:
+            sk = session.exec(Skill.select_by_name(name)).first()
+            if sk is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
+
+
+def _ensure_single_default(session: Session, agent: Agent) -> None:
+    """保证全局只有一个 is_default=True 的 Agent。"""
+    if agent.is_default:
+        for other in session.exec(select(Agent).where(Agent.is_default == True)).all():  # noqa: E712
+            if other.id != agent.id:
+                other.is_default = False
+                session.add(other)
+
+
+@router.get("/agents", response_model=list[AgentOut])
+def list_agents(
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> list[AgentOut]:
+    """列出全部数字员工实例（含禁用，按 id 正序）。"""
+    rows = session.exec(Agent.select_all()).all()
+    return [_agent_to_out(a) for a in rows]
+
+
+@router.get("/agents/{agent_id}", response_model=AgentOut)
+def get_agent(
+    agent_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> AgentOut:
+    """查看单个数字员工详情。"""
+    return _agent_to_out(_get_agent_or_404(session, agent_id))
+
+
+@router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
+def create_agent(
+    payload: AgentCreate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> AgentOut:
+    """创建数字员工实例。name 唯一冲突 → 409；引用校验失败 → 404/400。"""
+    _validate_agent_refs(session, payload)
+    # 加密 per-Agent IM 覆盖
+    im_encrypted = ""
+    if payload.im_config is not None and len(payload.im_config) > 0:
+        from bycall.governance.secrets import encrypt_secret
+
+        im_encrypted = encrypt_secret(json.dumps(payload.im_config, ensure_ascii=False))
+    agent = Agent(
+        name=payload.name,
+        display_name=payload.display_name,
+        description=payload.description,
+        avatar_url=payload.avatar_url,
+        system_prompt_version=payload.system_prompt_version,
+        model_id=payload.model_id,
+        skills=payload.skills,
+        knowledge_scope_tags=payload.knowledge_scope_tags,
+        allowed_tools=payload.allowed_tools,
+        visible_roles=payload.visible_roles,
+        channel=payload.channel,
+        im_config_encrypted=im_encrypted,
+        approval_policy=payload.approval_policy,
+        is_enabled=payload.is_enabled,
+        is_default=payload.is_default,
+    )
+    try:
+        session.add(agent)
+        session.flush()
+        _ensure_single_default(session, agent)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {payload.name}"
+        ) from exc
+    session.refresh(agent)
+    _audit_admin(session, request, "create_agent", f"Agent({agent.name})", after=agent)
+    session.commit()
+    return _agent_to_out(agent)
+
+
+@router.put("/agents/{agent_id}", response_model=AgentOut)
+def update_agent(
+    agent_id: int,
+    payload: AgentUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> AgentOut:
+    """更新数字员工实例（PATCH 语义：仅传入字段生效，name 不可改）。
+
+    - skills/knowledge_scope_tags/allowed_tools/visible_roles 传 [] 表示清空覆盖
+      （回到"沿用角色"）；传 None 表示不改。
+    - im_config 传 None=不改，{}=清空，已有值则整体替换并重新加密。
+    """
+    agent = _get_agent_or_404(session, agent_id)
+    _validate_agent_refs(session, payload)
+    before = json.dumps(agent.model_dump(), default=str)
+    if payload.display_name is not None:
+        agent.display_name = payload.display_name
+    if payload.description is not None:
+        agent.description = payload.description
+    if payload.avatar_url is not None:
+        agent.avatar_url = payload.avatar_url
+    if payload.system_prompt_version is not None:
+        agent.system_prompt_version = payload.system_prompt_version
+    # 显式允许清零：若 payload 字段存在且为 None，则清为 None（传 null 即清空覆盖）
+    # 由于 AgentUpdate 字段默认为 None，需用 model_fields_set 区分"未传" vs "传 null"
+    if (
+        "system_prompt_version" in payload.model_fields_set
+        and payload.system_prompt_version is None
+    ):
+        agent.system_prompt_version = None
+    if "model_id" in payload.model_fields_set:
+        agent.model_id = payload.model_id
+    if "skills" in payload.model_fields_set:
+        agent.skills = payload.skills
+    if "knowledge_scope_tags" in payload.model_fields_set:
+        agent.knowledge_scope_tags = payload.knowledge_scope_tags
+    if "allowed_tools" in payload.model_fields_set:
+        agent.allowed_tools = payload.allowed_tools
+    if "visible_roles" in payload.model_fields_set:
+        agent.visible_roles = payload.visible_roles
+    if payload.channel is not None:
+        agent.channel = payload.channel
+    if payload.im_config is not None:
+        if len(payload.im_config) == 0:
+            agent.im_config_encrypted = ""
+        else:
+            from bycall.governance.secrets import encrypt_secret
+
+            agent.im_config_encrypted = encrypt_secret(
+                json.dumps(payload.im_config, ensure_ascii=False)
+            )
+    if "approval_policy" in payload.model_fields_set:
+        agent.approval_policy = payload.approval_policy
+    if payload.is_enabled is not None:
+        agent.is_enabled = payload.is_enabled
+    if payload.is_default is not None:
+        agent.is_default = payload.is_default
+        if agent.is_default:
+            _ensure_single_default(session, agent)
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    _audit_admin(
+        session,
+        request,
+        "update_agent",
+        f"Agent({agent.name})",
+        before=json.loads(before),
+        after=agent,
+    )
+    session.commit()
+    return _agent_to_out(agent)
+
+
+@router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent(
+    agent_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """删除数字员工实例。
+
+    - 默认实例不允许直接删除（需先把 default 切到其他实例）。
+    - 若仍有会话引用该实例（Conversation.agent_id），拒绝删除（409），避免悬空历史。
+    """
+    agent = _get_agent_or_404(session, agent_id)
+    if agent.is_default:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="默认数字员工不可直接删除，请先将默认切到其他实例",
+        )
+    # 校验是否有会话引用（历史完整性，避免删后查历史找不到归属）
+    ref = session.exec(
+        select(Conversation).where(Conversation.agent_id == agent_id).limit(1)
+    ).first()
+    if ref is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"数字员工 '{agent.name}' 仍有会话引用，无法删除（请先归档或迁移会话）",
+        )
+    session.delete(agent)
+    session.commit()
+    _audit_admin(
+        session, request, "delete_agent", f"Agent({agent.name})", before={"name": agent.name}
+    )
 
 
 # ============ 知识库管理（KnowledgeBase + Document，参考 WeKnora）============

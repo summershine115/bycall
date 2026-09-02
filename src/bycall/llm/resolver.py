@@ -164,16 +164,27 @@ def get_chat_model_by_id(
 def get_chat_model_for_conversation(
     session: Session, conversation: Conversation | None, *, timeout: float = 60.0
 ) -> tuple[Model, BaseChatModel] | None:
-    """per-session 模型优先，空/失效则 fallback 全局激活。
+    """per-session / per-Agent 模型优先，空/失效则 fallback 全局激活。
 
+    优先级：``Conversation.model_id`` > ``Agent.model_id`` > 灰度候选 > 全局激活。
     ``Conversation.model_id`` 非空 → 按 id 解析；模型已删 / 类型不符 → fallback。
-    T2.4 灰度：model canary 期间，无 per-session 绑定的会话按会话稳定哈希分流到候选
+    ``Agent.model_id`` 在会话归属某实例时生效（全托管：实例人格可绑专属模型）。
+    T2.4 灰度：model canary 期间，无 per-session/per-Agent 绑定的会话按会话稳定哈希分流到候选
     模型（``resolve_canary_chat_model``），未命中或候选失效再回全局激活。
     """
     if conversation is not None and conversation.model_id is not None:
         resolved = get_chat_model_by_id(session, conversation.model_id, timeout=timeout)
         if resolved is not None:
             return resolved
+    # per-Agent 模型：会话归属某实例且实例绑定了 chat 模型 → 用实例模型
+    if conversation is not None and conversation.agent_id is not None:
+        from bycall.governance.models import Agent
+
+        agent = session.get(Agent, conversation.agent_id)
+        if agent is not None and agent.model_id is not None:
+            resolved = get_chat_model_by_id(session, agent.model_id, timeout=timeout)
+            if resolved is not None:
+                return resolved
     # T2.4 模型灰度：只在有会话归属时分流（无会话的单轮调用仍走全局激活）。
     if conversation is not None and conversation.id is not None:
         from bycall.governance.release import resolve_canary_chat_model
