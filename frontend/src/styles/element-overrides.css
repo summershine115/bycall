@@ -452,3 +452,48 @@ kbd {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================
+ * 暗色主题：操作语义强化（启动=绿，取消=红）
+ * 需求：暗色下主操作（启动/保存/确认）由白底改为绿底，取消由默认灰改为红——
+ * 在暗色低对比环境中建立“绿=前进、红=退出”的直觉，提高可扫性。
+ * 仅在 html.dark 生效，浅色保持原有 mono 黑白 / evergreen 青绿体系。
+ * ============================================================ */
+html.dark .el-button.el-button--primary,
+html.dark .el-button.el-button--primary:hover,
+html.dark .el-button.el-button--primary:focus {
+  color: #ffffff;
+  --el-button-text-color: #ffffff;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-text-color: #ffffff;
+  --el-button-bg-color: var(--bc-success);
+  --el-button-border-color: var(--bc-success);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--bc-success) 88%, black);
+  --el-button-hover-border-color: color-mix(in srgb, var(--bc-success) 88%, black);
+  --el-button-active-bg-color: color-mix(in srgb, var(--bc-success) 78%, black);
+  --el-button-active-border-color: color-mix(in srgb, var(--bc-success) 78%, black);
+  box-shadow: none;
+}
+html.dark .el-button.el-button--primary.is-plain {
+  --el-button-bg-color: var(--bc-success-bg);
+  --el-button-text-color: var(--bc-success-text);
+  --el-button-border-color: var(--bc-success);
+  --el-button-hover-bg-color: var(--bc-success);
+  --el-button-hover-text-color: #ffffff;
+  --el-button-hover-border-color: var(--bc-success);
+}
+
+/* 取消/次要按钮在暗色下强化为红色边框+文字，悬停实心红底白字 */
+html.dark .el-dialog__footer .el-button:not(.el-button--primary):not(.is-text):not(.is-link),
+html.dark .el-drawer__footer .el-button:not(.el-button--primary):not(.is-text):not(.is-link),
+html.dark .el-message-box__btns .el-button:not(.el-button--primary):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--bc-danger);
+  --el-button-border-color: var(--bc-danger);
+  --el-button-bg-color: transparent;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-hover-bg-color: var(--bc-danger);
+  --el-button-hover-border-color: var(--bc-danger);
+  --el-button-active-text-color: #ffffff;
+  --el-button-active-bg-color: color-mix(in srgb, var(--bc-danger) 88%, black);
+  --el-button-active-border-color: color-mix(in srgb, var(--bc-danger) 88%, black);
+}
