@@ -242,8 +242,17 @@ def test_update_api_key_with_masked_placeholder_is_skipped(client: TestClient):
 # ============ 连通性测试：假地址 → ok=False ============
 
 
-def test_test_endpoint_with_fake_url_returns_ok_false(client: TestClient):
-    """test 端点打到假 base_url → ok=False + error，不抛 500。"""
+def test_test_endpoint_with_fake_url_returns_ok_false(client: TestClient, monkeypatch):
+    """test 端点打到假 base_url → ok=False + error，不抛 500。
+
+    清空系统代理探测：httpx(trust_env) 会读到 macOS 系统代理（本机常驻 7897
+    端口），代理连 127.0.0.1:1 的超时要等数秒，拖慢整套单测。注意 httpx 在
+    import 时就 `from urllib.request import getproxies`，须 patch 其模块内
+    引用。生产端点不能绕过代理（部署可能依赖它出海），只在测试内清空。
+    """
+    import httpx._utils
+
+    monkeypatch.setattr(httpx._utils, "getproxies", lambda: {})
     m = _create_chat(client, name="fake-model", base_url="http://127.0.0.1:1/v1")
     resp = client.post(f"/api/admin/models/{m['id']}/test")
     assert resp.status_code == 200  # 不抛 500

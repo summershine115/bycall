@@ -90,16 +90,18 @@ def test_tampered_token_returns_none():
     assert load_session_cookie(tampered) is None
 
 
-def test_expired_token_returns_none():
+def test_expired_token_returns_none(monkeypatch):
     """过期 token → None。
 
-    itsdangerous 时间戳是整秒粒度（int(time.time())），过期判定为 ``age > max_age``。
-    因此用 max_age=1 时需睡眠 >2 个整秒，才能保证时间戳差 ≥2（确定大于 1）。
+    itsdangerous 签名时间戳取自 ``time.time()``：签名时把时钟拨回 60s，
+    即可确定性地构造已过期 token（避免真睡 2.1s 等整秒粒度时间戳翻页）。
     """
+    real_now = time.time()
+    monkeypatch.setattr(time, "time", lambda: real_now - 60)
     token = make_session_cookie(
         SessionData(user_id=1, user_name="admin", role="admin", is_admin=True)
     )
-    time.sleep(2.1)
+    monkeypatch.undo()
     assert load_session_cookie(token, max_age=1) is None
 
 

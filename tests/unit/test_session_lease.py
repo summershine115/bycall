@@ -220,7 +220,7 @@ class TestHeartbeat:
 
 class TestDeathRecovery:
     def test_lease_expires_and_can_be_reclaimed(self, tmp_path: Path, monkeypatch):
-        """模拟进程死亡：获取一个极短 TTL 的租约后不续租，TTL 过后新进程可重新获取。"""
+        """模拟进程死亡：获取租约后把 expires_at 拨到过去（=TTL 耗尽），新进程可重新获取。"""
         db_path = tmp_path / "test_death.db"
         monkeypatch.setenv("BYCALL_POSTGRES_DSN", f"sqlite:///{db_path}")
         monkeypatch.setenv("BYCALL_VECTOR_STORE_DIMENSION", "16")
@@ -230,12 +230,18 @@ class TestDeathRecovery:
         set_engine(create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False}))
         init_db()
 
-        token = acquire_turn_lease(606, ttl_seconds=1)
+        token = acquire_turn_lease(606, ttl_seconds=60)
         assert token
-        # 不续租，等待 TTL 过期（进程死亡后心跳停止，等价于此）
-        import time
+        # 模拟进程死亡后 TTL 到期：直接把租约 expires_at 拨到过去
+        # （等价于心跳停止 + TTL 耗尽，避免真睡 1.2s）
+        from sqlmodel import select
 
-        time.sleep(1.2)
+        from bycall.db import session_scope
+
+        with session_scope() as s:
+            lease = s.exec(select(SessionLease).where(SessionLease.conversation_id == 606)).first()
+            lease.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            s.add(lease)
         # 新「进程」可抢占过期租约
         reclaimed = acquire_turn_lease(606, ttl_seconds=60)
         assert reclaimed

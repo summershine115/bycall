@@ -19,14 +19,14 @@ install:  ## 安装运行时 + 开发依赖到当前环境
 dev:  ## 本地启动 API（热重载，端口 8000）
 	PYTHONPATH=src $(PY) -m uvicorn bycall.api.app:create_app --factory --reload --port 8000
 
-test:  ## 跑全部本地测试（unit + 使用临时依赖的 integration）
-	$(PY) -m pytest tests -q
+test:  ## 跑全部本地测试（unit + 使用临时依赖的 integration；-n auto 并行）
+	$(PY) -m pytest tests -q -n auto
 
-test-unit:  ## 仅跑单元测试
-	$(PY) -m pytest tests/unit -q
+test-unit:  ## 仅跑单元测试（并行）
+	$(PY) -m pytest tests/unit -q -n auto
 
 test-integration:  ## 跑 integration 目录（当前无需 docker，均使用临时依赖/mock）
-	$(PY) -m pytest tests/integration -q
+	$(PY) -m pytest tests/integration -q -n auto
 
 lint:  ## 静态检查
 	$(PY) -m ruff check $(PKG) tests evals examples scripts

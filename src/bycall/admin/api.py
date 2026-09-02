@@ -1757,6 +1757,8 @@ def test_model(
             base_url=model.base_url or None,
             api_key=decrypt_secret(model.api_key) or "EMPTY",
             timeout=15,
+            # 连通性探测要快速反馈：SDK 默认 2 次指数退避重试会让坏端点拖到 10s+
+            max_retries=0,
         )
         if model.model_type == "embedding":
             resp = client.embeddings.create(model=model.name, input="test")

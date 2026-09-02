@@ -42,7 +42,7 @@ jobs:
       # 当前 tests/integration 也使用临时 SQLite/zvec + mock LLM，无外部依赖。
       # 治理链路、撤权和多轮隔离测试属于安全门禁，必须与 unit 一起执行。
       - name: Run all local tests
-        run: pytest tests -q
+        run: pytest tests -q -n auto
 
   build:
     name: Build (docker)

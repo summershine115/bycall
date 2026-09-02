@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
 import pytest
 
 from bycall.config import get_settings
+
+# bcrypt 降到 cost=4：每个用例 init_db 都要算一次种子哈希，默认 cost=12 下
+# 整套单测纯哈希开销分钟级（哈希格式仍为合法 bcrypt，用例内自洽验证）。
+os.environ.setdefault("BYCALL_BCRYPT_ROUNDS", "4")
 
 
 @pytest.fixture(autouse=True)
