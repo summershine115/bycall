@@ -250,12 +250,20 @@ async function onSave() {
   try {
     // 版本号 = 当前最大 + 1
     const nextVersion = (prompts.value[0]?.version || 0) + 1
-    const created = await admin.createPrompt({
-      version: nextVersion,
-      label: form.label || `v${nextVersion}`,
-      content: form.content,
-      is_active: false,
-    })
+    let created
+    try {
+      created = await admin.createPrompt({
+        version: nextVersion,
+        label: form.label || `v${nextVersion}`,
+        content: form.content,
+        is_active: false,
+      })
+    } catch {
+      // 创建失败（如并发/重试导致 409 版本冲突）也要刷新列表，
+      // 否则重试仍基于过期的最大版本号推算 → 永远 409 死锁
+      await load().catch(() => {})
+      return
+    }
     // 创建后立即激活
     await admin.activatePrompt(created.version)
     ElMessage.success('已创建并激活')
@@ -267,9 +275,10 @@ async function onSave() {
 }
 
 async function onActivate(row) {
-  await ElMessageBox.confirm(`确定回滚到 v${row.version}？当前激活版本将停用`, '确认回滚', {
+  const ok = await ElMessageBox.confirm(`确定回滚到 v${row.version}？当前激活版本将停用`, '确认回滚', {
     type: 'warning',
-  })
+  }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.activatePrompt(row.version)
   ElMessage.success('已激活')
   await load()
@@ -280,7 +289,7 @@ function onView(row) {
   viewVisible.value = true
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>

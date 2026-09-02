@@ -547,7 +547,7 @@ const {
   uploadDialogVisible, uploadFile, uploadForm, uploading,
   previewVisible, previewForm, previewResult, previewLoading,
   chunksVisible, chunksLoading, chunksData, chunksDocTitle,
-  settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModels, embedModelName,
+  settingsTab, settingsVisible, settingsLoading, settingsForm, roles, embedModelName,
   engines, engineLoading, engineMap, ENGINE_TYPE_ROWS,
   contentVisible, contentLoading, contentData,
   ingestDrawerVisible, activeCount, drawerIngests, STAGE_LABEL,

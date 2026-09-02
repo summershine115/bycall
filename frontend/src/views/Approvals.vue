@@ -273,11 +273,12 @@ async function load() {
 }
 
 async function loadApprovals() {
-  approvals.value = await admin.listApprovals('')
+  // 后端 limit 默认 100 会静默截断，显式拉大
+  approvals.value = await admin.listApprovals('', { limit: 500 })
 }
 
 async function loadGrants() {
-  grants.value = await admin.listApprovalGrants()
+  grants.value = await admin.listApprovalGrants({ limit: 500 })
 }
 
 onMounted(load)
@@ -315,12 +316,16 @@ function openReview(row, action) {
   reviewVisible.value = true
 }
 
-const grantHints = {
-  once: '仅本次执行需要人审（默认）；后续同类调用仍会进审批队列。',
-  session: `本会话（#${reviewRow.value?.conversation_id}）内该工具免审直执行；跨会话仍需人审。`,
-  always: '该用户此后调用该工具一律免审直执行（仍受权限矩阵约束）；可随时在「授权管理」撤销。',
-}
-const grantHint = computed(() => grantHints[reviewGrantScope.value] || '')
+// 必须是 computed：会话提示要引用当前 reviewRow 的 conversation_id，
+// 普通对象会在 setup 时把 undefined 固化进去
+const grantHint = computed(() => {
+  const cid = reviewRow.value?.conversation_id
+  return {
+    once: '仅本次执行需要人审（默认）；后续同类调用仍会进审批队列。',
+    session: `本会话（#${cid ?? '—'}）内该工具免审直执行；跨会话仍需人审。`,
+    always: '该用户此后调用该工具一律免审直执行（仍受权限矩阵约束）；可随时在「授权管理」撤销。',
+  }[reviewGrantScope.value] || ''
+})
 
 async function onReview() {
   reviewing.value = true
@@ -425,8 +430,11 @@ function openDetail(row) {
   border-radius: var(--bc-radius-full);
   background: transparent;
   color: var(--bc-text-2);
-  font: 500 var(--bc-text-xs) / 1 inherit;
+  /* font 简写里不能出现全局关键字 inherit（整条声明会被丢弃），拆开写 */
   font-family: inherit;
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  line-height: 1;
   cursor: pointer;
   transition: all 0.15s var(--bc-ease, ease-out);
 }

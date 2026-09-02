@@ -184,9 +184,11 @@ export const admin = {
   testMcpServer: (id) => http.post(`/api/admin/mcp-servers/${id}/test`).then((r) => r.data),
   listTools: () => http.get('/api/admin/tools').then((r) => r.data),
   // HITL 审批队列（M4）：敏感工具调用需人工批准后执行
-  listApprovals: (status) =>
+  listApprovals: (status, params = {}) =>
     http
-      .get('/api/admin/approvals', { params: status ? { status } : {} })
+      .get('/api/admin/approvals', {
+        params: { ...(status ? { status } : {}), ...params },
+      })
       .then((r) => r.data),
   getApproval: (id) => http.get(`/api/admin/approvals/${id}`).then((r) => r.data),
   approveApproval: (id, note, grantScope = 'once') =>

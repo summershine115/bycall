@@ -225,6 +225,8 @@ export function useKnowledge() {
       _reloadingAfterIngest = true
       try {
         await Promise.all([loadDocuments(), loadKbs()])
+      } catch {
+        // 轮询内的刷新失败不打断下一轮（2.5s 后重试）；错误已由拦截器 toast
       } finally {
         _reloadingAfterIngest = false
       }
@@ -294,14 +296,21 @@ export function useKnowledge() {
     }
   }
 
+  // 请求代际：快速切换知识库时只接受最新一次 loadDocuments 的响应，
+  // 否则旧库列表迟到后会渲染到新库下（检索按 KB 隔离的核心心智被破坏）
+  let docReqSeq = 0
+
   async function loadDocuments() {
     if (!kbId.value) {
       documents.value = []
       return
     }
-    documents.value = await admin.listDocuments(kbId.value, filterSource.value || undefined)
+    const seq = ++docReqSeq
+    const docs = await admin.listDocuments(kbId.value, filterSource.value || undefined)
+    if (seq !== docReqSeq) return
+    documents.value = docs
     // 页面加载/切换途中若有 processing 文档：种子进度并保活轮询
-    const processing = documents.value.filter((d) => d.status === 'processing')
+    const processing = docs.filter((d) => d.status === 'processing')
     if (processing.length) {
       await Promise.all(processing.map((d) => seedProgress(d.id)))
     }
@@ -378,11 +387,12 @@ export function useKnowledge() {
   }
 
   async function onDelete(row) {
-    await ElMessageBox.confirm(
+    const ok = await ElMessageBox.confirm(
       `确定删除文档「${row.title}」？将同时清理向量库中的所有切块。`,
       '确认删除',
       { type: 'warning' },
-    )
+    ).catch(() => null)
+    if (!ok) return  // 用户取消
     await admin.deleteDocument(kbId.value, row.id)
     ElMessage.success('已删除')
     await loadDocuments()

@@ -172,7 +172,8 @@ const { loading, dialogVisible, editing, saving, form, openCreate, openEdit } = 
   }),
 })
 
-const roleOptions = computed(() => ['admin', 'member', ...roles.value.map((r) => r.name)])
+// 内置角色 + 自建角色去重（seed 必建 member，否则下拉出现重复项/重复 key）
+const roleOptions = computed(() => [...new Set(['admin', 'member', ...roles.value.map((r) => r.name)])])
 
 /* ---------------- 组合筛选（关键词 × 角色 chips，前端即时生效） ---------------- */
 const keyword = ref('')
@@ -236,9 +237,10 @@ async function onSave() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确定禁用用户 ${row.name}？（软删除，保留审计记录）`, '确认', {
+  const ok = await ElMessageBox.confirm(`确定禁用用户 ${row.name}？（软删除，保留审计记录）`, '确认', {
     type: 'warning',
-  })
+  }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteUser(row.id)
   ElMessage.success('已禁用')
   await load()
@@ -248,7 +250,7 @@ async function onActAs(row) {
   await admin.actAs(row.id)
   ElMessage.success(`已切换为扮演「${row.display_name || row.name}」，去「对话测试」验证权限`)
 }
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>

@@ -297,12 +297,17 @@ async function selectConversation(id) {
   currentConvId.value = id
   chatHistory.value = []
   streamText.value = ''
+  loading.value = true
   try {
     const msgs = await chat.conversationMessages(id)
+    // 响应返回时用户可能已切到别的会话：只接受仍指向当前会话的迟到响应
+    if (currentConvId.value !== id) return
     chatHistory.value = msgs.map((m) => ({ role: m.role, content: m.content }))
     await scrollToBottom()
   } catch {
     ElMessage.error('加载会话消息失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -367,6 +372,12 @@ async function onAsk() {
 }
 
 async function onDeleteConversation(id) {
+  // 流式/加载进行中不允许删除当前会话：删除后 onNewConversation 会被 streaming
+  // 拦截，currentConvId 残留指向已删会话，后续消息推送/发送全部失效
+  if (id === currentConvId.value && (loading.value || streaming.value)) {
+    ElMessage.warning('当前会话正在响应，请稍后再删除')
+    return
+  }
   try {
     await ElMessageBox.confirm('确定删除该会话？消息将永久清除（不可恢复）。', '删除会话', {
       type: 'warning',

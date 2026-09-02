@@ -77,7 +77,12 @@
                 <circle :cx="lastPoint.x" :cy="lastPoint.y" r="3.2" class="chart__dot" />
               </svg>
               <div class="chart-axis mono">
-                <span v-for="(l, i) in axisLabels" :key="i">{{ l }}</span>
+                <span
+                  v-for="(t, i) in axisTicks"
+                  :key="i"
+                  :style="{ left: t.pct + '%' }"
+                  :class="{ 'is-edge-first': i === 0, 'is-edge-last': i === axisTicks.length - 1 }"
+                >{{ t.text }}</span>
               </div>
             </template>
             <div v-else class="chart-empty bc-muted">暂无会话数据</div>
@@ -315,12 +320,22 @@ const linePath = computed(() => chartGeom.value.line)
 const areaPath = computed(() => chartGeom.value.area)
 const lastPoint = computed(() => chartGeom.value.last)
 
-// 横轴标签抽稀：今日取 6 个、7 天全显、30 天每 5 个 + 今天
-const axisLabels = computed(() => {
+// 横轴标签抽稀：今日取 6 个、7 天全显、30 天每 5 个 + 今天。
+// 标签的 left 与折线数据点同源计算（同一 X 坐标公式），避免 space-between
+// 均匀铺开导致的标签-数据桶错位。
+const axisTicks = computed(() => {
   const { labels } = trend.value
-  if (range.value === 'today') return labels.filter((_, i) => i % 2 === 0)
-  if (range.value === 'week') return labels.map((l, i) => (i === labels.length - 1 ? '今天' : l))
-  return labels.filter((_, i) => i % 5 === 0 || i === labels.length - 1).map((l, i, arr) => (i === arr.length - 1 ? '今天' : l))
+  const n = labels.length
+  if (!n) return []
+  let idxs
+  if (range.value === 'today') idxs = labels.map((_, i) => i).filter((i) => i % 2 === 0)
+  else if (range.value === 'week') idxs = labels.map((_, i) => i)
+  else idxs = labels.map((_, i) => i).filter((i) => i % 5 === 0 || i === n - 1)
+  return idxs.map((i) => {
+    const x = CHART_PAD + (i * (CHART_W - CHART_PAD * 2)) / (n - 1 || 1)
+    const text = range.value !== 'today' && i === n - 1 ? '今天' : labels[i]
+    return { text, pct: (x / CHART_W) * 100 }
+  })
 })
 
 /* ---------------- 列表派生 ---------------- */
@@ -548,12 +563,24 @@ onMounted(load)
   fill: var(--bc-primary-6);
 }
 .chart-axis {
-  display: flex;
-  justify-content: space-between;
-  padding: var(--bc-space-2) 4px 0;
+  position: relative;
+  height: 20px;
+  padding: var(--bc-space-2) 0 0;
   font-size: var(--bc-text-xs);
   color: var(--bc-text-3);
   letter-spacing: 0.02em;
+}
+.chart-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+/* 首尾标签对齐画布边缘，避免 translate 后溢出容器 */
+.chart-axis span.is-edge-first {
+  transform: none;
+}
+.chart-axis span.is-edge-last {
+  transform: translateX(-100%);
 }
 .chart-empty {
   padding: var(--bc-space-12) var(--bc-space-4);

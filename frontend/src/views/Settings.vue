@@ -197,7 +197,7 @@
                     :step="60"
                     controls-position="right"
                     style="width: 100%"
-                    @update:model-value="(v) => (form['parse.mineru_timeout'] = String(v))"
+                    @update:model-value="(v) => (form['parse.mineru_timeout'] = String(v ?? 600))"
                   />
                 </el-form-item>
                 <el-form-item label="轮询间隔（秒）">
@@ -208,7 +208,7 @@
                     :precision="1"
                     controls-position="right"
                     style="width: 100%"
-                    @update:model-value="(v) => (form['parse.mineru_poll_interval'] = String(v))"
+                    @update:model-value="(v) => (form['parse.mineru_poll_interval'] = String(v ?? 2))"
                   />
                 </el-form-item>
               </div>
@@ -306,12 +306,14 @@ async function onReconnect() {
   try {
     const r = await admin.reloadIm()
     ElMessage.success(r.message || 'IM 渠道已重连')
+  } catch {
+    // 失败已由拦截器 toast
   } finally {
     reloading.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>

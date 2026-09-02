@@ -34,12 +34,9 @@
                 <dt>角色</dt>
                 <dd>{{ profile.role }}</dd>
               </div>
-              <div class="detail-row">
-                <dt>职级</dt>
-                <dd>{{ profile.level || '—' }}</dd>
-              </div>
+              <!-- 用户接口不返回职级（level 仅存在于模拟结果中），不再展示死数据行 -->
             </dl>
-            <p v-else class="field__hint">选择用户后显示其角色与职级</p>
+            <p v-else class="field__hint">选择用户后显示其角色</p>
           </div>
         </div>
 

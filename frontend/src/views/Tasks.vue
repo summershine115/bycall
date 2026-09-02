@@ -196,13 +196,13 @@
             <div v-if="stepRuns(step.id).length" class="step-runs">
               <div v-for="run in stepRuns(step.id)" :key="run.id" class="run-block">
                 <div class="run-head bc-muted bc-text-xs">
-                  尝试 #{{ run.id }} · {{ runDuration(run) }} · {{ run.status }}
+                  尝试 #{{ run.id }} · {{ runDuration(run) }} · {{ runStatusLabel(run.status) }}
                 </div>
                 <pre v-if="runOutput(run)" class="run-output">{{ runOutput(run) }}</pre>
                 <div v-if="runToolCalls(run).length" class="run-tools">
                   <el-tag
-                    v-for="tc in runToolCalls(run)"
-                    :key="tc.name"
+                    v-for="(tc, ti) in runToolCalls(run)"
+                    :key="`${tc.name}-${ti}`"
                     size="small"
                     type="warning"
                     effect="plain"
@@ -289,7 +289,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
@@ -367,6 +367,11 @@ let eventSource = null
 
 function triggerLabel(t) {
   return { conversation: '对话', cron: '定时', event: '事件' }[t] || t
+}
+
+// Run 状态（task_engine 写入 ok/error，超时归入 error）
+function runStatusLabel(s) {
+  return { ok: '成功', error: '失败', timeout: '超时' }[s] || s
 }
 
 function taskStatusLabel(s) {
@@ -484,7 +489,7 @@ function connectEvents(taskId) {
     sseConnected.value = true
   }
   eventSource.onerror = () => {
-    // 断线/关闭：浏览器自动重连；对话框关闭时显式 close。
+    // 断线时浏览器自动重连；对话框关闭由下方 watch 显式 close。
     sseConnected.value = false
   }
   eventSource.onmessage = (msg) => {
@@ -492,6 +497,15 @@ function connectEvents(taskId) {
     refreshProgressDetail().catch(() => {})
   }
 }
+
+// 对话框关闭即断开 SSE：否则后台持续收事件重拉详情，会话过期时还会无限重连
+watch(progressVisible, (open) => {
+  if (!open && eventSource) {
+    eventSource.close()
+    eventSource = null
+    sseConnected.value = false
+  }
+})
 
 // ==================== 调度管理 ====================
 const schedules = ref([])
@@ -524,11 +538,14 @@ function openScheduleDialog(row) {
         cron_expr: row.cron_expr,
         event_source: row.event_source,
         user_id: row.user_id,
+        // 对话框没有启用开关：编辑时保留原启用状态，避免 PATCH 语义下静默翻转
+        is_enabled: row.is_enabled,
         goal: row.task_template?.goal || '',
         plan_json: row.task_template?.plan ? JSON.stringify(row.task_template.plan) : '',
       }
     : {
         id: null,
+        is_enabled: true,
         name: '',
         trigger_type: 'cron',
         cron_expr: '0 9 * * *',
@@ -568,7 +585,7 @@ async function saveSchedule() {
     event_source: f.event_source,
     user_id: f.user_id,
     task_template: { goal: f.goal, ...(plan.length ? { plan } : {}) },
-    is_enabled: true,
+    is_enabled: f.is_enabled ?? true,
   }
   savingSchedule.value = true
   try {
@@ -611,11 +628,12 @@ async function fireSchedule(row) {
 }
 
 async function removeSchedule(row) {
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `删除调度「${row.name}」？已触发的任务不受影响。`,
     '确认删除',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteTaskSchedule(row.id)
   ElMessage.success('已删除')
   await loadSchedules()
