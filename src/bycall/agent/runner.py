@@ -152,6 +152,7 @@ def run_agent(
     channel: str = "api",
     conversation_id: int | None = None,
     im_user_id: str = "",
+    agent_id: int | None = None,
 ) -> AgentResult:
     """执行一次完整的治理链路对话（观测包装）。
 
@@ -166,6 +167,7 @@ def run_agent(
         channel=channel,
         conversation_id=conversation_id,
         im_user_id=im_user_id,
+        agent_id=agent_id,
     )
     _observe_turn(result.decision, start)
     return result
@@ -180,6 +182,7 @@ def _run_agent_impl(
     channel: str = "api",
     conversation_id: int | None = None,
     im_user_id: str = "",
+    agent_id: int | None = None,
 ) -> AgentResult:
     """执行一次完整的治理链路对话。
 
@@ -217,6 +220,7 @@ def _run_agent_impl(
         channel=channel,
         conversation_id=conversation_id,
         im_user_id=im_user_id,
+        agent_id=agent_id,
     )
     if decision != "ready":
         return payload  # denied / denied_no_access（已审计）
@@ -527,6 +531,7 @@ def _prepare_turn(
     channel: str,
     conversation_id: int | None,
     im_user_id: str,
+    agent_id: int | None = None,
 ) -> tuple[str, AgentResult | _PreparedTurn]:
     """步骤 1-4：能力集 → RAG 预过滤 → 工具过滤 → 运行时上下文 + 消息 + 能力/审批令牌。
 
@@ -534,11 +539,32 @@ def _prepare_turn(
     - ``("denied" | "denied_no_access", AgentResult)``：短路拒绝（已审计，调用方 return/流式回）。
     - ``("ready", _PreparedTurn)``：准备就绪，调用方执行工具回路。
     """
-    # 1. 策略引擎：计算能力集（禁用用户/未定义角色在此被拒）。
+    # 1. 策略引擎：计算能力集（禁用用户/未定义角色/实例不可见在此被拒）。
+    # 若未显式传 agent_id，但会话已归属某实例，则按会话实例计算（实例级隔离）。
+    resolved_agent_id = agent_id
+    if resolved_agent_id is None and conversation_id is not None:
+        _conv = session.get(Conversation, conversation_id)
+        if _conv is not None and _conv.agent_id is not None:
+            resolved_agent_id = _conv.agent_id
+    agent_obj = None
+    if resolved_agent_id is not None:
+        from bycall.governance.models import Agent
+
+        agent_obj = session.get(Agent, resolved_agent_id)
+        if agent_obj is None:
+            _audit(session, user, channel, question, "denied", f"数字员工不存在: {resolved_agent_id}", "")
+            return "denied", _result(
+                answer=f"数字员工不存在: {resolved_agent_id}",
+                decision="denied",
+                scope=[],
+                retrieved=0,
+                user=user,
+            )
     try:
         with _tracer.start_as_current_span("capability") as _span:
-            cap: CapabilitySet = compute_capability_set(session, user)
+            cap: CapabilitySet = compute_capability_set(session, user, agent_obj)
             _span.set_attribute("bycall.role", cap.role)
+            _span.set_attribute("bycall.agent", cap.agent_name or "default")
             _span.set_attribute("bycall.allowed_tools", len(cap.allowed_tools))
     except PermissionError as e:
         _audit(session, user, channel, question, "denied", str(e), "")
@@ -664,6 +690,7 @@ async def run_agent_stream(
     channel: str = "api",
     conversation_id: int | None = None,
     im_user_id: str = "",
+    agent_id: int | None = None,
 ):
     """流式执行治理链路（观测包装）。
 
@@ -679,6 +706,7 @@ async def run_agent_stream(
         channel=channel,
         conversation_id=conversation_id,
         im_user_id=im_user_id,
+        agent_id=agent_id,
     ):
         if is_final and result is not None:
             final_result = result
@@ -695,6 +723,7 @@ async def _run_agent_stream_impl(
     channel: str = "api",
     conversation_id: int | None = None,
     im_user_id: str = "",
+    agent_id: int | None = None,
 ):
     """流式执行治理链路——逐 token yield 答案。
 
@@ -718,6 +747,7 @@ async def _run_agent_stream_impl(
         channel=channel,
         conversation_id=conversation_id,
         im_user_id=im_user_id,
+        agent_id=agent_id,
     )
     if decision != "ready":
         result = payload  # denied / denied_no_access（已审计）

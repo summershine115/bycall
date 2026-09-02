@@ -174,6 +174,12 @@ export const admin = {
     http.post(`/api/admin/users/${userId}/memory`, data).then((r) => r.data),
   updateUserMemory: (memId, data) => http.put(`/api/admin/memory/${memId}`, data).then((r) => r.data),
   deleteUserMemory: (memId) => http.delete(`/api/admin/memory/${memId}`),
+  // 数字员工实例（全托管：人格/模型/技能/知识域/渠道/审批策略）
+  listAgents: () => http.get('/api/admin/agents').then((r) => r.data),
+  getAgent: (id) => http.get(`/api/admin/agents/${id}`).then((r) => r.data),
+  createAgent: (data) => http.post('/api/admin/agents', data).then((r) => r.data),
+  updateAgent: (id, data) => http.put(`/api/admin/agents/${id}`, data).then((r) => r.data),
+  deleteAgent: (id) => http.delete(`/api/admin/agents/${id}`),
   // MCP 工具服务器（M4）
   listMcpServers: () => http.get('/api/admin/mcp-servers').then((r) => r.data),
   createMcpServer: (data) => http.post('/api/admin/mcp-servers', data).then((r) => r.data),
@@ -232,16 +238,22 @@ export const admin = {
 // ============ 数据面 /chat ============
 
 export const chat = {
-  ask: (question, conversationId) =>
-    http.post('/chat', { question, conversation_id: conversationId }).then((r) => r.data),
+  ask: (question, conversationId, agentId) =>
+    http
+      .post('/chat', { question, conversation_id: conversationId, agent_id: agentId ?? null })
+      .then((r) => r.data),
   // 流式对话（SSE）：POST 无法用 EventSource（仅 GET），改用 fetch + ReadableStream
   // 逐帧解析 event:/data:，分发到回调。不走 axios 拦截（401 单独处理跳登录）。
-  stream: async (question, conversationId, { onToken, onFlush, onDone, onError } = {}) => {
+  stream: async (question, conversationId, { onToken, onFlush, onDone, onError, agentId } = {}) => {
     const resp = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ question, conversation_id: conversationId }),
+      body: JSON.stringify({
+        question,
+        conversation_id: conversationId,
+        agent_id: agentId ?? null,
+      }),
     })
     if (resp.status === 401) {
       if (!window.location.hash.includes('/login')) window.location.hash = '#/login'
@@ -274,8 +286,11 @@ export const chat = {
       onError?.(e)
     }
   },
-  // 当前用户的全部 api 会话（侧栏列表）
-  conversations: () => http.get('/chat/conversations').then((r) => r.data),
+  // 当前用户的全部 api 会话（侧栏列表，按 agent_id 可选过滤）
+  conversations: (agentId) =>
+    http
+      .get('/chat/conversations', { params: agentId ? { agent_id: agentId } : {} })
+      .then((r) => r.data),
   // 某会话的消息历史（切换会话时加载）
   conversationMessages: (convId) =>
     http.get(`/chat/conversations/${convId}/messages`).then((r) => r.data),

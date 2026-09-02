@@ -469,9 +469,9 @@ def test_cache_hit_skips_db_queries(db_session, monkeypatch):
     calls = {"n": 0}
     orig = cap_module._compute_capability_set_uncached
 
-    def spy(session, user):
+    def spy(session, user, agent=None):
         calls["n"] += 1
-        return orig(session, user)
+        return orig(session, user, agent)
 
     monkeypatch.setattr(cap_module, "_compute_capability_set_uncached", spy)
 
@@ -526,7 +526,7 @@ def test_cache_invalidated_on_relevant_commit(db_session):
     user = _make_user(db_session, "yvonne", role="eng")
     cap1 = compute_capability_set(db_session, user)
     assert cap1.allowed_tools == ["a"]
-    assert user.id in cap_module._CAP_CACHE
+    assert (user.id, None) in cap_module._CAP_CACHE
 
     # 改 Role.config 并提交（模拟 admin 写路径：控制面端点 commit）
     role = db_session.exec(select(Role).where(Role.name == "eng")).first()
@@ -534,7 +534,7 @@ def test_cache_invalidated_on_relevant_commit(db_session):
     db_session.add(role)
     db_session.commit()  # 触发 after_commit → 清缓存
 
-    assert user.id not in cap_module._CAP_CACHE  # 缓存已清
+    assert (user.id, None) not in cap_module._CAP_CACHE  # 缓存已清
     cap2 = compute_capability_set(db_session, user)
     assert cap2.allowed_tools == ["a", "b"]  # 反映新配置（被收回/新增的工具）
 
@@ -551,14 +551,14 @@ def test_cache_not_invalidated_on_rollback(db_session):
     db_session.flush()
     user = _make_user(db_session, "zane", role="eng")
     compute_capability_set(db_session, user)
-    assert user.id in cap_module._CAP_CACHE
+    assert (user.id, None) in cap_module._CAP_CACHE
 
     role = db_session.exec(select(Role).where(Role.name == "eng")).first()
     role.config = RoleConfig(allowed_tools=["forbidden"], knowledge_scope_tags=["eng"], level=1)
     db_session.flush()  # after_flush 置标记
     db_session.rollback()  # after_rollback 丢弃标记
 
-    assert user.id in cap_module._CAP_CACHE  # 缓存仍在
+    assert (user.id, None) in cap_module._CAP_CACHE  # 缓存仍在
 
 
 def test_unrelated_commit_keeps_cache(db_session):
@@ -575,7 +575,7 @@ def test_unrelated_commit_keeps_cache(db_session):
     db_session.commit()  # 先把 Role+User 提交干净（此事务含相关表，会清空缓存——但此刻缓存本就空）
     # 缓存填充：此时 session 无待提交的相关表变更
     compute_capability_set(db_session, user)
-    assert user.id in cap_module._CAP_CACHE
+    assert (user.id, None) in cap_module._CAP_CACHE
 
     # 新事务只写 AuditLog（非能力集输入表）并提交
     from bycall.governance.models import AuditLog
@@ -583,7 +583,7 @@ def test_unrelated_commit_keeps_cache(db_session):
     db_session.add(AuditLog(user_name="probe", action="chat", decision="allowed"))
     db_session.commit()  # 仅 AuditLog 脏 → after_flush 未置相关标记 → 不清缓存
 
-    assert user.id in cap_module._CAP_CACHE  # 缓存仍在
+    assert (user.id, None) in cap_module._CAP_CACHE  # 缓存仍在
 
 
 def test_permission_error_not_cached(db_session):
@@ -599,7 +599,7 @@ def test_permission_error_not_cached(db_session):
     user = _make_user(db_session, "vera", role="sales", is_active=False)
     with pytest.raises(PermissionError, match="用户已被禁用"):
         compute_capability_set(db_session, user)
-    assert user.id not in cap_module._CAP_CACHE  # 拒绝结果未缓存
+    assert (user.id, None) not in cap_module._CAP_CACHE  # 拒绝结果未缓存
 
     # 重新启用 → 立即可算（未被陈旧拒绝阻塞）
     user.is_active = True

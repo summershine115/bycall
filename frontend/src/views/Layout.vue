@@ -115,7 +115,7 @@ import { auth } from '../api'
 import { useTheme } from '../composables/useTheme'
 import ModeToggle from '../components/ModeToggle.vue'
 import {
-  ArrowDown, ArrowRight, ChatDotRound, ChatLineRound, Collection, Connection, Cpu,
+  ArrowDown, ArrowRight, Avatar, ChatDotRound, ChatLineRound, Collection, Connection, Cpu,
   DataLine, Document, DocumentChecked, Expand, Files, Fold, Key, List, MagicStick,
   RefreshLeft, Setting, SwitchButton, TrendCharts, User,
 } from '@element-plus/icons-vue'
@@ -156,6 +156,7 @@ const navGroups = [
     key: 'capability',
     label: '能力',
     items: [
+      { name: 'agents', label: '数字员工', icon: Avatar },
       { name: 'models', label: '模型管理', icon: Cpu },
       { name: 'skills', label: 'Skill 管理', icon: MagicStick },
       { name: 'mcp', label: 'MCP 工具', icon: Connection },
@@ -180,6 +181,7 @@ const titles = {
   dashboard: '仪表盘',
   users: '用户管理',
   roles: '角色与权限',
+  agents: '数字员工',
   models: '模型管理',
   knowledge: '文档管理',
   'knowledge-bases': '知识库',

@@ -362,6 +362,96 @@ class ModelTestResult(BaseModel):
     )
 
 
+# ============ Agent（数字员工实例，全托管）============
+
+
+class AgentCreate(BaseModel):
+    """创建数字员工实例。``name`` 全局唯一 slug，小写字母/数字/连字符。"""
+
+    name: str = Field(
+        ...,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+        description="唯一 slug，如 sales-assistant",
+    )
+    display_name: str = Field(default="", description="人类可读显示名")
+    description: str = Field(default="", description="一句话说明")
+    avatar_url: str = Field(default="", description="头像 URL（可选）")
+    system_prompt_version: int | None = Field(
+        default=None, description="绑定的 SystemPrompt.version，空=沿用角色/全局"
+    )
+    model_id: int | None = Field(
+        default=None, description="绑定的对话模型 Model.id，空=沿用会话/全局"
+    )
+    skills: list[str] | None = Field(
+        default=None, description="绑定的 Skill name 列表，空=沿用角色"
+    )
+    knowledge_scope_tags: list[str] | None = Field(
+        default=None, description="知识域标签覆盖，空=沿用角色"
+    )
+    allowed_tools: list[str] | None = Field(default=None, description="工具白名单覆盖，空=沿用角色")
+    visible_roles: list[str] | None = Field(
+        default=None, description="可见角色列表，空/None=全部可见"
+    )
+    channel: str = Field(default="api", description="主渠道：api/wecom/feishu")
+    im_config: dict[str, str] | None = Field(
+        default=None, description="per-Agent IM 覆盖（如 wecom bot_id/secret），加密存库"
+    )
+    approval_policy: dict | None = Field(default=None, description="per-Agent 审批策略覆盖")
+    is_enabled: bool = Field(default=True, description="是否启用")
+    is_default: bool = Field(default=False, description="是否设为默认实例（唯一）")
+
+
+class AgentUpdate(BaseModel):
+    """更新数字员工实例（PATCH 语义：仅传入字段生效）。
+
+    ``name`` 不可改（作 API 寻址键，变更需重建）。``im_config`` 为 write-only：
+    None=不改，{}=清空。
+    """
+
+    display_name: str | None = None
+    description: str | None = None
+    avatar_url: str | None = None
+    system_prompt_version: int | None = None
+    model_id: int | None = None
+    skills: list[str] | None = None
+    knowledge_scope_tags: list[str] | None = None
+    allowed_tools: list[str] | None = None
+    visible_roles: list[str] | None = None
+    channel: str | None = None
+    im_config: dict[str, str] | None = None
+    approval_policy: dict | None = None
+    is_enabled: bool | None = None
+    is_default: bool | None = None
+
+
+class AgentOut(BaseModel):
+    """数字员工实例响应。``im_config`` 不回显明文，仅标是否已配置。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    display_name: str
+    description: str
+    avatar_url: str
+    system_prompt_version: int | None = None
+    model_id: int | None = None
+    skills: list[str] | None = None
+    knowledge_scope_tags: list[str] | None = None
+    allowed_tools: list[str] | None = None
+    visible_roles: list[str] | None = None
+    channel: str
+    has_im_config: bool = False
+    im_config_preview: dict = Field(
+        default_factory=dict, description="脱敏预览（不含 secret 明文）"
+    )
+    approval_policy: dict | None = None
+    is_enabled: bool
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 # ============ KnowledgeBase（知识库实体，参考 WeKnora）============
 
 
