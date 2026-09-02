@@ -1,11 +1,9 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="提示词版本"
-      description="数字员工人格的版本化资产：创建即激活，历史版本可随时回滚。"
-    >
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">数字员工人格的版本化资产：创建即激活，历史版本可随时回滚。</p>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建版本</el-button>
-    </PageHeader>
+    </div>
 
     <ContentLoader v-if="loading" :rows="3" />
 
@@ -155,7 +153,6 @@ import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime as fmtTime } from '../utils/format'
 import { useCrud } from '../composables/useCrud'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -293,6 +290,14 @@ onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
 /* ============ 当前生效横幅 ============ */
 .active-banner {
   display: grid;

@@ -1,13 +1,11 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="模型管理"
-      description="对话 / 向量 / 重排模型是独立可管理资源，可配多个、各选服务商；激活的模型即当前生效配置。"
-    >
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">对话 / 向量 / 重排模型是独立可管理资源，可配多个、各选服务商；激活的模型即当前生效配置。</p>
       <el-button type="primary" :icon="Plus" @click="openCreate(activeKind === 'all' ? 'chat' : activeKind)">
         添加模型
       </el-button>
-    </PageHeader>
+    </div>
 
     <ContentLoader v-if="loading" :rows="4" />
 
@@ -184,7 +182,6 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -429,6 +426,14 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
 /* ============ KPI 行（设计稿语言：label + mono 大数 + 脚注） ============ */
 .kpis {
   display: grid;

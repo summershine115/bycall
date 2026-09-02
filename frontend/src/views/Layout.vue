@@ -29,7 +29,7 @@
             :key="item.name"
             :to="{ name: item.name }"
             class="nav-item"
-            :class="{ 'nav-item--active': route.name === item.name }"
+            :class="{ 'nav-item--active': isItemActive(item) }"
             :title="collapsed ? item.label : ''"
             :aria-current="route.name === item.name ? 'page' : undefined"
           >
@@ -89,7 +89,8 @@
       <main class="content">
         <router-view v-slot="{ Component }">
           <transition name="page" mode="out-in">
-            <component :is="Component" :key="route.fullPath" />
+            <!-- key 用一级路由记录：Hub 内切子 tab 时外层壳不重建，过渡交给内层 router-view -->
+            <component :is="Component" :key="route.matched[1]?.path ?? route.fullPath" />
           </transition>
         </router-view>
       </main>
@@ -103,8 +104,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
 import ModeToggle from '../components/ModeToggle.vue'
 import {
-  ArrowDown, ArrowRight, Avatar, ChatDotRound, ChatLineRound, Collection, Connection, Cpu,
-  DataLine, Document, DocumentChecked, Expand, Files, Fold, Key, List, MagicStick,
+  ArrowDown, ArrowRight, Avatar, ChatLineRound,
+  DataLine, DocumentChecked, Expand, Fold, Key, List,
   RefreshLeft, Setting, SwitchButton, TrendCharts, User,
 } from '@element-plus/icons-vue'
 
@@ -112,13 +113,17 @@ const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 
-// 导航分组：按「静态配置 vs 动态运行」分层（ADR-0012 管理面板 IA 重组）——
-// 人格/模型/技能/工具都是数字员工的装配资产，归数字员工组；模拟器归身份权限组。
+// 导航分组（数字员工 Hub 重组）：实例、渠道接入与装配资产（提示词/模型/技能/MCP/知识）
+// 统一收进「数字员工」一个入口（/agents 嵌套子页），侧边栏只留 Hub 一项；
+// 渠道接入不再是独立系统页（ADR-0012 修订），对话测试从实例行内进入。
 const navGroups = [
   {
     key: 'overview',
     label: '总览',
-    items: [{ name: 'dashboard', label: '仪表盘', icon: DataLine }],
+    items: [
+      { name: 'dashboard', label: '仪表盘', icon: DataLine },
+      { name: 'settings', label: '运行时设置', icon: Setting },
+    ],
   },
   {
     key: 'identity',
@@ -133,20 +138,8 @@ const navGroups = [
     key: 'agent',
     label: '数字员工',
     items: [
-      { name: 'agents', label: '数字员工', icon: Avatar },
-      { name: 'prompts', label: '提示词版本', icon: Document },
-      { name: 'models', label: '模型管理', icon: Cpu },
-      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
-      { name: 'mcp', label: 'MCP 工具', icon: Connection },
-      { name: 'chat', label: '对话测试', icon: ChatDotRound },
-    ],
-  },
-  {
-    key: 'knowledge',
-    label: '知识',
-    items: [
-      { name: 'knowledge-bases', label: '知识库', icon: Files },
-      { name: 'knowledge', label: '文档管理', icon: Collection },
+      // Hub 及其全部子页（/agents/*）都归属这一项：active 用路径前缀匹配
+      { name: 'agents', label: '数字员工', icon: Avatar, matchPrefix: '/agents' },
     ],
   },
   {
@@ -161,14 +154,6 @@ const navGroups = [
       { name: 'ops-metrics', label: '运营指标', icon: TrendCharts },
     ],
   },
-  {
-    key: 'system',
-    label: '系统',
-    items: [
-      { name: 'channels', label: '渠道接入', icon: Connection },
-      { name: 'settings', label: '运行时设置', icon: Setting },
-    ],
-  },
 ]
 
 // 路由 name → 中文标题（与分组解耦，路由不变）
@@ -176,7 +161,7 @@ const titles = {
   dashboard: '仪表盘',
   users: '用户管理',
   roles: '角色与权限',
-  agents: '数字员工',
+  agents: '实例',
   'agent-detail': '数字员工详情',
   models: '模型管理',
   knowledge: '文档管理',
@@ -197,8 +182,14 @@ const titles = {
 }
 
 const pageTitle = computed(() => titles[route.name] || 'Bycall')
+
+// Hub 子页（/agents/channels 等）路由 name 不在 navGroups 里，
+// 用路径前缀把整组子路由归到「数字员工」一项上
+function isItemActive(item) {
+  return item.matchPrefix ? route.path.startsWith(item.matchPrefix) : route.name === item.name
+}
 const currentGroupLabel = computed(
-  () => navGroups.find((g) => g.items.some((i) => i.name === route.name))?.label || '',
+  () => navGroups.find((g) => g.items.some(isItemActive))?.label || ''
 )
 const envLabel = import.meta.env.DEV ? '开发环境' : '生产环境'
 

@@ -1,15 +1,13 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="文档管理"
-      description="文档按知识库隔离入库；source 标签即 ACL 预过滤边界 —— 只有知识域包含它的角色才能检索到。"
-    >
-      <template v-if="kbId">
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">文档按知识库隔离入库；source 标签即 ACL 预过滤边界 —— 只有知识域包含它的角色才能检索到。</p>
+      <div v-if="kbId" class="page-head__actions">
         <el-button :icon="Grid" @click="openPreview">切块预览</el-button>
         <el-button :icon="Setting" @click="openSettings">库设置</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">添加文档</el-button>
-      </template>
-    </PageHeader>
+      </div>
+    </div>
 
     <ContentLoader v-if="loading" :rows="5" />
 
@@ -535,7 +533,6 @@
 <script setup>
 // 知识库文档管理：视图层；全部状态与行为在 useKnowledge composable
 import { Plus, Upload, Grid, Setting, Collection, DataLine } from '@element-plus/icons-vue'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ChunkTree from '../components/ChunkTree.vue'
@@ -567,6 +564,20 @@ function engineStatus(name) {
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-shrink: 0;
+}
 /* 知识库上下文头 */
 .kb-context {
   display: flex;

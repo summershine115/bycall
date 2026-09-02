@@ -1,11 +1,9 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="知识库"
-      description="每个知识库绑定一个 embedding 模型（决定向量维度）与独立向量集合；库间检索完全隔离。"
-    >
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">每个知识库绑定一个 embedding 模型（决定向量维度）与独立向量集合；库间检索完全隔离。</p>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建知识库</el-button>
-    </PageHeader>
+    </div>
 
     <ContentLoader v-if="loading" :rows="3" />
 
@@ -170,7 +168,6 @@ import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime } from '../utils/format'
 import { useCrud } from '../composables/useCrud'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -283,6 +280,14 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
 /* ============ KPI 行（设计稿语言） ============ */
 .kpis {
   display: grid;

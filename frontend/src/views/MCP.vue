@@ -1,12 +1,12 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="MCP 工具服务器"
-      description="注册外部 MCP server，工具自动发现并纳入治理脊柱 —— LLM 只能经角色白名单调用，agent 永不直连。"
-    >
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button type="primary" :icon="Plus" @click="openCreate">注册 MCP Server</el-button>
-    </PageHeader>
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">注册外部 MCP server，工具自动发现并纳入治理脊柱 —— LLM 只能经角色白名单调用，agent 永不直连。</p>
+      <div class="page-head__actions">
+        <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
+        <el-button type="primary" :icon="Plus" @click="openCreate">注册 MCP Server</el-button>
+      </div>
+    </div>
 
     <ContentLoader v-if="loading" :rows="3" />
 
@@ -176,7 +176,6 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -336,6 +335,20 @@ async function toggleEnabled(row, enabled) {
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-shrink: 0;
+}
 /* ============ KPI 行（设计稿语言：label + mono 大数 + 脚注） ============ */
 .kpis {
   display: grid;
