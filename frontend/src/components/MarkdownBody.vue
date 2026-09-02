@@ -1,12 +1,13 @@
 <template>
-  <!-- v-html 渲染 marked 输出；内容来自自有 LLM，页面仅 admin 可访问，
-       威胁模型不支持存储型 XSS，故不引入 DOMPurify。代码块内 HTML 由 marked 自动转义。 -->
+  <!-- v-html 渲染 marked 输出，经 DOMPurify 消毒：marked 默认放行内联原始 HTML，
+       而内容可能携带知识库文档片段（RAG → LLM 复述），不能假定纯自有文本。 -->
   <div class="md-body" v-html="html" />
 </template>
 
 <script setup>
 import { computed } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 // GFM 表格/删除线 + 单换行转 <br>（对话场景更自然）。
 marked.use({ gfm: true, breaks: true })
@@ -15,7 +16,7 @@ const props = defineProps({
   content: { type: String, default: '' },
 })
 
-const html = computed(() => marked.parse(props.content || ''))
+const html = computed(() => DOMPurify.sanitize(marked.parse(props.content || '')))
 </script>
 
 <style scoped>
