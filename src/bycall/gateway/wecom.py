@@ -167,9 +167,13 @@ class WecomChannel(Channel):
         reconnect_interval_ms: int = 1000,
         heartbeat_interval_ms: int = 30000,
         on_lifecycle: Callable[..., None] | None = None,
+        agent_id: int | None = None,
     ) -> None:
         self._bot_id = bot_id
         self._secret = secret
+        # ADR-0012：本连接绑定的数字员工实例（per-Agent 专属 Bot）。
+        # None = 全局默认 Bot（路由到默认实例，历史兼容）。
+        self._agent_id = agent_id
         # M6 P0：重连可靠性参数。默认 max_reconnect_attempts=-1（无限重连），
         # 避免渠道连续失败 10 次后静默死亡。manager 从 SystemSetting 传入。
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -250,6 +254,7 @@ class WecomChannel(Channel):
                 chat_id=chat_id,
                 message_type="text",
                 msg_id=_extract_msgid(frame),
+                agent_id=self._agent_id,
             )
             sender = channel._build_sender(frame, generate_req_id)
             try:
@@ -328,6 +333,7 @@ class WecomChannel(Channel):
             chat_id=chat_id,
             message_type=kind,
             msg_id=_extract_msgid(frame),
+            agent_id=self._agent_id,
             attachments=[attachment],
         )
         await self._deliver(msg, on_message, frame, generate_req_id, kind, im_user_id)
@@ -383,6 +389,7 @@ class WecomChannel(Channel):
             chat_id=chat_id,
             msg_id=_extract_msgid(frame),
             message_type="mixed",
+            agent_id=self._agent_id,
             attachments=attachments,
         )
         await self._deliver(msg, on_message, frame, generate_req_id, "mixed", im_user_id)
@@ -416,6 +423,7 @@ class WecomChannel(Channel):
             chat_id=chat_id,
             message_type="card_action",
             msg_id=_extract_msgid(frame),
+            agent_id=self._agent_id,
         )
         await self._deliver(msg, on_message, frame, generate_req_id, "card_action", im_user_id)
 

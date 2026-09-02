@@ -15,7 +15,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -86,6 +86,8 @@ class ConversationSummary(BaseModel):
     message_count: int
     last_message_at: str  # ISO 字符串，前端按需格式化
     preview: str  # 首条 user 消息预览（对话主题），无消息则占位
+    # ADR-0012：会话归属的数字员工实例（null = 默认实例），对话测试页选择器据此联动。
+    agent_id: int | None = None
 
 
 def _current_user(request: Request, session: Session) -> User:
@@ -322,18 +324,20 @@ async def chat_stream(
 @router.get("/chat/conversations", response_model=list[ConversationSummary])
 def chat_conversations(
     request: Request,
+    agent_id: int | None = Query(default=None, description="按数字员工实例过滤会话"),
     session: Session = Depends(get_session),
 ) -> list[ConversationSummary]:
-    """当前用户的全部 api 会话（按最后消息时间倒序）。
+    """当前用户的全部 api 会话（按最后消息时间倒序；可按实例过滤）。
 
     每个会话带首条 user 消息预览作为标题，便于在侧栏区分。
     """
     user = _current_user(request, session)
-    convs = session.exec(
-        select(Conversation)
-        .where(Conversation.user_id == user.id, Conversation.channel == "api")
-        .order_by(Conversation.last_message_at.desc())
-    ).all()
+    stmt = select(Conversation).where(
+        Conversation.user_id == user.id, Conversation.channel == "api"
+    )
+    if agent_id is not None:
+        stmt = stmt.where(Conversation.agent_id == agent_id)
+    convs = session.exec(stmt.order_by(Conversation.last_message_at.desc())).all()
     result = []
     for conv in convs:
         first_user = session.exec(
@@ -349,6 +353,7 @@ def chat_conversations(
                 message_count=conv.message_count,
                 last_message_at=conv.last_message_at.isoformat(),
                 preview=preview,
+                agent_id=conv.agent_id,
             )
         )
     return result

@@ -85,8 +85,11 @@ export const admin = {
   listSettings: () => http.get('/api/admin/settings').then((r) => r.data),
   updateSettings: (settings) =>
     http.put('/api/admin/settings', { settings }).then((r) => r.data),
-  // IM 渠道热重载（改凭证后重连，不重启服务）
-  reloadIm: () => http.post('/api/admin/im/reload').then((r) => r.data),
+  // IM 渠道热重载（改凭证后重连，不重启服务）。带 agentId 时只重载该数字员工的专属 Bot（ADR-0012）
+  reloadIm: (agentId) =>
+    http
+      .post('/api/admin/im/reload', null, agentId != null ? { params: { agent_id: agentId } } : {})
+      .then((r) => r.data),
   imStatus: () => http.get('/api/admin/im/status').then((r) => r.data),
   // 模型管理（Model 实体 CRUD + 激活 + 测试 + provider 注册表）
   listModelProviders: (modelType) =>

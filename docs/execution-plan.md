@@ -277,6 +277,24 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 `tools/approval.py`（短路/台账）、`admin/api.py`（grants 端点）、
 `views/Approvals.vue`（档位 + 授权管理）。**Scope**：M。
 
+#### T3.5 多 Bot 渠道体系与管理面板重组 —— ✅ 已完成（2026-09-02，ADR-0012）
+**Description**：产品方向拍板为多 Bot 平台（用户 2026-09-02）。① 网关多槽位：`ChannelManager`
+支持 per-Agent 企微长连接（`Agent.im_config` 从"只写不读"改为真正生效），入站消息按连接路由到
+对应实例，会话键落 `:agent:{id}` 后缀（红线 #2 实例维度）；全局默认 Bot（SystemSetting）保留兜底。
+② 控制面归一：渠道凭证收敛为"全局默认（渠道接入页）+ per-Agent 专属（数字员工详情）"两个作用域，
+bot_id 全局唯一校验，im_config 变更/启停/删除自动重载槽位；`im/status` 返回连接列表。
+③ 管理面板 IA 重组：导航按"配置/运行"重分组，数字员工改列表+详情页分区编辑，
+Dashboard KPI 修复，对话测试页补数字员工选择器（试点必需，非视觉打磨）。
+**Acceptance**：
+- [x] 配置了专属 Bot 的实例：企微私聊消息路由到该实例（`Conversation.agent_id` 落库），
+  同一用户与两个 Bot 对话产生两条独立会话
+- [x] `wecom_bot_id` 冲突（Agent 间 / 与全局默认）被 400 拒绝；幂等键含 Bot 维度不串扰
+- [x] 实例禁用/删除后对应连接停止，滞留消息礼貌拒绝（不回落默认实例）
+- [x] `make ci-local` 全绿 + `npm run build` 通过
+**Dependencies**：无（数据面 per-Agent 能力集/会话键/模型链已就绪）。**Files**：
+`gateway/manager.py`、`gateway/base.py`、`gateway/wecom.py`、`agent/im_handler.py`、
+`admin/api.py`、`frontend/src/views/`（Channels/AgentDetail/Agents/Layout 等）。**Scope**：L。
+
 #### T3.4 业务效果看板（后置，待 T3.2 与试点数据）
 **Description**：首修率 / 故障处理时间 / 工单成功率 / 人工接管率。**本 worktree 不做**——待 T3.2 平台流程跑通且试点/用户文档就绪后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。
 **Acceptance**：

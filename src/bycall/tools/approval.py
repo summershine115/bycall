@@ -351,13 +351,32 @@ def push_approval_result(req, result_text: str) -> None:
         "msgtype": "markdown",
         "markdown": {"content": _build_approval_push_markdown(req, result_text)},
     }
+    # ADR-0012：按发起会话的实例归属路由——专属 Bot 会话里发起的审批，
+    # 结果必须从同一个 Bot 推回去（chatid 是 Bot 维度的）。
+    agent_id = _resolve_conversation_agent_id(req)
     try:
-        ok = get_channel_manager().send_proactive(im_user_id, body)
+        ok = get_channel_manager().send_proactive(im_user_id, body, agent_id=agent_id)
     except Exception:
         logger.exception("审批 #%s 主动推送异常（已吞掉，不影响审批结果）", req.id)
         return
     if not ok:
         logger.warning("审批 #%s 主动推送未送达（渠道未运行/未连接）", req.id)
+
+
+def _resolve_conversation_agent_id(req) -> int | None:
+    """审批发起会话所属的数字员工实例 id；无会话/无归属返回 None（走全局默认 Bot）。"""
+    conv_id = getattr(req, "conversation_id", None)
+    if not conv_id:
+        return None
+    try:
+        from bycall.governance.models import Conversation
+
+        with session_scope() as session:
+            conv = session.get(Conversation, conv_id)
+            return conv.agent_id if conv is not None else None
+    except Exception:
+        logger.debug("审批 #%s 解析会话实例归属失败，推送回落全局 Bot", req.id, exc_info=True)
+        return None
 
 
 def _resolve_current_im_user_id(req) -> str:

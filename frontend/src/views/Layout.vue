@@ -112,7 +112,8 @@ const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 
-// 导航分组：治理 / 知识 / 能力 / 系统 —— 与产品心智模型一致
+// 导航分组：按「静态配置 vs 动态运行」分层（ADR-0012 管理面板 IA 重组）——
+// 人格/模型/技能/工具都是数字员工的装配资产，归数字员工组；模拟器归身份权限组。
 const navGroups = [
   {
     key: 'overview',
@@ -120,15 +121,24 @@ const navGroups = [
     items: [{ name: 'dashboard', label: '仪表盘', icon: DataLine }],
   },
   {
-    key: 'governance',
-    label: '治理',
+    key: 'identity',
+    label: '组织与身份',
     items: [
       { name: 'users', label: '用户管理', icon: User },
       { name: 'roles', label: '角色与权限', icon: Key },
-      { name: 'prompts', label: '提示词版本', icon: Document },
-      { name: 'audit', label: '审计日志', icon: List },
       { name: 'policy-simulator', label: '策略模拟', icon: List },
-      { name: 'releases', label: '发布与回滚', icon: RefreshLeft },
+    ],
+  },
+  {
+    key: 'agent',
+    label: '数字员工',
+    items: [
+      { name: 'agents', label: '数字员工', icon: Avatar },
+      { name: 'prompts', label: '提示词版本', icon: Document },
+      { name: 'models', label: '模型管理', icon: Cpu },
+      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
+      { name: 'mcp', label: 'MCP 工具', icon: Connection },
+      { name: 'chat', label: '对话测试', icon: ChatDotRound },
     ],
   },
   {
@@ -140,24 +150,22 @@ const navGroups = [
     ],
   },
   {
-    key: 'capability',
-    label: '能力',
+    key: 'runtime',
+    label: '运行与监督',
     items: [
-      { name: 'agents', label: '数字员工', icon: Avatar },
-      { name: 'models', label: '模型管理', icon: Cpu },
-      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
-      { name: 'mcp', label: 'MCP 工具', icon: Connection },
+      { name: 'conversations', label: '会话管理', icon: ChatLineRound },
       { name: 'approvals', label: '审批队列', icon: DocumentChecked },
       { name: 'tasks', label: '任务执行', icon: List },
+      { name: 'audit', label: '审计日志', icon: List },
+      { name: 'releases', label: '发布与回滚', icon: RefreshLeft },
+      { name: 'ops-metrics', label: '运营指标', icon: TrendCharts },
     ],
   },
   {
     key: 'system',
     label: '系统',
     items: [
-      { name: 'conversations', label: '会话管理', icon: ChatLineRound },
-      { name: 'chat', label: '对话测试', icon: ChatDotRound },
-      { name: 'ops-metrics', label: '运营指标', icon: TrendCharts },
+      { name: 'channels', label: '渠道接入', icon: Connection },
       { name: 'settings', label: '运行时设置', icon: Setting },
     ],
   },
@@ -169,6 +177,7 @@ const titles = {
   users: '用户管理',
   roles: '角色与权限',
   agents: '数字员工',
+  'agent-detail': '数字员工详情',
   models: '模型管理',
   knowledge: '文档管理',
   'knowledge-bases': '知识库',
@@ -178,6 +187,7 @@ const titles = {
   mcp: 'MCP 工具',
   approvals: '审批队列',
   tasks: '任务执行',
+  channels: '渠道接入',
   settings: '运行时设置',
   audit: '审计日志',
   'policy-simulator': '策略模拟',

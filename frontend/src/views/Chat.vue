@@ -60,6 +60,29 @@
 
       <!-- 聊天区 -->
       <div class="chat-shell bc-panel">
+        <!-- 对话对象选择（ADR-0012 多 Bot：按实例测试，能力边界随实例生效） -->
+        <div class="agent-picker">
+          <span class="agent-picker__label">对话对象</span>
+          <el-select
+            :model-value="selectedAgentId"
+            size="small"
+            style="width: 220px"
+            :disabled="loading || streaming"
+            @change="onAgentChange"
+          >
+            <el-option label="默认实例（未指定）" :value="null" />
+            <el-option
+              v-for="a in enabledAgents"
+              :key="a.id"
+              :label="(a.display_name || a.name) + (a.is_default ? '（默认）' : '')"
+              :value="a.id"
+            />
+          </el-select>
+          <span class="bc-muted bc-text-xs">
+            切换后开新对话；选择实例后其人格 / 能力边界 / 模型绑定即时生效
+          </span>
+        </div>
+
         <!-- 消息流 -->
         <div ref="msgContainer" class="chat-stream">
           <EmptyState
@@ -273,11 +296,16 @@ const streamText = ref('')
 const actAsInfo = ref('')
 const msgContainer = ref(null)
 const convListLoading = ref(false)
+// 数字员工选择（ADR-0012）：null = 默认实例；仅对「新对话」生效，选中历史会话时随会话归属联动
+const agents = ref([])
+const selectedAgentId = ref(null)
+const enabledAgents = computed(() => agents.value.filter((a) => a.is_enabled))
 
 onMounted(async () => {
   // 进入即恢复最近一次会话（无会话则停留在新会话模式）。
   const list = await loadConversations()
   if (list.length) await selectConversation(list[0].id)
+  admin.listAgents().then((all) => (agents.value = all)).catch(() => {})
 })
 
 async function loadConversations() {
@@ -295,6 +323,9 @@ async function loadConversations() {
 async function selectConversation(id) {
   if (loading.value || streaming.value) return
   currentConvId.value = id
+  // 选择器随会话归属联动（会话的实例绑定优先于全局选择）
+  const conv = conversations.value.find((c) => c.id === id)
+  if (conv) selectedAgentId.value = conv.agent_id ?? null
   chatHistory.value = []
   streamText.value = ''
   loading.value = true
@@ -318,6 +349,12 @@ function onNewConversation() {
   streamText.value = ''
 }
 
+function onAgentChange(val) {
+  selectedAgentId.value = val
+  // 切实例 = 换对话对象：开新对话（会话按实例隔离，沿用旧会话会被后端 400 拒绝）
+  onNewConversation()
+}
+
 async function onAsk() {
   const q = question.value.trim()
   if (!q || loading.value) return
@@ -331,6 +368,8 @@ async function onAsk() {
   streamText.value = ''
   try {
     await chat.stream(q, currentConvId.value, {
+      // 仅新建会话时显式指定实例；继续会话走会话已有归属（跨实例不一致会被后端拒绝）
+      agentId: wasNew ? selectedAgentId.value : undefined,
       onToken: async (text) => {
         streamText.value += text
         await scrollToBottom()
@@ -596,6 +635,21 @@ function roleLabel(r) {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+/* 实例选择条 */
+.agent-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-3);
+  padding: var(--bc-space-2) var(--bc-space-6);
+  border-bottom: 1px solid var(--bc-border);
+  flex-shrink: 0;
+}
+.agent-picker__label {
+  font-size: var(--bc-text-xs);
+  font-weight: var(--bc-weight-medium);
+  color: var(--bc-text-3);
+  flex-shrink: 0;
 }
 .chat-stream {
   flex: 1;

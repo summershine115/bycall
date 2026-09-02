@@ -1361,17 +1361,22 @@ def _validate_parse_setting(key: str, value: str) -> None:
 
 @router.post("/im/reload", response_model=dict)
 def reload_im_channel(
+    agent_id: int | None = Query(default=None, description="指定则只重载该数字员工的专属 Bot"),
     _admin: None = Depends(_require_admin),
 ) -> dict:
     """热重载 IM 渠道：断开旧连接 + 用当前凭证建新连接。不重启 HTTP 服务。
 
     admin 改完 IM 凭证后调用此端点（或前端保存设置时自动触发）。
     借鉴 OpenClaw 的 channel reload：只重启那一个渠道，其他不动。
+    带 ``agent_id`` 时只重载该实例的专属 Bot 槽位（ADR-0012）；不带则重载全局默认渠道。
     """
     from bycall.gateway.manager import get_channel_manager
 
     mgr = get_channel_manager()
-    ok, msg = mgr.reload()
+    if agent_id is not None:
+        ok, msg = mgr.reload_agent(agent_id)
+    else:
+        ok, msg = mgr.reload()
     return {"ok": ok, "message": msg, "status": mgr.status()}
 
 
@@ -1379,7 +1384,11 @@ def reload_im_channel(
 def im_status(
     _admin: None = Depends(_require_admin),
 ) -> dict:
-    """查询 IM 渠道当前连接状态。"""
+    """查询全部 IM 连接状态：顶层为全局默认渠道（兼容 /ready），``channels`` 逐槽位明细。
+
+    每个槽位含 ``scope``（global/agent）、``agent_id``、``bot_id``、连接状态与最近错误，
+    供渠道接入页展示多 Bot 连接总览（ADR-0012）。
+    """
     from bycall.gateway.manager import get_channel_manager
 
     return get_channel_manager().status()
@@ -1893,6 +1902,64 @@ def _get_agent_or_404(session: Session, agent_id: int) -> Agent:
     return agent
 
 
+def _validate_agent_im_config(
+    session: Session, agent_id: int | None, im_config: dict | None
+) -> None:
+    """per-Agent IM 凭证写入校验（ADR-0012）：wecom_bot_id 全局唯一。
+
+    Agent 之间、以及与全局默认 Bot（SystemSetting ``im.wecom_bot_id``）冲突即 400——
+    同一 bot_id 建两条连接会被企微单连接策略互踢，必须在写入前拦住。
+    """
+    bot_id = str((im_config or {}).get("wecom_bot_id") or "").strip()
+    if not bot_id:
+        return
+    from bycall.governance.secrets import decrypt_secret
+    from bycall.governance.settings_store import get_setting_value
+
+    global_bot = get_setting_value(
+        "im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID"
+    ).strip()
+    if global_bot and bot_id == global_bot:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"wecom_bot_id '{bot_id}' 与全局默认 Bot 冲突（见渠道接入页/运行时设置）",
+        )
+    for other in session.exec(Agent.select_all()).all():
+        if agent_id is not None and other.id == agent_id:
+            continue
+        if not other.im_config_encrypted:
+            continue
+        try:
+            cfg = json.loads(decrypt_secret(other.im_config_encrypted) or "{}")
+        except Exception:
+            continue  # 他人凭证损坏不应阻断本次写入，运行时加载时另行报错
+        if str(cfg.get("wecom_bot_id") or "").strip() == bot_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"wecom_bot_id '{bot_id}' 已被数字员工 '{other.name}' 使用",
+            )
+
+
+def _sync_agent_channel_slot(agent: Agent) -> None:
+    """按 Agent 最终状态同步其专属 Bot 槽位（ADR-0012 控制面自动生效）。
+
+    启用且有凭证 → 热重载该槽位（新凭证即刻建连）；否则停止该槽位。
+    同步失败只记日志——CRUD 结果不受渠道连接问题影响，管理员可在渠道接入页手动重连。
+    """
+    from bycall.gateway.manager import get_channel_manager
+
+    try:
+        mgr = get_channel_manager()
+        if agent.is_enabled and agent.im_config_encrypted:
+            _ok, msg = mgr.reload_agent(agent.id)  # type: ignore[arg-type]
+        else:
+            stopped = mgr.stop_agent(agent.id)  # type: ignore[arg-type]
+            msg = "专属 Bot 已停止" if stopped else "无运行中的专属 Bot"
+        logger.info("数字员工 '%s' 渠道槽位同步：%s", agent.name, msg)
+    except Exception:
+        logger.exception("数字员工 '%s' 渠道槽位同步失败（不影响保存结果）", agent.name)
+
+
 def _validate_agent_refs(session: Session, payload: AgentCreate | AgentUpdate) -> None:
     """校验 Agent 引用的外键有效性（model_id / system_prompt_version / skills）。"""
     # model_id 若指定，必须存在且为 chat 类型
@@ -1958,6 +2025,7 @@ def create_agent(
 ) -> AgentOut:
     """创建数字员工实例。name 唯一冲突 → 409；引用校验失败 → 404/400。"""
     _validate_agent_refs(session, payload)
+    _validate_agent_im_config(session, None, payload.im_config)
     # 加密 per-Agent IM 覆盖
     im_encrypted = ""
     if payload.im_config is not None and len(payload.im_config) > 0:
@@ -1992,6 +2060,9 @@ def create_agent(
             status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {payload.name}"
         ) from exc
     session.refresh(agent)
+    # ADR-0012：创建即带凭证时自动建专属 Bot 连接（im.enable 关闭时 reload_agent 内部跳过）。
+    if payload.im_config:
+        _sync_agent_channel_slot(agent)
     _audit_admin(session, request, "create_agent", f"Agent({agent.name})", after=agent)
     session.commit()
     return _agent_to_out(agent)
@@ -2013,6 +2084,8 @@ def update_agent(
     """
     agent = _get_agent_or_404(session, agent_id)
     _validate_agent_refs(session, payload)
+    # im_config 变更时校验 bot_id 唯一性（None=不改，跳过校验）。
+    _validate_agent_im_config(session, agent_id, payload.im_config)
     before = json.dumps(agent.model_dump(), default=str)
     if payload.display_name is not None:
         agent.display_name = payload.display_name
@@ -2061,6 +2134,10 @@ def update_agent(
     session.add(agent)
     session.commit()
     session.refresh(agent)
+    # ADR-0012：im_config / 启用态 / 删除变化后自动同步专属 Bot 槽位（建连或断开）。
+    im_touched = payload.im_config is not None or payload.is_enabled is not None
+    if im_touched:
+        _sync_agent_channel_slot(agent)
     _audit_admin(
         session,
         request,
@@ -2102,6 +2179,13 @@ def delete_agent(
         )
     session.delete(agent)
     session.commit()
+    # ADR-0012：实例删除后停其专属 Bot 连接（不依赖下一次 reload 清理）。
+    from bycall.gateway.manager import get_channel_manager
+
+    try:
+        get_channel_manager().stop_agent(agent_id)
+    except Exception:
+        logger.exception("删除数字员工后停止专属 Bot 槽位失败 agent_id=%s", agent_id)
     _audit_admin(
         session, request, "delete_agent", f"Agent({agent.name})", before={"name": agent.name}
     )

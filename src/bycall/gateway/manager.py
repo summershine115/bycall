@@ -1,19 +1,28 @@
-"""IM 渠道管理器（单例）—— 支持热重载。
+"""IM 渠道管理器（单例）—— 多 Bot 槽位 + 热重载（ADR-0012）。
 
-借鉴 OpenClaw 的 channel reload：改凭证后 stop() + start() 只重启那一个渠道，
-HTTP 服务和其他状态不动。Bycall 的 IM 渠道在独立后台线程 + 自己的事件循环里跑
+借鉴 OpenClaw 的 channel reload：改凭证后 stop() + start() 只重启涉及的那一个渠道，
+HTTP 服务和其他槽位不动。Bycall 的每条 IM 连接在独立后台线程 + 自己的事件循环里跑
 （企微 SDK 是 asyncio 的，FastAPI 同步路由在线程池），reload 时安全地换掉那套。
+
+槽位模型（多 Bot 平台）：
+- ``wecom:global``——全局默认 Bot（SystemSetting ``im.*``），路由到默认实例（兜底）；
+- ``wecom:agent:{id}``——数字员工专属 Bot（``Agent.im_config``，Fernet 解密），
+  入站消息按连接路由到对应实例（会话键带 ``:agent:{id}`` 后缀）。
+- ``im.enable=false`` 是 IM 子系统总开关：全局与专属 Bot 都不启动。
 
 用法：
     mgr = get_channel_manager()
-    mgr.start_if_enabled()   # 应用启动时
-    mgr.reload()             # admin 改凭证后调用（stop 旧连接 + 用新凭证 start）
-    mgr.stop()               # 应用关闭时
+    mgr.start_if_enabled()             # 应用启动时（全局 + 启用且有凭证的 Agent）
+    mgr.reload()                       # admin 改全局凭证后（只重启全局槽位）
+    mgr.reload_agent(agent_id)         # admin 改某实例专属凭证后（只重启该槽位）
+    mgr.stop_agent(agent_id)           # 实例禁用/删除时停其专属连接
+    mgr.stop()                         # 应用关闭时
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING
@@ -23,103 +32,186 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 槽位 key：全局默认 Bot / 数字员工专属 Bot。
+GLOBAL_SLOT_KEY = "wecom:global"
 
-class ChannelManager:
-    """管理单个 IM 渠道的生命周期，支持热重载。
 
-    线程模型：渠道在独立 daemon 线程里跑自己的 asyncio 事件循环。
-    reload 时先停旧循环（断开连接），再起新循环建新连接。
+def agent_slot_key(agent_id: int) -> str:
+    """数字员工专属 Bot 的槽位 key。"""
+    return f"wecom:agent:{agent_id}"
+
+
+class _ChannelSlot:
+    """单条 IM 连接的运行时槽位：channel + 线程 + 事件循环 + 生命周期状态。
+
+    状态由 ``WecomChannel`` 生命周期回调（在 IM 事件循环线程被调）经 manager
+    ``_on_lifecycle`` 更新，FastAPI 同步路由线程跨线程读 ``status()``。
     """
 
-    def __init__(self) -> None:
-        self._channel: Channel | None = None
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._lock = threading.Lock()
-        self._started = False
-        # M6：线程安全的生命周期状态（WecomChannel 回调 _on_lifecycle 更新，
-        # FastAPI 同步路由跨线程读 status()）。is_connected 等供 /ready 健康检查。
-        self._state: dict = {
+    def __init__(self, key: str, channel: Channel, agent_id: int | None, bot_id: str) -> None:
+        self.key = key
+        self.channel = channel
+        self.agent_id = agent_id
+        self.bot_id = bot_id
+        self.thread: threading.Thread | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.state: dict = {
             "is_connected": False,
             "last_event": None,
             "reconnect_attempts": 0,
             "last_error": "",
         }
 
+
+class ChannelManager:
+    """管理全部 IM 渠道连接的生命周期（多 Bot，ADR-0012），支持按槽位热重载。
+
+    线程模型：每槽位独立 daemon 线程跑自己的 asyncio 事件循环。reload 时先停旧循环
+    （断开连接），再起新循环建新连接。
+    """
+
+    def __init__(self) -> None:
+        self._slots: dict[str, _ChannelSlot] = {}
+        self._lock = threading.Lock()
+
     @property
     def is_running(self) -> bool:
-        return self._started and self._channel is not None
+        with self._lock:
+            return bool(self._slots)
 
     def start_if_enabled(self) -> bool:
-        """若 IM 启用且有凭证，启动渠道。返回是否实际启动。"""
+        """应用启动时启动全部应启动的槽位（全局 + 启用且有专属凭证的 Agent）。
+
+        返回是否至少启动了一个槽位。单个 Agent 槽位失败只记日志，不阻塞其余
+        （与 MCPManager.load_all 的"单点失败不阻断"约定一致）。
+        """
         with self._lock:
-            if self._started:
+            if self._slots:
                 return True
-            channel, err = self._build_channel_from_settings()
-            if channel is None:
-                logger.info("IM 渠道未启动：%s", err)
+            if not self._im_enabled():
+                logger.info("IM 未启用（im.enable=false），跳过全部渠道槽位")
                 return False
-            self._channel = channel
-            self._start_thread(channel)
-            self._started = True
-            return True
+            started = False
+            channel, err = self._build_channel_from_settings()
+            if channel is not None:
+                self._start_slot_locked(GLOBAL_SLOT_KEY, channel, agent_id=None)
+                started = True
+            else:
+                logger.info("全局 IM 渠道未启动：%s", err)
+            for agent_id in self._enabled_agent_ids_with_im():
+                agent_channel = self._build_agent_channel(agent_id)
+                if agent_channel is None:
+                    continue
+                self._start_slot_locked(agent_slot_key(agent_id), agent_channel, agent_id=agent_id)
+                started = True
+            return started
 
     def reload(self) -> tuple[bool, str]:
-        """热重载：断开旧连接 + 用当前设置建新连接。不重启 HTTP 服务。
+        """热重载全局默认渠道：断开旧连接 + 用当前设置建新连接。不影响 Agent 槽位。
 
-        返回 (是否成功, 消息)。无凭证时停止渠道。
+        返回 (是否成功, 消息)。无凭证时停止该槽位。
         """
         with self._lock:
-            was_running = self._started
-            # 1. 先停旧的
+            was_running = GLOBAL_SLOT_KEY in self._slots
             if was_running:
-                self._stop_locked()
-            # 2. 用新设置重建
+                self._stop_slot_locked(GLOBAL_SLOT_KEY)
             channel, err = self._build_channel_from_settings()
             if channel is None:
-                self._started = False
-                msg = f"IM 渠道已停止（{err}）" if was_running else f"IM 渠道未启动（{err}）"
-                logger.info("IM reload: %s", msg)
+                msg = (
+                    f"全局 IM 渠道已停止（{err}）"
+                    if was_running
+                    else f"全局 IM 渠道未启动（{err}）"
+                )
+                logger.info("IM reload(global): %s", msg)
                 return True, msg
-            self._channel = channel
-            self._start_thread(channel)
-            self._started = True
+            self._start_slot_locked(GLOBAL_SLOT_KEY, channel, agent_id=None)
             action = "已重连" if was_running else "已启动"
-            return True, f"IM 渠道{action}，使用新凭证"
+            return True, f"全局 IM 渠道{action}，使用新凭证"
+
+    def reload_agent(self, agent_id: int) -> tuple[bool, str]:
+        """热重载某数字员工的专属 Bot 槽位：断开旧连接 + 用最新 im_config 建新连接。
+
+        无凭证 / 实例禁用或不存在 / IM 未启用时，停掉该槽位并返回说明。
+        """
+        key = agent_slot_key(agent_id)
+        with self._lock:
+            was_running = key in self._slots
+            if was_running:
+                self._stop_slot_locked(key)
+            if not self._im_enabled():
+                return True, "IM 未启用（im.enable=false），专属 Bot 未启动"
+            channel = self._build_agent_channel(agent_id)
+            if channel is None:
+                msg = (
+                    f"Agent #{agent_id} 专属 Bot 已停止（无凭证/实例禁用或不存在）"
+                    if was_running
+                    else f"Agent #{agent_id} 无专属 Bot 凭证，未启动"
+                )
+                logger.info("IM reload(agent): %s", msg)
+                return True, msg
+            self._start_slot_locked(key, channel, agent_id=agent_id)
+            return True, f"Agent #{agent_id} 专属 Bot 已（重）连接"
+
+    def stop_agent(self, agent_id: int) -> bool:
+        """停止某数字员工的专属 Bot 槽位（实例禁用/删除时调用）。返回是否曾运行。"""
+        key = agent_slot_key(agent_id)
+        with self._lock:
+            if key not in self._slots:
+                return False
+            self._stop_slot_locked(key)
+            return True
 
     def stop(self) -> None:
-        """完全停止渠道（应用关闭时调用）。"""
+        """完全停止全部槽位（应用关闭时调用）。"""
         with self._lock:
-            if self._started:
-                self._stop_locked()
-            self._started = False
+            for key in list(self._slots):
+                self._stop_slot_locked(key)
 
     def status(self) -> dict:
-        """返回当前状态（供 admin API / 健康检查用）。
+        """返回全部槽位的连接状态（供 admin API / 健康检查用）。
 
-        反映真实连接状态：``is_connected``/``last_event``/``reconnect_attempts``/
-        ``last_error`` 由 WecomChannel 生命周期回调维护。
+        顶层字段（running/channel/is_connected/...）沿用全局槽位（无全局时取首个
+        槽位）——/ready 等信息性读取的兼容形态；``channels`` 为逐槽位明细列表。
         """
         with self._lock:
+            slots = list(self._slots.values())
+            channels = [
+                {
+                    "key": s.key,
+                    "scope": "agent" if s.agent_id is not None else "global",
+                    "agent_id": s.agent_id,
+                    "bot_id": s.bot_id,
+                    "is_connected": s.state["is_connected"],
+                    "last_event": s.state["last_event"],
+                    "reconnect_attempts": s.state["reconnect_attempts"],
+                    "last_error": s.state["last_error"],
+                }
+                for s in slots
+            ]
+            primary = self._slots.get(GLOBAL_SLOT_KEY) or (slots[0] if slots else None)
             return {
-                "running": self.is_running,
-                "channel": "wecom" if self._channel is not None else None,
-                "is_connected": self._state["is_connected"],
-                "last_event": self._state["last_event"],
-                "reconnect_attempts": self._state["reconnect_attempts"],
-                "last_error": self._state["last_error"],
+                "running": bool(slots),
+                "channel": "wecom" if slots else None,
+                "is_connected": primary.state["is_connected"] if primary else False,
+                "last_event": primary.state["last_event"] if primary else None,
+                "reconnect_attempts": primary.state["reconnect_attempts"] if primary else 0,
+                "last_error": primary.state["last_error"] if primary else "",
+                "channels": channels,
             }
 
     @property
     def is_connected(self) -> bool:
-        """真实连接状态（供 /ready 健康检查快速判断）。"""
+        """真实连接状态（供 /ready 健康检查快速判断）：全局槽位优先，否则任一已连。"""
         with self._lock:
-            return self._state["is_connected"]
+            glob = self._slots.get(GLOBAL_SLOT_KEY)
+            if glob is not None:
+                return glob.state["is_connected"]
+            return any(s.state["is_connected"] for s in self._slots.values())
 
-    # ---- 生命周期状态（WecomChannel 回调）----
+    # ---- 生命周期状态（WecomChannel 回调，在 IM 事件循环线程被调用）----
 
-    def _on_lifecycle(self, event: str, **kw: object) -> None:
-        """WecomChannel 生命周期回调：更新线程安全状态。在 IM 事件循环线程被调用。
+    def _on_lifecycle(self, key: str, event: str, **kw: object) -> None:
+        """某槽位 WecomChannel 的生命周期回调：更新该槽位的线程安全状态。
 
         - connected/authenticated：连接可用，清错误；authenticated 复位重连计数。
         - disconnected：连接断开。
@@ -127,55 +219,82 @@ class ChannelManager:
         - error：记录最近错误。
         """
         with self._lock:
-            self._state["last_event"] = event
+            slot = self._slots.get(key)
+            if slot is None:
+                return  # 槽位已被 stop 摘除，teardown 期间的事件直接丢弃
+            slot.state["last_event"] = event
             if "is_connected" in kw:
-                self._state["is_connected"] = bool(kw["is_connected"])
+                slot.state["is_connected"] = bool(kw["is_connected"])
             if event in ("connected", "authenticated"):
-                self._state["last_error"] = ""
-                self._state["reconnect_attempts"] = 0
+                slot.state["last_error"] = ""
+                slot.state["reconnect_attempts"] = 0
             if event == "reconnecting" and "attempt" in kw:
-                self._state["reconnect_attempts"] = int(kw["attempt"])  # type: ignore[arg-type]
+                slot.state["reconnect_attempts"] = int(kw["attempt"])  # type: ignore[arg-type]
             if event == "error" and "error" in kw:
-                self._state["last_error"] = str(kw["error"])
+                slot.state["last_error"] = str(kw["error"])
 
     # ---- 主动推送 ----
 
-    def send_proactive(self, chatid: str, body: dict) -> bool:
+    def send_proactive(self, chatid: str, body: dict, agent_id: int | None = None) -> bool:
         """尽力主动推送（审批结果/异步任务回推）。**永不向调用方抛异常**
         （审批流程绝不能因推送失败而中断）。
 
-        把协程 marshal 到 IM 事件循环线程执行（FastAPI 同步路由线程 → IM loop），
-        同步等待结果（超时 10s）。未运行/未连接/异常 → 记日志 + 返回 False。
+        路由（ADR-0012）：``agent_id`` 指定时优先走该实例的专属 Bot 连接——chatid 是
+        Bot 维度的（哪个 Bot 的会话产生，就要从哪个 Bot 推回去）；否则走全局默认槽位。
+        把协程 marshal 到对应槽位的 IM 事件循环线程执行，同步等待结果（超时 10s）。
+        未运行/未连接/异常 → 记日志 + 返回 False。
         """
         with self._lock:
-            channel = self._channel
-            loop = self._loop
-        if not self.is_running or channel is None or loop is None:
-            logger.warning("主动推送跳过：IM 渠道未运行，chatid=%s", chatid)
+            slot = None
+            if agent_id is not None:
+                slot = self._slots.get(agent_slot_key(agent_id))
+            if slot is None:
+                slot = self._slots.get(GLOBAL_SLOT_KEY)
+            if slot is None and self._slots:
+                # 兜底：未配全局 Bot、仅有专属 Bot 的部署也能推出去。
+                slot = next(iter(self._slots.values()))
+            channel = slot.channel if slot is not None else None
+            loop = slot.loop if slot is not None else None
+        if channel is None or loop is None:
+            logger.warning("主动推送跳过：无可用 IM 连接，chatid=%s agent_id=%s", chatid, agent_id)
             return False
         if not getattr(channel, "is_connected", False):
-            logger.warning("主动推送跳过：IM 渠道未连接，chatid=%s", chatid)
+            logger.warning("主动推送跳过：IM 连接未就绪，chatid=%s agent_id=%s", chatid, agent_id)
             return False
         try:
             future = asyncio.run_coroutine_threadsafe(channel.send_proactive(chatid, body), loop)
             future.result(timeout=10)
             return True
         except Exception:
-            logger.exception("主动推送失败，chatid=%s", chatid)
+            logger.exception("主动推送失败：chatid=%s agent_id=%s", chatid, agent_id)
             return False
 
     # ---- 内部 ----
 
-    def _build_channel_from_settings(self) -> tuple[Channel | None, str]:
-        """从当前 DB/.env 设置构造渠道。无凭证返回 (None, 原因)。"""
-        from bycall.gateway.wecom import WecomChannel
-        from bycall.governance.settings_store import (
-            get_setting_bool,
-            get_setting_int,
-            get_setting_value,
-        )
+    def _im_enabled(self) -> bool:
+        """IM 子系统总开关（im.enable，DB > .env）。全局与专属 Bot 共用。"""
+        from bycall.governance.settings_store import get_setting_bool
 
-        if not get_setting_bool("im.enable", default=False, env_var="BYCALL_IM_ENABLE"):
+        return get_setting_bool("im.enable", default=False, env_var="BYCALL_IM_ENABLE")
+
+    def _enabled_agent_ids_with_im(self) -> list[int]:
+        """全部启用且配置了专属 IM 凭证的 Agent id（启动时的槽位清单来源）。"""
+        from bycall.db import session_scope
+        from bycall.governance.models import Agent
+
+        try:
+            with session_scope() as session:
+                rows = session.exec(Agent.select_enabled()).all()
+                return [r.id for r in rows if r.im_config_encrypted]  # type: ignore[misc]
+        except Exception:
+            logger.exception("读取 Agent 专属 Bot 清单失败")
+            return []
+
+    def _build_channel_from_settings(self) -> tuple[Channel | None, str]:
+        """从当前 DB/.env 设置构造全局默认渠道。无凭证返回 (None, 原因)。"""
+        from bycall.governance.settings_store import get_setting_value
+
+        if not self._im_enabled():
             return None, "IM 未启用（im.enable=false）"
 
         bot_id = get_setting_value("im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID")
@@ -183,58 +302,100 @@ class ChannelManager:
             "im.wecom_bot_secret", default="", env_var="BYCALL_IM_WECOM_BOT_SECRET"
         )
         if not bot_id or not bot_secret:
-            return None, "缺少 wecom_bot_id 或 wecom_bot_secret"
+            return None, "缺少 wecom_bot_id 或 wecom_secret"
+        return self._new_wecom_channel(bot_id, bot_secret, agent_id=None), ""
 
-        # M6：重连/心跳参数从 SystemSetting 读（默认 -1 无限重连，避免静默死亡）。
-        max_reconnect = get_setting_int(
+    def _build_agent_channel(self, agent_id: int) -> Channel | None:
+        """按 ``Agent.im_config``（Fernet 解密）构造该实例的专属 Bot 连接。
+
+        实例不存在/禁用/无凭证/解密失败 → None（调用方据此跳过或停止槽位）。
+        """
+        from bycall.db import session_scope
+        from bycall.governance.models import Agent
+        from bycall.governance.secrets import decrypt_secret
+
+        with session_scope() as session:
+            agent = session.get(Agent, agent_id)
+            if agent is None or not agent.is_enabled or not agent.im_config_encrypted:
+                return None
+            try:
+                cfg = json.loads(decrypt_secret(agent.im_config_encrypted) or "{}")
+            except Exception:
+                logger.exception("Agent #%s 专属 IM 凭证解密失败，槽位未启动", agent_id)
+                return None
+        bot_id = str(cfg.get("wecom_bot_id") or "").strip()
+        secret = str(cfg.get("wecom_secret") or "").strip()
+        if not bot_id or not secret:
+            return None
+        return self._new_wecom_channel(bot_id, secret, agent_id=agent_id)
+
+    def _new_wecom_channel(self, bot_id: str, secret: str, *, agent_id: int | None) -> Channel:
+        """构造 WecomChannel：重连/心跳参数统一从 SystemSetting 读，on_lifecycle 绑定槽位。
+
+        默认 max_reconnect=-1（无限重连，M6：避免渠道连续失败后静默死亡）。
+        设置读取失败（如 DB 暂不可用）时退回默认值——建连参数不应让渠道起不来。
+        """
+        from bycall.gateway.wecom import WecomChannel
+        from bycall.governance.settings_store import get_setting_int
+
+        def _int(key: str, default: int, env_var: str) -> int:
+            try:
+                return get_setting_int(key, default=default, env_var=env_var)
+            except Exception:
+                return default
+
+        max_reconnect = _int(
             "im.wecom_max_reconnect_attempts",
-            default=-1,
-            env_var="BYCALL_IM_WECOM_MAX_RECONNECT_ATTEMPTS",
+            -1,
+            "BYCALL_IM_WECOM_MAX_RECONNECT_ATTEMPTS",
         )
-        reconnect_interval = get_setting_int(
+        reconnect_interval = _int(
             "im.wecom_reconnect_interval_ms",
-            default=1000,
-            env_var="BYCALL_IM_WECOM_RECONNECT_INTERVAL_MS",
+            1000,
+            "BYCALL_IM_WECOM_RECONNECT_INTERVAL_MS",
         )
-        heartbeat_interval = get_setting_int(
+        heartbeat_interval = _int(
             "im.wecom_heartbeat_interval_ms",
-            default=30000,
-            env_var="BYCALL_IM_WECOM_HEARTBEAT_INTERVAL_MS",
+            30000,
+            "BYCALL_IM_WECOM_HEARTBEAT_INTERVAL_MS",
         )
-        return (
-            WecomChannel(
-                bot_id=bot_id,
-                secret=bot_secret,
-                max_reconnect_attempts=max_reconnect,
-                reconnect_interval_ms=reconnect_interval,
-                heartbeat_interval_ms=heartbeat_interval,
-                on_lifecycle=self._on_lifecycle,
-            ),
-            "",
+        key = GLOBAL_SLOT_KEY if agent_id is None else agent_slot_key(agent_id)
+        return WecomChannel(
+            bot_id=bot_id,
+            secret=secret,
+            max_reconnect_attempts=max_reconnect,
+            reconnect_interval_ms=reconnect_interval,
+            heartbeat_interval_ms=heartbeat_interval,
+            on_lifecycle=lambda event, **kw: self._on_lifecycle(key, event, **kw),
+            agent_id=agent_id,
         )
 
-    def _start_thread(self, channel: Channel) -> None:
-        """在独立 daemon 线程跑渠道的 asyncio 事件循环。"""
+    def _start_slot_locked(self, key: str, channel: Channel, *, agent_id: int | None) -> None:
+        """在独立 daemon 线程跑该槽位渠道的 asyncio 事件循环（调用方持锁）。"""
         from bycall.agent.im_handler import handle_im_message
+
+        slot = _ChannelSlot(key, channel, agent_id, bot_id=getattr(channel, "_bot_id", "?"))
 
         def _run_loop() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            self._loop = loop
+            slot.loop = loop
             try:
                 loop.run_until_complete(channel.start(handle_im_message))
                 loop.run_forever()
             except Exception:
-                logger.exception("IM 渠道事件循环异常")
+                logger.exception("IM 渠道事件循环异常 slot=%s", key)
 
-        t = threading.Thread(target=_run_loop, name="bycall-im", daemon=True)
-        self._thread = t
+        t = threading.Thread(target=_run_loop, name=f"bycall-im-{key}", daemon=True)
+        slot.thread = t
+        self._slots[key] = slot
         t.start()
-        bot_id_hint = getattr(channel, "_bot_id", "?")
-        logger.info("IM 渠道线程已启动 (bot_id=%s)", bot_id_hint)
+        logger.info("IM 渠道线程已启动 (slot=%s bot_id=%s)", key, slot.bot_id)
 
-    def _stop_locked(self) -> None:
-        """停止当前渠道（调用方持锁）。
+    def _stop_slot_locked(self, key: str) -> None:
+        """停止指定槽位（调用方持锁）。
+
+        先把槽位从注册表摘除（teardown 期间的残留生命周期事件变为 no-op），再断开。
 
         关键：必须在 IM 事件循环线程断开连接。本方法在 admin/FastAPI 工作线程被调用
         （无运行中的事件循环），而 SDK 的 ``disconnect()`` 内部用 ``asyncio.ensure_future``
@@ -245,30 +406,22 @@ class ChannelManager:
         """
         import contextlib
 
-        channel = self._channel
-        loop = self._loop
+        slot = self._slots.pop(key, None)
+        if slot is None:
+            return
+        channel, loop = slot.channel, slot.loop
         # 1. 在 IM 事件循环线程断开连接（stop_async 内部调 SDK disconnect，此时 loop 在运行）。
         if channel is not None and loop is not None and loop.is_running():
             try:
                 fut = asyncio.run_coroutine_threadsafe(channel.stop_async(), loop)
                 fut.result(timeout=10)
             except Exception:
-                logger.exception("IM 渠道断开异常（stop_async）")
-        self._channel = None
+                logger.exception("IM 渠道断开异常（stop_async，slot=%s）", key)
         # 2. 停事件循环（此时连接已真正关闭，无僵尸连接残留）。
         if loop is not None and loop.is_running():
             with contextlib.suppress(Exception):
                 loop.call_soon_threadsafe(loop.stop)
-        self._loop = None
-        self._thread = None
-        # 复位生命周期状态（停止后连接不可用）。
-        self._state = {
-            "is_connected": False,
-            "last_event": None,
-            "reconnect_attempts": 0,
-            "last_error": "",
-        }
-        logger.info("IM 渠道已停止（准备重载或关闭）")
+        logger.info("IM 槽位已停止（slot=%s）", key)
 
 
 # ---- 单例 ----
