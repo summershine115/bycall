@@ -285,6 +285,8 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 bot_id 全局唯一校验，im_config 变更/启停/删除自动重载槽位；`im/status` 返回连接列表。
 ③ 管理面板 IA 重组：导航按"配置/运行"重分组，数字员工改列表+详情页分区编辑，
 Dashboard KPI 修复，对话测试页补数字员工选择器（试点必需，非视觉打磨）。
+（后续演进：面板二次重组为数字员工 Hub——渠道接入页与装配资产页并入 `/agents` 子页，
+见 ADR-0012 修订记录 2026-09-02。）
 **Acceptance**：
 - [x] 配置了专属 Bot 的实例：企微私聊消息路由到该实例（`Conversation.agent_id` 落库），
   同一用户与两个 Bot 对话产生两条独立会话

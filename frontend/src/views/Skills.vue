@@ -1,15 +1,15 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="Skill 管理"
-      description="Skill 是 admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt。"
-    >
-      <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
-      <el-button @click="onExportClick" :loading="exporting">
-        {{ selectedCount > 0 ? `导出选中 (${selectedCount})` : '导出全部' }}
-      </el-button>
-      <el-button @click="onImportClick" :loading="importing">导入</el-button>
-    </PageHeader>
+    <div class="page-head">
+      <p class="bc-muted bc-text-sm">Skill 是 admin 管控的领域知识文档（Markdown），按角色绑定注入 system prompt。</p>
+      <div class="page-head__actions">
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建技能</el-button>
+        <el-button @click="onExportClick" :loading="exporting">
+          {{ selectedCount > 0 ? `导出选中 (${selectedCount})` : '导出全部' }}
+        </el-button>
+        <el-button @click="onImportClick" :loading="importing">导入</el-button>
+      </div>
+    </div>
     <!-- 文件选择 input 必须放在按钮外：嵌在 el-button 内时 programmatic click
          会冒泡回按钮自身再次触发 onImportClick，同步递归直至栈溢出 -->
     <input ref="importInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
@@ -154,7 +154,6 @@ import { Plus, Search } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime } from '../utils/format'
 import { useCrud } from '../composables/useCrud'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -352,6 +351,20 @@ onMounted(load)
 </script>
 
 <style scoped>
+/* ============ 子页顶部操作条（Hub 子页：说明 + 按钮一行） ============ */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
+  margin-bottom: var(--bc-space-4);
+}
+.page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-2);
+  flex-shrink: 0;
+}
 /* ============ 筛选栏（设计稿：chips + 搜索同栏） ============ */
 .filterbar {
   display: flex;

@@ -1,12 +1,5 @@
 <template>
   <div class="bc-page">
-    <PageHeader
-      title="渠道接入"
-      description="IM Bot 连接的唯一管理入口：全局默认 Bot 兜底 + 各数字员工专属 Bot；保存即热重连，无需重启服务。"
-    >
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="loadAll" />
-    </PageHeader>
-
     <ContentLoader v-if="loading" :rows="5" />
 
     <template v-else>
@@ -16,10 +9,12 @@
           <div>
             <h3>连接总览</h3>
             <p class="bc-muted bc-text-sm">
+              IM Bot 连接的集中视图：全局默认 Bot 兜底 + 各数字员工专属 Bot，保存即热重连、无需重启服务。
               每个数字员工可绑定一个专属企微 Bot（在数字员工详情「IM 渠道」区配置）；
               员工私聊哪个 Bot，就进入哪个数字员工的独立会话。
             </p>
           </div>
+          <el-button :icon="Refresh" circle aria-label="刷新" @click="loadAll" />
         </div>
         <el-table :data="connections" style="width: 100%">
           <el-table-column label="作用域" width="130">
@@ -132,7 +127,6 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
-import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -243,6 +237,10 @@ onMounted(() => loadAll().catch(() => {}))  // 失败已由拦截器 toast
 
 <style scoped>
 .conn-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--bc-space-4);
   padding: var(--bc-space-5) var(--bc-space-6) var(--bc-space-4);
 }
 .conn-head h3 {

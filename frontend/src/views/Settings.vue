@@ -2,7 +2,7 @@
   <div class="bc-page">
     <PageHeader
       title="运行时设置"
-      description="文档解析引擎等运行时配置；保存即时生效，无需重启服务。IM 渠道凭证已迁至「渠道接入」页。"
+      description="文档解析引擎等运行时配置；保存即时生效，无需重启服务。IM 渠道凭证在数字员工页「渠道接入」标签页维护。"
     >
       <el-button :loading="loading" @click="load">重置</el-button>
       <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>

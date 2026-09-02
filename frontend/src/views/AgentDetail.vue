@@ -175,7 +175,7 @@
             </el-col>
           </el-row>
           <div class="bc-hint">
-            保存将整体替换该实例的专属凭证并自动重连；修改时需同时填写 bot_id 与 secret。全局默认 Bot 在「渠道接入」页维护。
+            保存将整体替换该实例的专属凭证并自动重连；修改时需同时填写 bot_id 与 secret。全局默认 Bot 在数字员工页「渠道接入」标签页维护。
           </div>
         </el-form>
         <div class="section__foot">

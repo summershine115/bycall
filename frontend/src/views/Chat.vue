@@ -258,6 +258,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus,
@@ -301,10 +302,19 @@ const agents = ref([])
 const selectedAgentId = ref(null)
 const enabledAgents = computed(() => agents.value.filter((a) => a.is_enabled))
 
+const route = useRoute()
+
 onMounted(async () => {
-  // 进入即恢复最近一次会话（无会话则停留在新会话模式）。
   const list = await loadConversations()
-  if (list.length) await selectConversation(list[0].id)
+  // 实例行内「对话」入口带 ?agent_id=：意图明确是与该实例开新对话，
+  // 跳过「恢复最近会话」（恢复会覆盖实例选择）。
+  const presetAgentId = Number(route.query.agent_id)
+  if (Number.isInteger(presetAgentId) && presetAgentId > 0) {
+    selectedAgentId.value = presetAgentId
+  } else if (list.length) {
+    // 进入即恢复最近一次会话（无会话则停留在新会话模式）。
+    await selectConversation(list[0].id)
+  }
   admin.listAgents().then((all) => (agents.value = all)).catch(() => {})
 })
 
