@@ -21,10 +21,18 @@ function resolvedMode() {
 
 function apply() {
   const el = document.documentElement
+  // 切换主题时临时禁用过渡，避免整表/按钮变量渐变导致的闪烁
+  el.classList.add('no-theme-transition')
   el.dataset.theme = 'mono'
   el.dataset.mode = resolvedMode()
   // 联动 EP 暗色基座（dark/css-vars.css 以 html.dark 作用域生效）
   el.classList.toggle('dark', resolvedMode() === 'dark')
+  // 下两帧后恢复过渡（首帧已完成变量切换，次帧恢复动画）
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      el.classList.remove('no-theme-transition')
+    })
+  })
 }
 
 const onSystemChange = () => {

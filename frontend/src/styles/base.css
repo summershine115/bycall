@@ -168,6 +168,14 @@ pre,
   font-weight: var(--bc-weight-medium);
 }
 
+/* ============ 主题切换防闪烁：切换瞬间禁用全站过渡 ============ */
+html.no-theme-transition *,
+html.no-theme-transition *::before,
+html.no-theme-transition *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
 /* ============ 路由切换进度条（见 router.js beforeEach/afterEach）============ */
 .route-progress {
   position: fixed;
