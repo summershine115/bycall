@@ -35,21 +35,57 @@ _I_SEARCH = "mcp__demo-inventory__search_parts"
 _I_STOCK = "mcp__demo-inventory__get_part_stock"
 _I_RESERVE = "mcp__demo-inventory__reserve_part"
 
+# ---- 平台级通用 Skill 占位（去行业化，演示 Skill 按角色分发）----
+# RAG 占位说明：知识库文档待用户后续提供，本任务仅用 Skill 演示领域知识注入。
+REFERENCE_SKILLS: list[dict] = [
+    {
+        "name": "platform-record-guide",
+        "description": "通用记录操作指引（平台级示例 Skill）",
+        "content": (
+            "# 通用记录操作指引\n"
+            "## 何时使用工具\n"
+            "- 查询记录：`query_ticket` / `list_tickets` / `search_parts` / `get_part_stock`\n"
+            "- 创建记录：`create_ticket`（需标题，缺参时追问）\n"
+            "## 参数规范\n"
+            "- `title` 不能为空，`priority` 可选 low/normal/high/urgent\n"
+            "- 查询支持按 ID 精确查或关键词模糊搜\n"
+            "## 约束\n"
+            "- 只使用已授权工具，不要编造不存在的工具或记录\n"
+        ),
+        "disclosure": "always",
+    },
+    {
+        "name": "platform-risk-note",
+        "description": "高风险操作需审批说明（平台级示例 Skill）",
+        "content": (
+            "# 高风险操作需审批说明\n"
+            "- 标记 `destructiveHint` 的工具（如 `close_ticket` / `reserve_part`）为高危操作，\n"
+            "  需经人工审批后方可执行；未审批前回复“已提交审批”并说明原因。\n"
+            "- 审批通过后系统会主动推送结果给发起人；授权分三档 once/session/always。\n"
+        ),
+        "disclosure": "always",
+    },
+]
+
 # ---- 示例角色：能力差异即治理演示（guest 看不到任何工具）----
+# 平台去行业化：角色名保留 technician/supervisor/guest 以兼容既有 demo 账号，
+# 但描述与 Skill 绑定改为平台通用话术，不含行业词汇。
 REFERENCE_ROLES: list[dict] = [
     {
         "name": "technician",
-        "description": "示例：一线工程师——工单读/建 + 备件查询，无高危操作",
+        "description": "示例：一线执行者——记录查询/创建 + 物料查询，无高危操作",
         "allowed_tools": [_T_CREATE, _T_QUERY, _T_LIST, _I_SEARCH, _I_STOCK],
         "knowledge_scope_tags": ["public", "ops"],
         "level": 1,
+        "skills": ["platform-record-guide"],
     },
     {
         "name": "supervisor",
-        "description": "示例：值班主管——一线全部能力 + 高危操作（关单/预留备件）",
+        "description": "示例：值班主管——一线全部能力 + 高危操作（关单/预留）",
         "allowed_tools": [_T_CREATE, _T_QUERY, _T_LIST, _T_CLOSE, _I_SEARCH, _I_STOCK, _I_RESERVE],
         "knowledge_scope_tags": ["public", "ops"],
         "level": 2,
+        "skills": ["platform-record-guide", "platform-risk-note"],
     },
     {
         "name": "guest",
@@ -57,6 +93,7 @@ REFERENCE_ROLES: list[dict] = [
         "allowed_tools": [],
         "knowledge_scope_tags": ["public"],
         "level": 0,
+        "skills": [],
     },
 ]
 
@@ -99,9 +136,30 @@ REFERENCE_MCP_SERVERS: list[dict] = [
 
 def seed_reference(session: Session) -> list[str]:
     """把参考场景灌入 DB（幂等）。返回人读的操作日志。"""
-    from bycall.governance.models import MCPServer, Role, RoleConfig, User
+    from bycall.governance.models import MCPServer, Role, RoleConfig, Skill, User
 
     log: list[str] = []
+
+    # 0. 平台级 Skill 占位（去行业化）：存在则刷新内容，幂等。
+    for spec in REFERENCE_SKILLS:
+        row = session.exec(Skill.select_by_name(spec["name"])).first()
+        if row is None:
+            session.add(
+                Skill(
+                    name=spec["name"],
+                    description=spec["description"],
+                    content=spec["content"],
+                    disclosure=spec["disclosure"],
+                    is_enabled=True,
+                )
+            )
+            log.append(f"+ Skill {spec['name']}")
+        else:
+            row.description = spec["description"]
+            row.content = spec["content"]
+            row.disclosure = spec["disclosure"]
+            row.is_enabled = True
+            log.append(f"~ Skill {spec['name']}（刷新内容）")
 
     # 1. 角色：存在则刷新 config（连接器工具名变更后重跑即同步），新建则插入。
     for spec in REFERENCE_ROLES:
@@ -110,6 +168,7 @@ def seed_reference(session: Session) -> list[str]:
             allowed_tools=list(spec["allowed_tools"]),
             knowledge_scope_tags=list(spec["knowledge_scope_tags"]),
             level=spec["level"],
+            skills=list(spec.get("skills", [])),
         )
         if role is None:
             session.add(Role(name=spec["name"], description=spec["description"], config=config))

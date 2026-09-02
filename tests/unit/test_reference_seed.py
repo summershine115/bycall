@@ -58,7 +58,8 @@ def test_seed_idempotent_and_contents(session):
     # 幂等：第二次执行角色/MCP 刷新（~），账号跳过（=），不产生重复。
     log2 = seed.seed_reference(session)
     assert sum(1 for line in log2 if line.startswith("+")) == 0
-    assert sum(1 for line in log1 if line.startswith("+")) == 8  # 3 角色 + 3 账号 + 2 server
+    # 3 角色 + 3 账号 + 2 server + 2 平台级 Skill（去行业化）
+    assert sum(1 for line in log1 if line.startswith("+")) == 10
 
     from sqlmodel import select
 
@@ -66,15 +67,25 @@ def test_seed_idempotent_and_contents(session):
     # 默认 member + 3 个示例角色。
     assert {"member", "technician", "supervisor", "guest"} <= set(roles)
 
+    # 平台级 Skill 占位已灌入
+    from bycall.governance.models import Skill
+
+    skills = {s.name: s for s in session.exec(select(Skill)).all()}
+    assert "platform-record-guide" in skills
+    assert "platform-risk-note" in skills
+
     guest = roles["guest"].config
     assert guest.allowed_tools == []  # 访客：LLM 根本看不到工具
+    assert guest.skills == []
     tech = roles["technician"].config
     assert "mcp__demo-ticket__close_ticket" not in tech.allowed_tools
     assert "mcp__demo-inventory__search_parts" in tech.allowed_tools
+    assert tech.skills == ["platform-record-guide"]
     lead = roles["supervisor"].config
     assert set(tech.allowed_tools) < set(lead.allowed_tools)
     assert "mcp__demo-ticket__close_ticket" in lead.allowed_tools
     assert "mcp__demo-inventory__reserve_part" in lead.allowed_tools
+    assert set(lead.skills) == {"platform-record-guide", "platform-risk-note"}
 
     # demo 账号：角色映射正确。
     users = {u.name: u for u in session.exec(select(User)).all()}

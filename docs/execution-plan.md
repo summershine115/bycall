@@ -249,13 +249,22 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 **Verify**：`make seed-reference` + `make test-unit`（reference 用例）。**Dependencies**：阶段 1
 出口门（已达标）。**Files**：`examples/connectors/`、`scripts/seed_reference.py`、Makefile。**Scope**：M。
 
-#### T3.2 三条端到端参考流程
-**Description**：故障诊断 / 备件查询并建工单 / 高风险操作审批回推（**参考场景**，采用者按
-ADR-0009 替换为自己的流程；不再绑定具体行业）。
+#### T3.2 三条端到端平台级参考流程（去行业化，2026-09-02 重定义）
+**Description**：**平台场景不做垂直行业应用**（2026-09-02 拍板），演示**治理脊柱**而非行业逻辑。
+基于 T3.1 通用记录系统（`demo-ticket`/`demo-inventory`，仅为示例数据结构，采用者可替换）串联三条
+平台级流程——均**去行业化命名**，RAG 部分留占位（待用户提供文档后再灌入验证）：
+1) **查询-创建闭环**（通用工具链）：`search_parts`/`list_tickets` → `create_ticket`，演示 `allowed_tools`
+   白名单按角色过滤（`technician` 可查可建、`guest` 看不到工具）+ 多轮参数补全。
+2) **高风险操作 HITL 回推**（审批门）：`reserve_part`/`close_ticket`（`destructiveHint`）→ 审批单
+   生成 → 控制面批准（含 once/session/always 三档）→ IM 主动推送结果回发起员工，演示纵深防御
+   （网关门 + 连接器侧 `bycall_role` 复核）。
+3) **多轮上下文与能力边界感知**（会话隔离 + Runtime Context）：同问不同角色答不同（能力披露）、
+   同用户多轮上下文连续、跨用户/跨会话隔离；预留 RAG 引用占位（知识库为空时仅验证 budget/去重管线不报错）。
 **Acceptance**：
-- [ ] 每条流程 IM 里端到端走通（含 RAG + 工具 + 推送）
-- [ ] 复用 T2.2 权限用例对参考场景配置做安全回归
-**Dependencies**：T3.1。**Files**：流程配置包（角色+提示词+Skill+知识库结构+连接器）。**Scope**：L。
+- [ ] 三条流程在 **IM 单聊**（企微，可由用户参与测试）与 `api/dataplane` REST 两路端到端走通（含工具调用 + 审批 + 推送；RAG 引用待文档就绪后补充，不阻塞本任务）
+- [ ] 复用 T2.2 权限用例对参考场景配置做安全回归（越权召回=0、工具越权被拦、审批绕过被拦）
+**Dependencies**：T3.1。**Files**：流程配置包（角色+提示词+Skill+知识库结构+连接器）、
+`scripts/seed_reference.py`（通用占位数据）、`docs/specs/t3.2-platform-flows.md`（流程规格）、集成测试/演示脚本。**Scope**：L。
 
 #### T3.3 一条高风险 HITL 审批链 —— ✅ 已完成（2026-08-21，ADR-0011）
 **Description**：停机/参数修改等操作必须人审，全程可追溯；批准时可按档位授权
@@ -268,11 +277,11 @@ ADR-0009 替换为自己的流程；不再绑定具体行业）。
 `tools/approval.py`（短路/台账）、`admin/api.py`（grants 端点）、
 `views/Approvals.vue`（档位 + 授权管理）。**Scope**：M。
 
-#### T3.4 业务效果看板
-**Description**：首修率 / 故障处理时间 / 工单成功率 / 人工接管率。
+#### T3.4 业务效果看板（后置，待 T3.2 与试点数据）
+**Description**：首修率 / 故障处理时间 / 工单成功率 / 人工接管率。**本 worktree 不做**——待 T3.2 平台流程跑通且试点/用户文档就绪后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。
 **Acceptance**：
-- [ ] 基线 vs 使用后数据对比
-- [ ] 复用 T2.5 指标，不另造埋点
+- [ ] 基线 vs 使用后数据对比（需真实或模拟业务数据）
+- [ ] 复用 T2.5 指标
 **Dependencies**：T3.2、T2.5。**Files**：前端看板。**Scope**：M。
 
 **阶段 3 出口门**：拿到真实数据——**未授权召回=0、引用覆盖率、工具参数正确率、任务成功率、人工接管率**。

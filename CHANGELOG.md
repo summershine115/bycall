@@ -82,6 +82,7 @@
 
 
 ### 新增
+- 平台级参考流程（阶段 3 · T3.2，去行业化 2026-09-02）：基于 T3.1 通用记录系统（demo-ticket/demo-inventory）串联三条**平台级去行业化**端到端流程——**查询-创建闭环**（`allowed_tools` 按角色过滤，`guest` 0 工具/`technician` 5 无高危/`supervisor` 7 含高危）、**高风险 HITL 回推**（`destructiveHint` → 审批单 → 三档授权 → IM 推送，连接器侧 `bycall_role` 二次复核）、**多轮上下文与能力边界感知**（会话/跨用户隔离 + Runtime Context 披露，空 RAG 不崩）。新增平台级 Skill 占位2个（`platform-record-guide`/`platform-risk-note` 按角色分发，`make seed-reference` 幂等灌入）、集成测试 `tests/integration/test_t32_platform_flows.py` 8 例与手工演示脚本 `evals/demo_t3.2.md`（IM 单聊 + REST 两路，RAG 真实文档待用户提供后补）。`docs/execution-plan.md#T3.2` 与 `docs/specs/t3.2-platform-flows.md` 同步重定义为平台场景。
 - 审批授权三档（阶段 3 · T3.3，ADR-0011）：管理员批准审批时可选授权档位——**仅本次**（默认，
   既有语义）/ **本会话免审**（绑定发起会话，跨会话失效）/ **永久免审**（可随时撤销）。命中授权
   的破坏性工具调用当轮直接执行（仍经统一脱敏 + 权限矩阵约束，**只跳过人审不跳过权限**），并照常

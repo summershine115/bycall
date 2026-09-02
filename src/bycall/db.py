@@ -142,7 +142,9 @@ def _ensure_schema_compatibility() -> None:
         # T3.3：补 grant_id 列（授权免审执行时记录命中的 ApprovalGrant.id，可追溯）
         if "grant_id" not in columns:
             with engine.begin() as connection:
-                connection.execute(text('ALTER TABLE approvalrequest ADD COLUMN "grant_id" INTEGER'))
+                connection.execute(
+                    text('ALTER TABLE approvalrequest ADD COLUMN "grant_id" INTEGER')
+                )
 
     # skill: 补 disclosure 列（渐进式披露：always / on_demand）
     if "skill" in inspector.get_table_names():
