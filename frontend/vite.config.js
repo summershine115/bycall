@@ -20,8 +20,10 @@ export default defineConfig({
     // 导致浏览器走 127.0.0.1 时连接被拒（页面"打不开"）。
     host: true,
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: false },
-      '/chat': { target: 'http://localhost:8000', changeOrigin: false },
+      // uvicorn 只绑 IPv4 127.0.0.1:8000；目标显式写 127.0.0.1，
+      // 不依赖 localhost 的解析顺序（Node/macOS 下 ::1 与 127.0.0.1 顺序不稳定）。
+      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: false },
+      '/chat': { target: 'http://127.0.0.1:8000', changeOrigin: false },
     },
   },
   build: {

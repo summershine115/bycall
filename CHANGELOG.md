@@ -25,7 +25,7 @@
 
 ### 修复
 
-- 前端 dev server「页面打不开」：Vite 默认 `server.host: 'localhost'` 在 Node ≥17 下被解析为仅 IPv6 `::1`，浏览器经 `127.0.0.1` 访问时连接被拒。`vite.config.js` 显式 `host: true` 双栈监听（127.0.0.1 + ::1 均可达）。
+- 前端 dev server「页面打不开」两处修复：① Vite 默认 `server.host: 'localhost'` 在 Node ≥17 下被解析为仅 IPv6 `::1`，浏览器经 `127.0.0.1` 访问时连接被拒——`server.host` 显式 `true` 双栈监听；② dev 代理目标由 `localhost:8000` 改为显式 `127.0.0.1:8000`，与 uvicorn 的 IPv4 绑定保持一致，不再依赖 localhost 解析顺序。另：修改 `vite.config.js` 后 vite 仅做进程内原地重启，实测可能进入半可用状态（静态模块正常但 `/@vite/client` 与代理请求永久挂起，页面因 module 按序执行阻塞而全白），改配置后请完整重启 dev server。
 - 仪表盘「数字员工」KPI 此前实际统计的是角色数，改为真实实例数并附专属 Bot 计数；移除无引用的死组件 `StatCard`；原数字员工表单「清空企微凭证字段无法清除已存配置」的缺陷随详情页「清除专属 Bot」按钮（`im_config: {}` 显式清空语义）一并消除。
 - 全站前端缺陷批量修复（静态审查发现）。功能恢复类：
   Skill 导入按钮的隐藏 file input 嵌在按钮内导致点击同步递归栈溢出（导入完全不可用）；
