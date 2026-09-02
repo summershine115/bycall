@@ -20,6 +20,8 @@ const routes = [
       { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
       { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
       { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
+      // 渠道接入页（ADR-0012）：侧边栏与标题映射均已存在，此处补路由注册
+      { path: 'channels', name: 'channels', component: () => import('./views/Channels.vue') },
       { path: 'approvals', name: 'approvals', component: () => import('./views/Approvals.vue') },
       { path: 'tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
