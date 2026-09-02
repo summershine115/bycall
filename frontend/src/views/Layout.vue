@@ -115,9 +115,9 @@ import { auth } from '../api'
 import { useTheme } from '../composables/useTheme'
 import ModeToggle from '../components/ModeToggle.vue'
 import {
-  ChatDotRound, ChatLineRound, Collection, Connection, Cpu, DataLine,
-  Document, DocumentChecked, Files, Key, List, MagicStick, RefreshLeft,
-  Setting, TrendCharts, User,
+  ArrowDown, ArrowRight, ChatDotRound, ChatLineRound, Collection, Connection, Cpu,
+  DataLine, Document, DocumentChecked, Expand, Files, Fold, Key, List, MagicStick,
+  RefreshLeft, Setting, SwitchButton, TrendCharts, User,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -205,7 +205,8 @@ const envLabel = import.meta.env.DEV ? '开发环境' : '生产环境'
 
 async function onUserCommand(cmd) {
   if (cmd === 'logout') {
-    await auth.logout()
+    // 注销失败（如会话已过期）也要回登录页，避免卡在无凭证的控制台里
+    await auth.logout().catch(() => {})
     router.push('/login')
   }
 }

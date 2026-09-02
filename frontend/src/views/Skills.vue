@@ -8,11 +8,11 @@
       <el-button @click="onExportClick" :loading="exporting">
         {{ selectedCount > 0 ? `导出选中 (${selectedCount})` : '导出全部' }}
       </el-button>
-      <el-button @click="onImportClick" :loading="importing">
-        <input ref="importInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
-        导入
-      </el-button>
+      <el-button @click="onImportClick" :loading="importing">导入</el-button>
     </PageHeader>
+    <!-- 文件选择 input 必须放在按钮外：嵌在 el-button 内时 programmatic click
+         会冒泡回按钮自身再次触发 onImportClick，同步递归直至栈溢出 -->
+    <input ref="importInput" type="file" accept=".zip" style="display:none" @change="onImportFile" />
 
     <ContentLoader v-if="loading" :rows="4" />
 
@@ -236,11 +236,12 @@ function onSelectionChange(rows) {
 // 批量删除
 async function onBatchDelete() {
   const names = selectedNames.value
-  await ElMessageBox.confirm(
+  const ok = await ElMessageBox.confirm(
     `确定批量删除 ${names.length} 个技能？（${names.join('、')}）`,
     '批量删除确认',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
-  )
+  ).catch(() => null)
+  if (!ok) return  // 用户取消
   for (const name of names) {
     await admin.deleteSkill(name)
   }
@@ -310,6 +311,7 @@ async function onSave() {
         name: form.name,
         description: form.description,
         content: form.content,
+        is_enabled: form.is_enabled,
         disclosure: form.disclosure,
       })
     }
@@ -337,9 +339,10 @@ async function onToggle(row, val) {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确定删除技能「${row.name}」？已绑定角色将不再注入它`, '确认', {
+  const ok = await ElMessageBox.confirm(`确定删除技能「${row.name}」？已绑定角色将不再注入它`, '确认', {
     type: 'warning',
-  })
+  }).catch(() => null)
+  if (!ok) return  // 用户取消
   await admin.deleteSkill(row.name)
   ElMessage.success('已删除')
   await load()
