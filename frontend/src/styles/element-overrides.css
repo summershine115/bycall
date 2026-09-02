@@ -82,9 +82,13 @@ body {
   box-shadow: none;
 }
 .el-button--primary.is-plain {
+  --el-button-text-color: var(--bc-primary-7);
+  --el-button-hover-text-color: var(--bc-primary-8);
+  --el-button-active-text-color: var(--bc-primary-8);
   --el-button-bg-color: var(--bc-primary-1);
   --el-button-border-color: var(--bc-primary-3);
   --el-button-hover-bg-color: var(--bc-primary-2);
+  --el-button-active-bg-color: var(--bc-primary-2);
 }
 .el-button:not(.el-button--primary, .is-text, .is-link) {
   --el-button-hover-text-color: var(--bc-primary-7);
