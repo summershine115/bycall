@@ -5,9 +5,8 @@
  * 组件里禁止出现 raw hex 与任意 px；一律引用 var(--bc-*)。
  *
  * 主题机制：
- *   - 两套完整主题：mono（黑白，默认）/ evergreen（深青绿，原主题保留为备选）。
- *   - 每套主题分 light / dark 两种模式。
- *   - 通过 <html data-theme="mono|evergreen" data-mode="light|dark"> 切换；
+ *   - 单一主题 mono（黑白）× light / dark 两种模式。
+ *   - 通过 <html data-mode="light|dark"> 切换（data-theme 保留 mono 兼容）；
  *     属性组合决定生效的变量块，组件无需感知主题差异。
  *   - index.html 内联脚本在首帧前写入属性，杜绝主题闪烁（FOUC）。
  */
@@ -242,144 +241,7 @@
 }
 
 /* ================================================================
- * Evergreen 主题 · 浅色（原设计完整保留为备选）
- * ================================================================ */
-:root[data-theme='evergreen'][data-mode='light'] {
-  color-scheme: light;
-
-  --bc-primary-1: #f0faf7;
-  --bc-primary-2: #d7f0e7;
-  --bc-primary-3: #a8dcc8;
-  --bc-primary-4: #6fc09f;
-  --bc-primary-5: #3aa17e;
-  --bc-primary-6: #0e7a5c;
-  --bc-primary-7: #0b6249;
-  --bc-primary-8: #084c3a;
-  --bc-primary-9: #053629;
-
-  --bc-success: #1a9e6b;
-  --bc-success-bg: #e9f8f1;
-  --bc-success-text: #127a52;
-  --bc-warning: #c77e14;
-  --bc-warning-bg: #fdf3e2;
-  --bc-warning-text: #9c6410;
-  --bc-warning-strong: #7a5209;
-  --bc-warning-border: #f0dcae;
-  --bc-danger: #d4483e;
-  --bc-danger-bg: #fdecea;
-  --bc-danger-text: #b23730;
-  --bc-info: #64748b;
-  --bc-info-bg: #eef2f7;
-  --bc-on-dark-1: #f4faf7;
-
-  --bc-gray-1: #f7f8f7;
-  --bc-gray-2: #f1f3f2;
-  --bc-gray-3: #e6e9e7;
-  --bc-gray-4: #d3d8d5;
-  --bc-gray-5: #a8b0ac;
-  --bc-gray-6: #7d867f;
-  --bc-gray-7: #59625c;
-  --bc-gray-8: #39413c;
-  --bc-gray-9: #212722;
-
-  --bc-bg-page: var(--bc-gray-1);
-  --bc-bg-surface: #fdfdfc;
-  --bc-bg-sunken: var(--bc-gray-2);
-  --bc-border: var(--bc-gray-3);
-  --bc-border-strong: var(--bc-gray-4);
-  --bc-text-1: var(--bc-gray-9);
-  --bc-text-2: var(--bc-gray-7);
-  --bc-text-3: var(--bc-gray-6);
-  --bc-text-4: var(--bc-gray-5);
-
-  /* evergreen 侧栏：保持浅色 + 品牌色点缀 */
-  --bc-sidebar-bg: #fdfdfc;
-  --bc-sidebar-text: var(--bc-gray-7);
-  --bc-sidebar-text-strong: var(--bc-gray-9);
-  --bc-sidebar-hover: var(--bc-gray-2);
-  --bc-sidebar-active: var(--bc-primary-1);
-  --bc-sidebar-border: var(--bc-gray-3);
-
-  --bc-shadow-xs: 0 1px 2px rgba(33, 39, 34, 0.05);
-  --bc-shadow-sm: 0 1px 2px rgba(33, 39, 34, 0.06), 0 2px 8px rgba(33, 39, 34, 0.05);
-  --bc-shadow-md: 0 2px 6px rgba(33, 39, 34, 0.06), 0 8px 24px rgba(33, 39, 34, 0.08);
-  --bc-shadow-lg: 0 4px 12px rgba(33, 39, 34, 0.08), 0 16px 48px rgba(33, 39, 34, 0.12);
-  --bc-shadow-color: rgba(33, 39, 34, 0.05);
-
-  --bc-topbar-bg: rgba(253, 253, 252, 0.72);
-  --bc-overlay-bg: rgba(23, 27, 25, 0.45);
-}
-
-/* ================================================================
- * Evergreen 主题 · 深色
- * ================================================================ */
-:root[data-theme='evergreen'][data-mode='dark'] {
-  color-scheme: dark;
-
-  --bc-primary-1: #0a2820;
-  --bc-primary-2: #0d3a2d;
-  --bc-primary-3: #155c46;
-  --bc-primary-4: #1e7a5e;
-  --bc-primary-5: #3aa17e;
-  --bc-primary-6: #4cb88f;
-  --bc-primary-7: #6fc09f;
-  --bc-primary-8: #a8dcc8;
-  --bc-primary-9: #d7f0e7;
-
-  --bc-success: #2fbd85;
-  --bc-success-bg: #052e16;
-  --bc-success-text: #4ade80;
-  --bc-warning: #e0a542;
-  --bc-warning-bg: #431407;
-  --bc-warning-text: #fbbf24;
-  --bc-warning-strong: #fcd34d;
-  --bc-warning-border: #78350f;
-  --bc-danger: #e5695f;
-  --bc-danger-bg: #450a0a;
-  --bc-danger-text: #f87171;
-  --bc-info: #94a3b8;
-  --bc-info-bg: #1e293b;
-  --bc-on-dark-1: #0a2820;
-
-  --bc-gray-1: #0c100e;
-  --bc-gray-2: #141816;
-  --bc-gray-3: #2c332f;
-  --bc-gray-4: #3d463f;
-  --bc-gray-5: #5f695f;
-  --bc-gray-6: #88918a;
-  --bc-gray-7: #b6bdb7;
-  --bc-gray-8: #d8ddd8;
-  --bc-gray-9: #ecefec;
-
-  --bc-bg-page: #0c100e;
-  --bc-bg-surface: #141816;
-  --bc-bg-sunken: #0f1311;
-  --bc-border: #2c332f;
-  --bc-border-strong: #3d463f;
-  --bc-text-1: var(--bc-gray-9);
-  --bc-text-2: var(--bc-gray-7);
-  --bc-text-3: var(--bc-gray-6);
-  --bc-text-4: var(--bc-gray-5);
-
-  --bc-sidebar-bg: #0f1311;
-  --bc-sidebar-text: var(--bc-gray-6);
-  --bc-sidebar-text-strong: var(--bc-gray-9);
-  --bc-sidebar-hover: var(--bc-gray-2);
-  --bc-sidebar-active: var(--bc-primary-1);
-  --bc-sidebar-border: var(--bc-gray-3);
-
-  --bc-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --bc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3);
-  --bc-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.4);
-  --bc-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.5);
-  --bc-shadow-color: rgba(0, 0, 0, 0.4);
-
-  --bc-topbar-bg: rgba(12, 16, 14, 0.72);
-  --bc-overlay-bg: rgba(0, 0, 0, 0.6);
-}
-
-/* ================================================================
- * Element Plus 变量映射（消费 --bc-*，四套主题自动生效）
+ * Element Plus 变量映射（消费 --bc-*，单主题自动生效）
  * ================================================================ */
 :root {
   --el-color-primary: var(--bc-primary-6);

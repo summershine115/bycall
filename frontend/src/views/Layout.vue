@@ -66,17 +66,6 @@
           <span class="topbar__page">{{ pageTitle }}</span>
         </div>
         <div class="topbar__actions">
-          <!-- 主题切换：mono（黑白）/ evergreen（常绿） -->
-          <button
-            class="topbar__theme"
-            type="button"
-            :aria-label="`切换主题，当前：${theme === 'mono' ? '黑白' : '常绿'}`"
-            :title="theme === 'mono' ? '切换到常绿主题' : '切换到黑白主题'"
-            @click="setTheme(theme === 'mono' ? 'evergreen' : 'mono')"
-          >
-            <span class="topbar__theme-swatch" :class="`topbar__theme-swatch--${theme}`" aria-hidden="true" />
-            <span class="topbar__theme-label">{{ theme === 'mono' ? '黑白' : '常绿' }}</span>
-          </button>
           <!-- 明暗切换：light ⇄ dark（手动切换覆盖 auto 并持久化） -->
           <ModeToggle />
           <span class="topbar__env">{{ envLabel }}</span>
@@ -112,7 +101,6 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
-import { useTheme } from '../composables/useTheme'
 import ModeToggle from '../components/ModeToggle.vue'
 import {
   ArrowDown, ArrowRight, Avatar, ChatDotRound, ChatLineRound, Collection, Connection, Cpu,
@@ -123,7 +111,6 @@ import {
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
-const { theme, setTheme } = useTheme()
 
 // 导航分组：治理 / 知识 / 能力 / 系统 —— 与产品心智模型一致
 const navGroups = [
@@ -221,7 +208,7 @@ async function onUserCommand(cmd) {
   background: var(--bc-bg-page);
 }
 
-/* ============ 侧边栏（主题化：mono 为纯黑锚点，evergreen 为浅色） ============ */
+/* ============ 侧边栏（mono 纯黑锚点） ============ */
 .sidebar {
   width: var(--bc-sidebar-width);
   flex-shrink: 0;
@@ -378,17 +365,6 @@ async function onUserCommand(cmd) {
   justify-content: center;
 }
 
-/* evergreen 主题的侧栏激活态保留品牌色 */
-:root[data-theme='evergreen'] .nav-item--active {
-  color: var(--bc-primary-8);
-}
-:root[data-theme='evergreen'] .nav-item--active .nav-item__icon {
-  color: var(--bc-primary-6);
-}
-:root[data-theme='evergreen'][data-mode='dark'] .nav-item--active {
-  color: var(--bc-primary-6);
-}
-
 /* ============ 顶栏 ============ */
 .layout__main {
   flex: 1;
@@ -467,41 +443,6 @@ async function onUserCommand(cmd) {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-/* 主题切换器 */
-.topbar__theme {
-  display: flex;
-  align-items: center;
-  gap: var(--bc-space-2);
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--bc-text-xs);
-  color: var(--bc-text-3);
-  padding: var(--bc-space-1) var(--bc-space-2);
-  border-radius: var(--bc-radius-md);
-  transition:
-    background var(--bc-duration-fast) var(--bc-ease-out),
-    color var(--bc-duration-fast) var(--bc-ease-out);
-}
-.topbar__theme:hover {
-  background: var(--bc-gray-2);
-  color: var(--bc-text-1);
-}
-.topbar__theme-swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: var(--bc-radius-full);
-  border: 1px solid var(--bc-border-strong);
-  transition: background var(--bc-duration-fast) var(--bc-ease-out);
-}
-.topbar__theme-swatch--mono {
-  background: linear-gradient(135deg, #000 50%, #fff 50%);
-}
-.topbar__theme-swatch--evergreen {
-  background: linear-gradient(135deg, #0e7a5c 50%, #f0faf7 50%);
 }
 
 /* ============ 内容区 ============ */

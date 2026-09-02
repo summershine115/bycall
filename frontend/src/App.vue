@@ -12,7 +12,7 @@ import { onMounted, onBeforeUnmount } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { useTheme } from './composables/useTheme'
 
-// 主题系统（mono 黑白默认 / evergreen 备选，light/dark 模式）
+// 主题系统（mono 黑白，light/dark 模式）
 useTheme()
 
 // 窄屏下表格退化为堆叠行（见 styles/element-overrides.css），
