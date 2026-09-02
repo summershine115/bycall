@@ -16,6 +16,9 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    // 双栈监听（127.0.0.1 + ::1）：默认 'localhost' 在 Node ≥17 会被解析为仅 ::1，
+    // 导致浏览器走 127.0.0.1 时连接被拒（页面"打不开"）。
+    host: true,
     proxy: {
       '/api': { target: 'http://localhost:8000', changeOrigin: false },
       '/chat': { target: 'http://localhost:8000', changeOrigin: false },
