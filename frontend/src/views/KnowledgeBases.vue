@@ -73,7 +73,7 @@
         </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" type="primary" plain @click="goDocuments(row)">管理文档</el-button>
+            <el-button size="small" type="primary" @click="goDocuments(row)">管理文档</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="onDelete(row)">删除</el-button>
           </template>
