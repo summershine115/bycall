@@ -364,6 +364,9 @@ body {
 .el-switch {
   --el-switch-on-color: var(--bc-primary-6);
 }
+html.dark .el-switch {
+  --el-switch-on-color: var(--bc-success);
+}
 .el-checkbox__inner,
 .el-radio__inner {
   border-radius: var(--bc-radius-sm);
