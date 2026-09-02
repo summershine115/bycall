@@ -177,13 +177,16 @@ async def test_options_pass_through_reconnect_and_heartbeat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_lifecycle_events_update_manager_state(monkeypatch):
-    """disconnected/reconnecting/error/authenticated 事件经 on_lifecycle 更新 manager 状态。"""
+    """disconnected/reconnecting/error/authenticated 事件经 on_lifecycle 更新槽位状态。
+
+    ADR-0012 多槽位后状态挂在槽位上：顶层 status() 取全局槽位，``channels`` 逐槽位明细。
+    """
     _patch_wsclient(monkeypatch)
-    from bycall.gateway.manager import ChannelManager
-    from bycall.gateway.wecom import WecomChannel
+    from bycall.gateway.manager import GLOBAL_SLOT_KEY, ChannelManager, _ChannelSlot
 
     mgr = ChannelManager()
-    ch = WecomChannel("b", "s", max_reconnect_attempts=-1, on_lifecycle=mgr._on_lifecycle)
+    ch = mgr._new_wecom_channel("b", "s", agent_id=None)  # on_lifecycle 已绑定全局槽位 key
+    mgr._slots[GLOBAL_SLOT_KEY] = _ChannelSlot(GLOBAL_SLOT_KEY, ch, None, "b")
     await ch.start(_noop_on_message)
     fake = ch._client
 
@@ -208,6 +211,13 @@ async def test_lifecycle_events_update_manager_state(monkeypatch):
     # disconnected → 断开
     await _emit(fake, "disconnected")[0]("peer closed")
     assert mgr.status()["is_connected"] is False
+
+    # channels 明细：全局槽位 scope=global、无 agent_id
+    channels = mgr.status()["channels"]
+    assert len(channels) == 1
+    assert channels[0]["scope"] == "global"
+    assert channels[0]["agent_id"] is None
+    assert channels[0]["bot_id"] == "b"
     ch.stop()
 
 
@@ -505,8 +515,8 @@ async def test_send_card_calls_reply_template_card(monkeypatch):
 # ============ 6. 热重载跨线程断开（回归：切换 IM 渠道后不回复）============
 
 
-def test_stop_locked_disconnects_on_loop_thread_cross_thread():
-    """_stop_locked 必须在 IM 事件循环线程断开连接，绝不在工作线程调同步 stop()。
+def test_stop_slot_disconnects_on_loop_thread_cross_thread():
+    """_stop_slot_locked 必须在 IM 事件循环线程断开连接，绝不在工作线程调同步 stop()。
 
     回归「切换 IM 渠道后 Agent 不回复」：admin/FastAPI 工作线程无运行中的事件循环，
     若跨线程直接调 SDK disconnect（内部 asyncio.ensure_future）会抛 no current event loop，
@@ -517,7 +527,7 @@ def test_stop_locked_disconnects_on_loop_thread_cross_thread():
     import threading
     import time
 
-    from bycall.gateway.manager import ChannelManager
+    from bycall.gateway.manager import GLOBAL_SLOT_KEY, ChannelManager
 
     ran_on = []  # stop_async 实际执行的线程名
     stop_offloop = []  # 若同步 stop 被跨线程调用则记录（应保持空）
@@ -553,21 +563,20 @@ def test_stop_locked_disconnects_on_loop_thread_cross_thread():
 
     mgr = ChannelManager()
     ch = FakeChannel()
-    mgr._channel = ch
-    mgr._start_thread(ch)  # 在独立 daemon 线程起 IM 事件循环
-    mgr._started = True
+    mgr._start_slot_locked(GLOBAL_SLOT_KEY, ch, agent_id=None)  # 独立 daemon 线程起事件循环
 
+    slot = mgr._slots[GLOBAL_SLOT_KEY]
     deadline = time.monotonic() + 2.0
-    while mgr._loop is None or not mgr._loop.is_running():
+    while slot.loop is None or not slot.loop.is_running():
         assert time.monotonic() < deadline, "IM 事件循环未启动"
         time.sleep(0.01)
 
-    # 从无事件循环的工作线程调 _stop_locked（模拟 admin/FastAPI 同步路由线程）
+    # 从无事件循环的工作线程调 _stop_slot_locked（模拟 admin/FastAPI 同步路由线程）
     err: list = []
 
     def caller() -> None:
         try:
-            mgr._stop_locked()
+            mgr._stop_slot_locked(GLOBAL_SLOT_KEY)
         except Exception as e:
             err.append(e)
 
@@ -575,9 +584,9 @@ def test_stop_locked_disconnects_on_loop_thread_cross_thread():
     t.start()
     t.join(timeout=15)
 
-    assert not err, f"_stop_locked 抛异常: {err}"
+    assert not err, f"_stop_slot_locked 抛异常: {err}"
     assert ran_on, "stop_async 未在 IM 事件循环线程执行（连接未真正关闭）"
-    assert ran_on[0] == "bycall-im", f"断开未在 IM loop 线程执行: {ran_on}"
+    assert ran_on[0].startswith("bycall-im-"), f"断开未在 IM loop 线程执行: {ran_on}"
     assert not stop_offloop, "跨线程调用了同步 stop()（会触发 SDK no-current-loop bug）"
     assert ch.is_connected is False
-    assert mgr._loop is None
+    assert GLOBAL_SLOT_KEY not in mgr._slots

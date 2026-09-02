@@ -168,7 +168,7 @@ def test_handle_im_message_same_msgid_executes_once(db: Session):
     """企微重连/重发同一 MsgId → 只执行一次（模拟双投递）。"""
     calls: list[str] = []
 
-    async def fake_run_stream(user_id, question, channel, im_user_id=""):
+    async def fake_run_stream(user_id, question, channel, im_user_id="", agent_id=None):
         calls.append(question)
         yield "", True, _answered_result()
 
@@ -199,7 +199,7 @@ def test_handle_im_message_no_msgid_always_runs(db: Session):
     """无 msg_id（事件回执等）→ 不做幂等，每条都执行。"""
     calls: list = []
 
-    async def fake_run_stream(user_id, question, channel, im_user_id=""):
+    async def fake_run_stream(user_id, question, channel, im_user_id="", agent_id=None):
         calls.append(question)
         yield "", True, _answered_result()
 

@@ -68,12 +68,14 @@ def _build_quarter_card() -> dict:
     }
 
 
-def _persist_quarter_clarification(user_id: int, channel: str, question: str) -> None:
-    """在发卡前原子保存原问题和澄清提示，使点击继续同一会话。"""
+def _persist_quarter_clarification(
+    user_id: int, channel: str, question: str, agent_id: int | None = None
+) -> None:
+    """在发卡前原子保存原问题和澄清提示，使点击继续同一会话（含实例归属）。"""
     from bycall.agent.session_store import get_or_create_conversation, save_message
 
     with session_scope() as session:
-        conversation = get_or_create_conversation(session, user_id, channel)
+        conversation = get_or_create_conversation(session, user_id, channel, agent_id=agent_id)
         save_message(session, conversation.id, "user", question)
         save_message(session, conversation.id, "assistant", _QUARTER_CLARIFICATION_PROMPT)
         session.commit()
@@ -108,10 +110,18 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         logger.info("IM 群聊消息被拒: channel=%s chat_id=%s", msg.channel, msg.chat_id)
         return
 
-    # 1. 身份映射。
+    # 1. 身份映射 + 实例守卫（ADR-0012：per-Agent Bot 路由）。
     with session_scope() as session:
         user = resolve_user_by_im(session, msg.channel, msg.im_user_id)
         user_id = user.id if user is not None else None
+        agent_ok = True
+        if msg.agent_id is not None:
+            from bycall.governance.models import Agent
+
+            agent = session.get(Agent, msg.agent_id)
+            # 实例被删/禁用后连接可能仍有滞留消息：礼貌拒绝，绝不回落默认实例
+            # （否则跨实例串权 + 会话串历史）。
+            agent_ok = agent is not None and agent.is_enabled
 
     if user_id is None:
         await sender.send_text(
@@ -124,6 +134,16 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         )
         return
 
+    if not agent_ok:
+        await sender.send_text("该数字员工已停用或不存在，请联系管理员处理。")
+        logger.info(
+            "IM 消息被拒（实例失效）: channel=%s agent_id=%s im_user_id=%s",
+            msg.channel,
+            msg.agent_id,
+            msg.im_user_id,
+        )
+        return
+
     # 2. 幂等去重（身份映射之后、流式执行之前）：同一条 IM 消息重发只执行一次，
     #    防企微重连/重发导致双回答 / 双 LLM 费用 / 双审计。
     from bycall.agent.idempotency import (
@@ -133,7 +153,11 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
         release_inflight,
     )
 
-    idem_key = make_key(msg.channel, msg.msg_id)
+    # 幂等键带 Bot 维度（ADR-0012）：不同 Bot 的 msg_id 可能撞号，专属 Bot 按
+    # ``{channel}:agent:{id}`` 命名空间区分；全局默认 Bot 沿用 ``{channel}`` 旧格式——
+    # 与存量 IdempotencyRecord 键保持一致（升级后旧 done 记录仍能防重放）。
+    _idem_scope = msg.channel if msg.agent_id is None else f"{msg.channel}:agent:{msg.agent_id}"
+    idem_key = make_key(_idem_scope, msg.msg_id)
     _engaged = False  # 是否已「处理」该消息（落 done 记录防重发；瞬态拒绝如限流不落）
     if idem_key is not None:
         with session_scope() as session:
@@ -159,7 +183,9 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
 
         # M6 P3 非破坏性季度澄清：先落会话历史再发卡，点击后沿正常路径继续同一会话。
         if sender.send_card is not None and _needs_quarter_clarification(msg, text):
-            await asyncio.to_thread(_persist_quarter_clarification, user_id, msg.channel, text)
+            await asyncio.to_thread(
+                _persist_quarter_clarification, user_id, msg.channel, text, msg.agent_id
+            )
             await sender.send_card(_build_quarter_card())
             _engaged = True  # 完整交互：落 done 防重发
             return
@@ -184,7 +210,7 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
 
         try:
             async for chunk_text, is_final, result in _run_stream(
-                user_id, text, msg.channel, im_user_id=msg.im_user_id
+                user_id, text, msg.channel, im_user_id=msg.im_user_id, agent_id=msg.agent_id
             ):
                 if is_final:
                     final_answer = _format_answer(result.decision, result.answer)
@@ -259,7 +285,9 @@ async def handle_im_message(msg: InboundMessage, sender: ReplySender) -> None:
             release_inflight(idem_key)
 
 
-async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str = ""):
+async def _run_stream(
+    user_id: int, question: str, channel: str, im_user_id: str = "", agent_id: int | None = None
+):
     """流式执行治理链路——异步生成器，逐 token yield。
 
     在生成器内打开 session（保证整个流式期间 session 存活），生成器结束时 session
@@ -300,7 +328,8 @@ async def _run_stream(user_id: int, question: str, channel: str, im_user_id: str
             yield f"用户不存在: id={user_id}", True, _no_model_result_static(channel)
             return
 
-        conv = get_or_create_conversation(session, user_id, channel)
+        # ADR-0012：专属 Bot 的消息落到该实例的独立会话（session_key 带 :agent:{id}）。
+        conv = get_or_create_conversation(session, user_id, channel, agent_id=agent_id)
         conv_id = conv.id
 
         resolved = get_chat_model_for_conversation(session, conv)

@@ -16,8 +16,8 @@
         </div>
         <div class="kpi bc-panel">
           <div class="kpi__label">数字员工</div>
-          <div class="kpi__value mono">{{ fmtNum(rolesDisplay) }}</div>
-          <div class="kpi__meta">已授权 {{ kpi.distinctTools }} 项工具</div>
+          <div class="kpi__value mono">{{ fmtNum(agentsDisplay) }}</div>
+          <div class="kpi__meta">{{ agentBotCount }} 个专属 Bot · 已授权 {{ kpi.distinctTools }} 项工具</div>
         </div>
         <div class="kpi bc-panel">
           <div class="kpi__label">今日会话</div>
@@ -220,6 +220,7 @@ const loading = ref(true)
 const loadedAt = ref('—')
 const users = ref([])
 const roles = ref([])
+const agents = ref([]) // 数字员工实例（KPI「数字员工」取此数，而非角色数）
 const conversations = ref([])
 const auditItems = ref([])
 const pendingApprovals = ref([])
@@ -257,7 +258,8 @@ const kpi = computed(() => {
 
 // 数字滚动（尊重 prefers-reduced-motion，组合式函数内置）
 const usersDisplay = useCountUp(computed(() => users.value.length))
-const rolesDisplay = useCountUp(computed(() => roles.value.length))
+const agentsDisplay = useCountUp(computed(() => agents.value.length))
+const agentBotCount = computed(() => agents.value.filter((a) => a.has_im_config).length)
 const todayConvosDisplay = useCountUp(computed(() => kpi.value.todayConvos))
 const pendingDisplay = useCountUp(computed(() => kpi.value.pending))
 
@@ -379,9 +381,10 @@ async function load() {
   loading.value = true
   try {
     const safe = (p, fallback) => p.catch(() => fallback)
-    const [userList, roleList, convList, audit, approvals, kbs] = await Promise.all([
+    const [userList, roleList, agentList, convList, audit, approvals, kbs] = await Promise.all([
       safe(admin.listUsers(), []),
       safe(admin.listRoles(), []),
+      safe(admin.listAgents(), []),
       safe(admin.listConversations(), []),
       safe(admin.listAudit({ page: 1, page_size: AUDIT_SAMPLE }), { items: [] }),
       safe(admin.listApprovals('pending'), []),
@@ -389,6 +392,7 @@ async function load() {
     ])
     users.value = userList
     roles.value = roleList
+    agents.value = agentList
     conversations.value = convList
     auditItems.value = audit.items || []
     auditSampleSize.value = Math.min(auditItems.value.length, AUDIT_SAMPLE)

@@ -2,49 +2,15 @@
   <div class="bc-page">
     <PageHeader
       title="运行时设置"
-      description="IM 渠道凭证与文档解析引擎配置；保存即时生效，无需重启服务。"
+      description="文档解析引擎等运行时配置；保存即时生效，无需重启服务。IM 渠道凭证已迁至「渠道接入」页。"
     >
       <el-button :loading="loading" @click="load">重置</el-button>
-      <el-button :loading="reloading" :icon="Refresh" @click="onReconnect">立即重连</el-button>
       <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
     </PageHeader>
 
     <ContentLoader v-if="loading" :rows="4" />
 
     <template v-else>
-      <!-- IM 渠道：状态与凭证合一 -->
-      <div class="bc-panel im-card">
-        <div class="im-card__head">
-          <div>
-            <h3>IM 渠道 · 企业微信</h3>
-            <p class="bc-muted bc-text-sm">
-              企微智能机器人长连接；LLM / 向量 / 重排模型在「模型管理」页配置
-            </p>
-          </div>
-          <div class="im-card__status">
-            <StatusBadge :type="imEnable ? 'ok' : 'idle'" :text="imEnable ? '已启用' : '未启用'" />
-            <el-switch v-model="imEnable" active-text="启用" inactive-text="停用" />
-          </div>
-        </div>
-        <el-form label-position="top" class="im-card__form">
-          <div class="im-row">
-            <el-form-item label="企微 bot_id">
-              <el-input v-model="form['im.wecom_bot_id']" placeholder="企业微信后台「智能机器人」获取" />
-            </el-form-item>
-            <el-form-item label="企微 bot_secret">
-              <el-input
-                v-model="form['im.wecom_bot_secret']"
-                :placeholder="masks['im.wecom_bot_secret'] || '企微后台获取的 secret'"
-                show-password
-              />
-              <div v-if="masks['im.wecom_bot_secret']" class="bc-hint">
-                当前已设置：{{ masks['im.wecom_bot_secret'] }} —— 不修改则留空保存
-              </div>
-            </el-form-item>
-          </div>
-        </el-form>
-      </div>
-
       <!-- 解析引擎配置（与模型管理同思路：可选引擎 + 参数，DB 优先于 .env） -->
       <div class="bc-panel parse-panel">
         <div class="parse-panel__head">
@@ -223,26 +189,19 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
-import StatusBadge from '../components/StatusBadge.vue'
 
 const loading = ref(true)
 const saving = ref(false)
-const reloading = ref(false)
 const form = reactive({})
 const masks = reactive({})
-const imEnable = ref(false)
 const engines = ref([])
 const markitdownPlugins = ref(false)
 const mineruIsOcr = ref(false)
 const mineruIsCloud = computed(() => form['parse.mineru_mode'] === 'cloud')
 const activeEngine = computed(() => form['parse.engine'] || '')
-// 影响长连接的 IM 字段：任一变化才需要重连（避免未改凭证也每次弹重连）。
-const IM_KEYS = ['im.enable', 'im.wecom_bot_id', 'im.wecom_bot_secret']
-const imSnapshot = reactive({})
 
 async function load() {
   loading.value = true
@@ -259,14 +218,11 @@ async function load() {
         masks[s.key] = ''
       }
     }
-    imEnable.value = form['im.enable'] === 'true'
     markitdownPlugins.value = form['parse.markitdown_enable_plugins'] === 'true'
     // MinerU 模式/OCR 派生状态；旧库无 key 时给默认值（selfhost / 不强制 OCR）。
     if (!form['parse.mineru_mode']) form['parse.mineru_mode'] = 'selfhost'
     if (!form['parse.mineru_model_version']) form['parse.mineru_model_version'] = 'vlm'
     mineruIsOcr.value = form['parse.mineru_is_ocr'] === 'true'
-    // 快照 IM 连接字段：secret 未改时 form 里是空串，与下次空串相等 → 判为未变。
-    IM_KEYS.forEach((k) => { imSnapshot[k] = form[k] ?? '' })
     engines.value = await admin.listParseEngines()
     if (!form['parse.engine']) {
       form['parse.engine'] = engines.value.find((e) => e.is_default)?.name || 'builtin'
@@ -279,37 +235,13 @@ async function load() {
 async function onSave() {
   saving.value = true
   try {
-    form['im.enable'] = imEnable.value ? 'true' : 'false'
     form['parse.markitdown_enable_plugins'] = markitdownPlugins.value ? 'true' : 'false'
     form['parse.mineru_is_ocr'] = mineruIsOcr.value ? 'true' : 'false'
-    const result = await admin.updateSettings(form)
-    // 仅当 IM 连接字段真变化（对比加载快照）才自动重连，不再每次弹窗询问。
-    const imChanged = IM_KEYS.some((k) => (form[k] ?? '') !== (imSnapshot[k] ?? ''))
-    if (imChanged) {
-      const r = await admin.reloadIm()
-      if (r.ok) {
-        ElMessage.success(r.message || 'IM 凭证已更新，已自动重连')
-      } else {
-        ElMessage.warning(r.message || 'IM 重连未成功，请检查凭证或点「立即重连」')
-      }
-    } else {
-      ElMessage.success('已保存')
-    }
+    await admin.updateSettings(form)
+    ElMessage.success('已保存')
     await load()
   } finally {
     saving.value = false
-  }
-}
-
-async function onReconnect() {
-  reloading.value = true
-  try {
-    const r = await admin.reloadIm()
-    ElMessage.success(r.message || 'IM 渠道已重连')
-  } catch {
-    // 失败已由拦截器 toast
-  } finally {
-    reloading.value = false
   }
 }
 
@@ -317,42 +249,8 @@ onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
 </script>
 
 <style scoped>
-.im-card {
-  padding: var(--bc-space-5) var(--bc-space-6);
-}
-.im-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--bc-space-4);
-  padding-bottom: var(--bc-space-4);
-  border-bottom: 1px solid var(--bc-border);
-}
-.im-card__head h3 {
-  margin: 0;
-}
-.im-card__head p {
-  margin: var(--bc-space-1) 0 0;
-  line-height: var(--bc-leading-relaxed);
-}
-.im-card__form {
-  margin-top: var(--bc-space-4);
-}
-.im-card__status {
-  display: flex;
-  align-items: center;
-  gap: var(--bc-space-3);
-  flex-shrink: 0;
-}
-.im-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--bc-space-5);
-  align-items: start;
-}
 /* ---- 解析引擎面板 ---- */
 .parse-panel {
-  margin-top: var(--bc-space-4);
   padding: var(--bc-space-5) var(--bc-space-6);
 }
 .parse-panel__head {
@@ -439,17 +337,10 @@ onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
   grid-template-columns: repeat(3, 1fr);
 }
 @media (max-width: 960px) {
-  .im-row {
-    grid-template-columns: 1fr;
-  }
   .parse-row,
   .parse-row--full,
   .parse-row--3 {
     grid-template-columns: 1fr;
-  }
-  .im-card__head {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }
 </style>

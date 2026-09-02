@@ -18,6 +18,7 @@
 | ADR-0009 | 平台场景无关——不锁定付费行业，以参考场景包支撑试点 | ✅ 已采纳 | 2026-08-15 | `0009-scenario-agnostic-platform.md` |
 | ADR-0010 | 评测与发布门——离线四类评测集 + 灰度发布/一键回滚 | ✅ 已采纳 | 2026-08-15 | `0010-eval-release-gate.md` |
 | ADR-0011 | 审批授权三档（once/session/always）持久化与撤销 | ✅ 已采纳 | 2026-08-21 | `0011-approval-grant-tiers.md` |
+| ADR-0012 | 多 Bot 渠道体系——per-Agent IM 凭证生效与按连接路由 | ✅ 已采纳 | 2026-09-02 | `0012-multi-bot-channels.md` |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
@@ -103,4 +104,5 @@
 | `docs/gaps.md` | 已就绪（阶段 1 全部闭合） | 六条治理缝隙逐条已闭合并勾掉（T1.1–T1.6）；T1.9 为阶段 1 追加项（RAG 预算化/投毒软降级） |
 | `docs/decisions/0010-eval-release-gate.md` | ✅ 已采纳 | 阶段 2 评测与发布系统 ADR（离线用例 / 回放 diff / 发布门 / 灰度回滚 / 五维指标） |
 | `docs/decisions/0011-approval-grant-tiers.md` | ✅ 已采纳 | T3.3 审批授权三档 ADR（once/session/always / 审批门短路 / 台账撤销 / 治理边界） |
+| `docs/decisions/0012-multi-bot-channels.md` | ✅ 已采纳 | T3.5 多 Bot 渠道 ADR（per-Agent IM 凭证生效 / 按连接路由 / 全局默认 Bot 兜底） |
 | `evals/README.md` | 随阶段 2 落地 | 评测 CLI 使用说明（make eval / eval-security / --snapshot / --compare） |

@@ -552,7 +552,15 @@ def _prepare_turn(
 
         agent_obj = session.get(Agent, resolved_agent_id)
         if agent_obj is None:
-            _audit(session, user, channel, question, "denied", f"数字员工不存在: {resolved_agent_id}", "")
+            _audit(
+                session,
+                user,
+                channel,
+                question,
+                "denied",
+                f"数字员工不存在: {resolved_agent_id}",
+                "",
+            )
             return "denied", _result(
                 answer=f"数字员工不存在: {resolved_agent_id}",
                 decision="denied",

@@ -12,6 +12,7 @@ const routes = [
       { path: 'users', name: 'users', component: () => import('./views/Users.vue') },
       { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
       { path: 'agents', name: 'agents', component: () => import('./views/Agents.vue') },
+      { path: 'agents/:id', name: 'agent-detail', component: () => import('./views/AgentDetail.vue'), props: true },
       { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
       { path: 'knowledge', name: 'knowledge', component: () => import('./views/Knowledge.vue') },
       { path: 'knowledge-bases', name: 'knowledge-bases', component: () => import('./views/KnowledgeBases.vue') },

@@ -52,6 +52,9 @@ class InboundMessage:
     # M3：IM 平台消息 ID（企微 body.msgid），用于幂等去重——同一条消息重发只执行一次。
     # 无 ID 的事件（部分回执）留空，幂等层据此放行（无法去重）。
     msg_id: str = ""
+    # ADR-0012：消息来自哪条连接绑定的数字员工实例（per-Agent 专属 Bot 路由用）。
+    # 全局默认 Bot / api 渠道为 None（默认实例，历史兼容）。
+    agent_id: int | None = None
     # M6：已解密的图片/文件附件。文本消息为空列表，多模态消息非空。
     attachments: list[Attachment] = field(default_factory=list)
 

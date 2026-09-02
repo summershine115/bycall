@@ -102,18 +102,19 @@ def _answered_result(
 def _run_stream_capturing(capture: dict, result: AgentResult):
     """构造假 _run_stream：记录传入的 question，吐一帧 final result。"""
 
-    async def gen(user_id, question, channel, im_user_id=""):
+    async def gen(user_id, question, channel, im_user_id="", agent_id=None):
         capture["question"] = question
         capture["user_id"] = user_id
         capture["channel"] = channel
         capture["im_user_id"] = im_user_id
+        capture["agent_id"] = agent_id
         yield "", True, result
 
     return gen
 
 
 def _run_stream_plain(result: AgentResult):
-    async def gen(user_id, question, channel, im_user_id=""):
+    async def gen(user_id, question, channel, im_user_id="", agent_id=None):
         yield "", True, result
 
     return gen
@@ -477,7 +478,7 @@ def test_ambiguous_quarter_sends_card_after_persisting_context():
         mock_scope.return_value.__exit__ = MagicMock(return_value=None)
         asyncio.run(handle_im_message(msg, sender))
 
-    mock_conversation.assert_called_once_with(session, 7, "wecom")
+    mock_conversation.assert_called_once_with(session, 7, "wecom", agent_id=None)
     assert events[0] == ("save", 42, "user", "请分析这个季度的销售情况")
     assert events[1][0:3] == ("save", 42, "assistant")
     assert "季度" in events[1][3]
