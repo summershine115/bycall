@@ -2,7 +2,7 @@
 
 > 状态：演进中（核心章节已随实现落地；§6 M1 验收标准已过时，详见决策登记册 §5） · 更新：2026-08-06 · 关联：[决策登记册](decisions/README.md)
 > 范围：定义 Bycall 作为「企业级数字员工」的产品形态、治理架构、信任模型，并据此调整路线图。
-> 关联：`docs/architecture.md`（技术分层）、`docs/product-strategy.md`（后续方向与行业优先级）、
+> 关联：`docs/architecture.md`（技术分层）、`docs/product-strategy.md`（后续方向）、
 > `docs/decisions/0001-vectorstore-abstraction.md`、`HANDOVER.md`
 
 ---
