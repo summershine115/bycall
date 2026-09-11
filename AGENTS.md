@@ -92,7 +92,16 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
   创建仅需几秒，无额外 clone 开销。
 - 任务完成并验证通过后**主动 commit 并合并回 main**——无需等用户要求。线性分支用
   fast-forward；较大特性可用 `--no-ff` 配 `merge:` 前缀（参考 `merge: M4 Slice C` 风格）
-  保留分支拓扑。合并后在主仓库执行 `git worktree remove ../bycall-<feature-name>`
-  清理 worktree（`git worktree prune` 清理残留）。当前仓库无远程，合并到 main
-  即完成集成；将来若配置 remote，push 默认随合并执行，但高风险改动（DB 迁移 /
-  删数据 / 公开 API 破坏性变更）先停下确认。
+  保留分支拓扑。当前仓库无远程，合并到 main 即完成集成；将来若配置 remote，
+  push 默认随合并执行，但高风险改动（DB 迁移 / 删数据 / 公开 API 破坏性变更）
+  先停下确认。
+- **合并后主动清理分支与 worktree**（无需等用户要求），确保 `git branch --merged main`
+  与 `git worktree list` 只剩 `main`：
+  ```bash
+  # 在主仓库执行：移除 worktree → 删除已合并分支 → 清理残留元数据
+  git worktree remove ../bycall-<feature-name>
+  git branch -d <feature-name>        # -d 保证只在已合并时才删；未合并分支保留并说明原因
+  git worktree prune
+  ```
+  顺带清理历史遗留的已合并分支（`git branch --merged main --format='%(refname:short)' | grep -vx main`）。
+  分支若未合并入 main，**不得**用 `-D` 强删，先确认内容去向。
