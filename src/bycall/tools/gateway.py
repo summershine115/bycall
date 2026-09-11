@@ -130,8 +130,17 @@ def _to_pydantic_schema(name: str, parameters: dict):
     for field_name, field_schema in properties.items():
         # JSON Schema type → Python type 的粗映射；复杂 schema 退化为 Any。
         py_type = _json_type_to_python(field_schema.get("type"))
-        default = ... if field_name in required else None
-        fields[field_name] = (py_type, default)
+        if field_name in required:
+            fields[field_name] = (py_type, ...)
+        else:
+            # 可选参数：默认值取 JSON Schema 的 default（即连接器函数签名的默认值），
+            # LLM 不传该参数时按 default 填充而非 None——否则 None 会传到 MCP 服务端
+            # 被 pydantic 拒绝（string_type）。无 default 声明的才放宽为 Optional。
+            declared_default = field_schema.get("default")
+            if declared_default is None:
+                fields[field_name] = (py_type | None, None)
+            else:
+                fields[field_name] = (py_type, declared_default)
 
     return create_model(f"{name}_ArgsSchema", **fields)
 

@@ -1,6 +1,6 @@
 # Bycall 下一阶段执行计划（Execution Plan）
 
-> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码与 T3.3 审批授权三档、T3.5 多 Bot 渠道已落地）** · 更新：2026-09-11（修订：移除商务/试点组织类内容，保留技术验证主线） · 关联：[决策登记册](decisions/README.md)
+> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码、T3.2 自动化、T3.3 审批授权三档、T3.5 多 Bot 渠道已落地；真机企微演示与真实使用数据待用户）** · 更新：2026-09-11（T3.2 三条平台流程 REST+IM 端到端自动化锁定） · 关联：[决策登记册](decisions/README.md)
 > 本文是 Bycall 当前唯一的**执行级工作方向**。它取代"继续按里程碑 M7+ / S3-S4 堆能力"的默认，
 > 改为"先收口、再评测、后验证"。所有新任务必须对齐本文的阶段与任务编号，未列入冻结清单的新
 > 能力不得动工。里程碑路线图的历史沿革仍见 `product-design.md` §6，本文与其冲突时以本文为准。
@@ -248,7 +248,7 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 **Verify**：`make seed-reference` + `make test-unit`（reference 用例）。**Dependencies**：阶段 1
 出口门（已达标）。**Files**：`examples/connectors/`、`scripts/seed_reference.py`、Makefile。**Scope**：M。
 
-#### T3.2 三条端到端平台级参考流程（去行业化，2026-09-02 重定义）
+#### T3.2 三条端到端平台级参考流程（去行业化，2026-09-02 重定义）——✅ 自动化部分已完成（2026-09-11）
 **Description**：**平台场景不做垂直行业应用**（2026-09-02 拍板），演示**治理脊柱**而非行业逻辑。
 基于 T3.1 通用记录系统（`demo-ticket`/`demo-inventory`，仅为示例数据结构，采用者可替换）串联三条
 平台级流程——均**去行业化命名**，RAG 部分留占位（待用户提供文档后再灌入验证）：
@@ -260,10 +260,15 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 3) **多轮上下文与能力边界感知**（会话隔离 + Runtime Context）：同问不同角色答不同（能力披露）、
    同用户多轮上下文连续、跨用户/跨会话隔离；预留 RAG 引用占位（知识库为空时仅验证 budget/去重管线不报错）。
 **Acceptance**：
-- [ ] 三条流程在 **IM 单聊**（企微，可由用户参与测试）与 `api/dataplane` REST 两路端到端走通（含工具调用 + 审批 + 推送；RAG 引用待文档就绪后补充，不阻塞本任务）
-- [ ] 复用 T2.2 权限用例对参考场景配置做安全回归（越权召回=0、工具越权被拦、审批绕过被拦）
-**Dependencies**：T3.1。**Files**：流程配置包（角色+提示词+Skill+知识库结构+连接器）、
-`scripts/seed_reference.py`（通用占位数据）、`docs/specs/t3.2-platform-flows.md`（流程规格）、集成测试/演示脚本。**Scope**：L。
+- [x] 三条流程在 **IM 单聊**与 `api/dataplane` REST 两路端到端走通（含工具调用 + 审批 + 推送）——
+  自动化锁定：`tests/integration/test_t32_e2e_rest.py`（12 例）+ `test_t32_e2e_im.py`（6 例，
+  mock LLM 脚本 + 真实 demo 连接器内存通道 + fake 渠道推送捕获），`make ci-local` 全绿；
+  真机企微人工演示待用户参与（`evals/demo_t3.2.md` 动线就绪；RAG 引用待文档就绪后补，不阻塞）
+- [x] 复用 T2.2 权限用例视角对参考场景配置做安全回归（越权召回=0——临时 KB 验证召回前 ACL
+  过滤对参考角色 scope/level 生效、工具越权幻觉调用被拦、审批前不执行 + REST 渠道不误推）
+**Dependencies**：T3.1。**Files**：`tests/integration/test_t32_e2e_rest.py`、`test_t32_e2e_im.py`、
+`scripts/seed_reference.py`（IMBinding 同步）、`tools/gateway.py`（可选参数 schema 修复）、
+`evals/demo_t3.2.md`、`docs/specs/t3.2-platform-flows.md`。**Scope**：L。
 
 #### T3.3 一条高风险 HITL 审批链 —— ✅ 已完成（2026-08-21，ADR-0011）
 **Description**：停机/参数修改等操作必须人审，全程可追溯；批准时可按档位授权

@@ -21,7 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONNECTORS_DIR = REPO_ROOT / "examples" / "connectors"
@@ -192,6 +192,29 @@ def seed_reference(session: Session) -> list[str]:
             log.append(f"+ 账号 {spec['name']}（角色 {spec['role']}）")
         else:
             log.append(f"= 账号 {spec['name']} 已存在，跳过")
+
+    # 2b. IMBinding 规范化表同步：审批结果推送（push_approval_result）按此表反查
+    # 企微身份；db.py 只在 init_db 迁移时同步 dict → 表，seed 后不重启就查不到
+    # demo 身份，推送会静默跳过。这里对 demo 账号立即补齐（幂等；被他人占用即报错，
+    # 与 init_db 迁移的冲突检测一致）。
+    for spec in REFERENCE_USERS:
+        user = session.exec(User.select_by_name(spec["name"])).one()
+        for channel, im_user_id in spec["im_bindings"].items():
+            from bycall.governance.models import IMBinding
+
+            existing = session.exec(
+                select(IMBinding).where(
+                    IMBinding.channel == channel, IMBinding.im_user_id == im_user_id
+                )
+            ).first()
+            if existing is not None:
+                if existing.user_id != user.id:
+                    raise RuntimeError(
+                        f"IM 绑定冲突：{channel}:{im_user_id} 已属于 user_id={existing.user_id}"
+                    )
+                continue
+            session.add(IMBinding(user_id=user.id, channel=channel, im_user_id=im_user_id))
+            log.append(f"+ IMBinding {spec['name']} {channel}:{im_user_id}")
 
     # 3. MCP 连接器注册：存在则刷新 command/args（脚本路径可能因仓库迁移变化）。
     for spec in REFERENCE_MCP_SERVERS:

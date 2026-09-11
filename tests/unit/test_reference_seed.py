@@ -55,11 +55,11 @@ def test_seed_idempotent_and_contents(session):
     seed = _load_seed_module()
 
     log1 = seed.seed_reference(session)
-    # 幂等：第二次执行角色/MCP 刷新（~），账号跳过（=），不产生重复。
+    # 幂等：第二次执行角色/MCP 刷新（~），账号跳过（=），IMBinding 已同步不再新增。
     log2 = seed.seed_reference(session)
     assert sum(1 for line in log2 if line.startswith("+")) == 0
-    # 3 角色 + 3 账号 + 2 server + 2 平台级 Skill（去行业化）
-    assert sum(1 for line in log1 if line.startswith("+")) == 10
+    # 3 角色 + 3 账号 + 2 server + 2 平台级 Skill（去行业化）+ 3 IMBinding（推送反查用）
+    assert sum(1 for line in log1 if line.startswith("+")) == 13
 
     from sqlmodel import select
 
@@ -92,6 +92,14 @@ def test_seed_idempotent_and_contents(session):
     assert users["demo-tech"].role == "technician"
     assert users["demo-lead"].role == "supervisor"
     assert users["demo-guest"].role == "guest"
+
+    # IMBinding 规范化表同步（IM 身份映射 + 审批推送反查都查这张表）。
+    from bycall.governance.models import IMBinding
+
+    bindings = {(b.channel, b.im_user_id): b.user_id for b in session.exec(select(IMBinding)).all()}
+    assert bindings[("wecom", "DEMO_TECH_001")] == users["demo-tech"].id
+    assert bindings[("wecom", "DEMO_LEAD_001")] == users["demo-lead"].id
+    assert bindings[("wecom", "DEMO_GUEST_001")] == users["demo-guest"].id
     assert users["demo-tech"].im_bindings["wecom"] == "DEMO_TECH_001"
 
     # MCP server 注册：stdio + 脚本路径真实存在。

@@ -2,7 +2,10 @@
 
 > 去行业化（2026-09-02）：平台不做垂直行业，演示治理脊柱而非业务逻辑。
 > 前置：`make seed-reference && make dev` 已启动，MCP 连接器已挂载。
-> 账号：`demo-guest` / `demo-tech` / `demo-lead`（企微 demo 绑定 `DEMO_*_001`，或用 `POST /api/dataplane/chat` 带 `user_name` 复现）。
+> 账号：`demo-guest` / `demo-tech` / `demo-lead`（企微 demo 绑定 `DEMO_*_001`）。
+> 自动化锁定：REST 路见 `tests/integration/test_t32_e2e_rest.py`（12 例），
+> IM 单聊路见 `tests/integration/test_t32_e2e_im.py`（6 例，fake 渠道）——CI 全绿
+> 即三条流程的治理语义已回归保护；本脚本是**真机企微**的人工演示动线。
 
 ## Flow A：查询-创建闭环（通用工具链）
 
@@ -19,12 +22,23 @@
 5. `demo-lead` 重复 2-4
    - 期望：同样成功，且在回答中可提及"可执行高危操作"（因多一个 Skill `platform-risk-note`）。
 
-REST 复现示例：
+REST 复现示例（登录 admin 后 dev act-as 扮演 demo 账号，cookie 全程保持）：
 
 ```bash
-curl -s http://localhost:8000/api/dataplane/chat \
+BASE=http://localhost:8000
+# 1. 登录拿会话 cookie
+curl -s -c /tmp/bycall.jar -X POST $BASE/api/login \
+  -d 'name=admin&password=admin123' >/dev/null
+# 2. 扮演 demo-tech（dev only；先查用户 id）
+TECH_ID=$(curl -s -b /tmp/bycall.jar $BASE/api/admin/users | jq -r '.[] | select(.name=="demo-tech") | .id')
+curl -s -b /tmp/bycall.jar -c /tmp/bycall.jar -X POST \
+  "$BASE/api/admin/act-as?target_user_id=$TECH_ID" >/dev/null
+# 3. 以 demo-tech 身份对话（响应含 tool_calls / decision / context_trace）
+curl -s -b /tmp/bycall.jar -X POST $BASE/chat \
   -H 'Content-Type: application/json' \
-  -d '{"user_name":"demo-tech","question":"帮我查一下工单 T-1001","channel":"api"}' | jq
+  -d '{"question":"帮我查一下工单 T-1001"}' | jq
+# 4. 演示完清除扮演态
+curl -s -b /tmp/bycall.jar -X POST $BASE/api/admin/clear-act-as >/dev/null
 ```
 
 ## Flow B：高风险操作 HITL 回推
@@ -35,7 +49,7 @@ curl -s http://localhost:8000/api/dataplane/chat \
    - 期望：**不直接执行**。若 LLM 尝试调 `close_ticket`，网关会因 `allowed_tools` 无该工具而看不到；若强行（测试用直调），连接器侧 `bycall_role=technician` 二次拒绝。演示重点改由 `demo-lead` 发起。
 2. `demo-lead` 说："关闭工单 T-1001，原因是测试关闭"
    - 期望：LLM 产生 `close_ticket` 调用被审批门拦截，回复"已提交审批"，控制面 `GET /api/admin/approvals?status=pending` 可见一条 `tool_name=close_ticket`。
-3. 控制面批准：`POST /api/admin/approvals/{id}/approve {"note":"同意","grant_tier":"once"}`
+3. 控制面批准：`POST /api/admin/approvals/{id}/approve {"note":"同意","grant_scope":"once"}`
    - 期望：`status=executed`，`result_text` 含 `closed`，发起人 IM 收到推送"你的关闭工单已执行"。
 4. 同工具再次让 `demo-lead` 关 `T-1001`（已关闭会报已关闭，换 `reserve_part` 演示三档）：
    - `reserve_part` 演示：`demo-lead` 说"预留 BRG-6205 2件 关联 T-1003" → 审批 → 批准选 `session` → 同会话再预留同物料免审，换新 `conversation_id` 需重新审批；`always` 则跨会话免审。
