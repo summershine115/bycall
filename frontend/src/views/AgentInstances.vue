@@ -1,9 +1,16 @@
 <template>
   <div class="bc-page">
+    <PageHeader
+      title="数字员工"
+      description="按需创建的数字员工实例：人格 / 模型 / 能力边界 / 专属渠道围绕实例装配，会话按 实例×用户×渠道 独立隔离。平台不预置任何员工。"
+    >
+      <el-button type="primary" :icon="Plus" @click="openCreate">新建数字员工</el-button>
+    </PageHeader>
+
     <ContentLoader v-if="loading" :rows="5" />
 
     <template v-else>
-      <!-- ============ KPI 行 ============ -->
+      <!-- ============ KPI 行（默认实例概念已移除：不再有"兜底员工"，见 ADR-0013） ============ -->
       <div class="kpis">
         <div class="kpi bc-panel">
           <div class="kpi__label">实例总数</div>
@@ -11,20 +18,17 @@
           <div class="kpi__meta">{{ enabledCount }} 启用 · {{ disabledCount }} 停用</div>
         </div>
         <div class="kpi bc-panel">
-          <div class="kpi__label">默认实例</div>
-          <div class="kpi__value mono" style="font-size: var(--bc-text-lg)">{{ defaultAgent?.display_name || defaultAgent?.name || '—' }}</div>
-          <div class="kpi__meta">{{ defaultAgent ? `slug: ${defaultAgent.name}` : '未设置默认' }}</div>
-        </div>
-        <div class="kpi bc-panel">
-          <div class="kpi__label">专属连接</div>
+          <div class="kpi__label">专属渠道连接</div>
           <div class="kpi__value mono">{{ connCount }}</div>
-          <div class="kpi__meta">{{ connectedConnCount }}/{{ connCount }} 已连接 · 凭证在详情页「IM 渠道」区维护</div>
+          <div class="kpi__meta">
+            {{ connectedConnCount }}/{{ connCount }} 已连接 · 一个实例可接多个渠道
+          </div>
         </div>
       </div>
 
       <div class="bc-panel">
-        <!-- ============ 筛选栏 ============ -->
-        <div class="filterbar">
+        <!-- ============ 筛选栏（无实例时不显示，避免空表头噪声） ============ -->
+        <div v-if="agents.length" class="filterbar">
           <el-input
             v-model="keyword"
             class="filterbar__search"
@@ -43,39 +47,90 @@
           >
             {{ c.label }} <span class="n">{{ c.count }}</span>
           </button>
-          <el-button type="primary" :icon="Plus" @click="openCreate">新建数字员工</el-button>
         </div>
 
         <EmptyState
           v-if="!agents.length"
           icon="Avatar"
           title="还没有数字员工"
-          description="新建一个数字员工实例，然后在详情页绑定人格、模型、能力边界与专属 Bot。"
+          description="数字员工由你显式创建：起个名字、绑人格与模型、划定能力边界，需要接 IM 时再配专属渠道。平台不预置「默认员工」——空组织就该是空的。"
         >
           <el-button type="primary" :icon="Plus" @click="openCreate">新建第一个数字员工</el-button>
         </EmptyState>
 
         <template v-else>
           <div class="table-scroll">
-            <el-table v-if="filtered.length" :data="filtered">
-              <el-table-column label="实例" min-width="220">
+            <el-table v-if="filtered.length" :data="filtered" row-key="id">
+              <!-- 展开行：能力边界明细留在二级层，主行只给可扫读的摘要 -->
+              <el-table-column type="expand">
+                <template #default="{ row }">
+                  <div class="agent-detail">
+                    <div class="agent-detail__grid">
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">绑定技能</span>
+                        <span class="agent-detail__v">{{ listText(row.skills, '沿用角色') }}</span>
+                      </div>
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">工具白名单</span>
+                        <span class="agent-detail__v">{{ listText(row.allowed_tools, '沿用角色') }}</span>
+                      </div>
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">知识域标签</span>
+                        <span class="agent-detail__v">{{ listText(row.knowledge_scope_tags, '沿用角色') }}</span>
+                      </div>
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">可见角色</span>
+                        <span class="agent-detail__v">
+                          {{ row.visible_roles?.length ? row.visible_roles.join('、') : '全部角色' }}
+                        </span>
+                      </div>
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">主渠道</span>
+                        <span class="agent-detail__v">{{ channelLabel(row.channel) }}</span>
+                      </div>
+                      <div class="agent-detail__item">
+                        <span class="agent-detail__k">最近更新</span>
+                        <span class="agent-detail__v">{{ formatTime(row.updated_at) || '—' }}</span>
+                      </div>
+                    </div>
+                    <p class="bc-hint">
+                      「沿用角色」= 该实例未覆盖此项，直接用用户角色的配置；一旦填写，工具与知识域只会在角色范围内收窄。
+                      想看某个角色实际生效的能力，进详情页「生效预览」。
+                    </p>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="实例" min-width="230">
                 <template #default="{ row }">
                   <div class="agent-cell">
                     <span class="agent-cell__avatar" aria-hidden="true">
                       {{ (row.display_name || row.name).slice(0, 1).toUpperCase() }}
                     </span>
                     <div class="agent-cell__names">
-                      <span class="bc-strong mono">{{ row.name }}</span>
-                      <span class="bc-muted bc-text-xs">{{ row.display_name || '—' }}</span>
+                      <span class="bc-strong">{{ row.display_name || row.name }}</span>
+                      <span class="mono bc-text-xs bc-muted">{{ row.name }}</span>
                     </div>
-                    <el-tag v-if="row.is_default" size="small" type="success" effect="plain" class="agent-cell__default">默认</el-tag>
+                    <el-tag v-if="!row.is_enabled" size="small" type="info" effect="plain">停用</el-tag>
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="IM 接入" min-width="190">
+
+              <el-table-column label="装配" min-width="235">
                 <template #default="{ row }">
-                  <!-- 专属连接：多渠道标签 + 聚合连接状态就地可见，重连不进详情页 -->
-                  <div v-if="row.has_im_config" class="im-cell">
+                  <div class="assembly">
+                    <span>人格 {{ row.system_prompt_version != null ? `v${row.system_prompt_version}` : '沿用角色' }}</span>
+                    <span>模型 {{ row.model_id != null ? modelLabel(row.model_id) : '全局激活' }}</span>
+                    <span>工具 {{ row.allowed_tools?.length ? `${row.allowed_tools.length} 项覆盖` : '沿用角色' }}</span>
+                    <span>技能 {{ row.skills?.length ? `${row.skills.length} 项` : '沿用角色' }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column label="接入" min-width="210">
+                <template #default="{ row }">
+                  <!-- 专属渠道：渠道标签 + 聚合连接状态就地可见，重连不进详情页 -->
+                  <div v-if="imChannelsOf(row).length" class="im-cell">
                     <el-tag
                       v-for="ch in imChannelsOf(row)"
                       :key="ch"
@@ -97,50 +152,34 @@
                       @click="onReconnectBot(row)"
                     />
                   </div>
-                  <el-tag v-else-if="row.channel === 'wecom'" size="small" type="info" effect="plain">默认 Bot</el-tag>
-                  <span v-else class="bc-muted bc-text-sm">—</span>
+                  <el-tooltip
+                    v-else
+                    content="未配置专属 Bot：IM 里的消息不会进入该员工（走全局 Bot 的会话不归属任何实例）"
+                    placement="top"
+                  >
+                    <span class="bc-muted bc-text-sm">未接入专属渠道</span>
+                  </el-tooltip>
                 </template>
               </el-table-column>
-              <el-table-column label="主渠道" width="100">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="channelType(row.channel)" effect="plain">{{ channelLabel(row.channel) }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="人格" width="100">
-                <template #default="{ row }">
-                  <span class="bc-text-sm mono">{{ row.system_prompt_version != null ? `v${row.system_prompt_version}` : '角色回退' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="模型" width="150">
-                <template #default="{ row }">
-                  <span class="bc-text-sm">{{ modelName(row.model_id) || '全局' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="能力边界" min-width="220">
-                <template #default="{ row }">
-                  <div class="bc-text-xs bc-muted" style="line-height:1.5">
-                    <div>技能: {{ row.skills?.length ? row.skills.join(', ') : '— (沿用角色)' }}</div>
-                    <div>工具: {{ row.allowed_tools?.length ? row.allowed_tools.slice(0,3).join(', ') + (row.allowed_tools.length>3?' …':'') : '— (沿用角色)' }}</div>
-                    <div>知识: {{ row.knowledge_scope_tags?.length ? row.knowledge_scope_tags.join(', ') : '— (沿用角色)' }}</div>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="可见角色" width="130">
-                <template #default="{ row }">
-                  <span class="bc-text-sm">{{ row.visible_roles?.length ? row.visible_roles.join(', ') : '全部' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="启用" width="80" align="center">
+
+              <el-table-column label="启用" width="76" align="center">
                 <template #default="{ row }">
                   <el-switch :model-value="row.is_enabled" @change="(val) => onToggleEnabled(row, val)" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="250" fixed="right">
+
+              <el-table-column label="操作" width="168" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" type="primary" @click="goDetail(row)">配置</el-button>
                   <el-button size="small" @click="goChat(row)">对话</el-button>
-                  <el-button v-if="!row.is_default" size="small" type="warning" plain @click="onSetDefault(row)">设为默认</el-button>
-                  <el-button size="small" type="danger" plain :disabled="row.is_default" @click="onDelete(row)">删除</el-button>
+                  <el-dropdown trigger="click" @command="(cmd) => onRowCommand(cmd, row)">
+                    <el-button size="small" text :icon="MoreFilled" aria-label="更多操作" />
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="delete" :icon="Delete">删除</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                 </template>
               </el-table-column>
             </el-table>
@@ -175,22 +214,15 @@
         <el-form-item label="描述">
           <el-input v-model="form.description" placeholder="一句话说明该数字员工的职责与边界" />
         </el-form-item>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="主渠道">
-              <el-select v-model="form.channel" style="width:100%">
-                <el-option label="对话测试 (api)" value="api" />
-                <el-option label="企业微信 (wecom)" value="wecom" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="设为默认">
-              <el-switch v-model="form.is_default" />
-              <div class="bc-hint">全局唯一默认；无归属会话的兜底入口</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
+        <el-form-item label="主渠道">
+          <el-select v-model="form.channel" style="width:100%">
+            <el-option label="对话测试 (api)" value="api" />
+            <el-option label="企业微信 (wecom)" value="wecom" />
+          </el-select>
+          <div class="bc-hint">
+            仅作标签与筛选；真正接 IM 需在详情页「渠道」区配置专属 Bot
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible=false">取消</el-button>
@@ -204,11 +236,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, MoreFilled, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import { formatTime } from '../utils/format'
 
 const router = useRouter()
 const agents = ref([])
@@ -219,7 +253,7 @@ const loading = ref(true)
 // 新建弹窗（精简表单）
 const dialogVisible = ref(false)
 const saving = ref(false)
-const form = ref({ name: '', display_name: '', description: '', channel: 'api', is_default: false })
+const form = ref({ name: '', display_name: '', description: '', channel: 'api' })
 
 const keyword = ref('')
 const statusFilter = ref('all')
@@ -227,7 +261,6 @@ const reloadingId = ref(null)
 
 const enabledCount = computed(() => agents.value.filter(a => a.is_enabled).length)
 const disabledCount = computed(() => agents.value.length - enabledCount.value)
-const defaultAgent = computed(() => agents.value.find(a => a.is_default) || null)
 // 专属连接数：一个实例接入多个渠道时按连接（渠道）计，而非按实例计
 const connCount = computed(() =>
   agents.value.reduce((n, a) => n + imChannelsOf(a).length, 0),
@@ -279,10 +312,11 @@ function connTooltip(row) {
   return errs.join('\n') || connText(row.id)
 }
 
-function channelType(ch) { return { api: 'info', wecom: 'success' }[ch] || 'info' }
 function channelLabel(ch) { return { api: '对话测试', wecom: '企微', feishu: '飞书' }[ch] || ch }
-function modelName(id) {
-  if (id == null) return ''
+function listText(list, fallback) {
+  return list?.length ? list.join('、') : `— (${fallback})`
+}
+function modelLabel(id) {
   const m = chatModels.value.find(x => x.id === id)
   return m ? (m.display_name || m.name) : `#${id}`
 }
@@ -309,7 +343,7 @@ async function refreshConnections() {
 }
 
 function openCreate() {
-  form.value = { name: '', display_name: '', description: '', channel: 'api', is_default: false }
+  form.value = { name: '', display_name: '', description: '', channel: 'api' }
   dialogVisible.value = true
 }
 
@@ -333,6 +367,10 @@ function goDetail(row) {
 // 对话测试：预选该实例开新对话（会话按实例隔离）
 function goChat(row) {
   router.push({ name: 'chat', query: { agent_id: String(row.id) } })
+}
+
+function onRowCommand(cmd, row) {
+  if (cmd === 'delete') onDelete(row)
 }
 
 async function onToggleEnabled(row, val) {
@@ -360,17 +398,12 @@ async function onReconnectBot(row) {
   }
 }
 
-async function onSetDefault(row) {
-  const ok = await ElMessageBox.confirm(`确定将「${row.display_name || row.name}」设为默认实例？`, '设为默认', { type: 'info' }).catch(() => null)
-  if (!ok) return
-  await admin.updateAgent(row.id, { is_default: true })
-  ElMessage.success('已设为默认')
-  await load()
-}
-
 async function onDelete(row) {
-  if (row.is_default) { ElMessage.warning('默认实例不可直接删除，请先将默认切到其他实例'); return }
-  const ok = await ElMessageBox.confirm(`确定删除数字员工「${row.name}」？\n会话引用该实例时将拒绝删除（需先归档会话）。`, '确认删除', { type: 'error' }).catch(() => null)
+  const ok = await ElMessageBox.confirm(
+    `确定删除数字员工「${row.name}」？\n其专属渠道连接会立即断开；若仍有会话引用该实例，删除会被拒绝（需先归档会话）。`,
+    '确认删除',
+    { type: 'error' },
+  ).catch(() => null)
   if (!ok) return
   try {
     await admin.deleteAgent(row.id)
@@ -385,7 +418,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--bc-space-4); margin-bottom: var(--bc-space-4); }
+.kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--bc-space-4); margin-bottom: var(--bc-space-4); }
 .kpi { padding: var(--bc-space-4); transition: box-shadow .15s var(--bc-ease, ease-out); }
 .kpi:hover { box-shadow: var(--bc-shadow-sm); }
 .kpi__label { font-size: var(--bc-text-xs); font-weight: var(--bc-weight-medium); color: var(--bc-text-3); letter-spacing: .02em; }
@@ -404,9 +437,14 @@ onMounted(load)
 .table-foot__num { font-variant-numeric:tabular-nums; }
 .agent-cell { display:flex; align-items:center; gap:var(--bc-space-3); }
 .agent-cell__avatar { width:30px; height:30px; border-radius:var(--bc-radius-full); background:var(--bc-primary-2); color:var(--bc-primary-8); font-size:var(--bc-text-xs); font-weight:var(--bc-weight-semibold); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-.agent-cell__names { display:flex; flex-direction:column; line-height:1.3; }
-.agent-cell__default { margin-left:4px; }
-.im-cell { display:flex; align-items:center; gap:var(--bc-space-2); }
+.agent-cell__names { display:flex; flex-direction:column; line-height:1.3; min-width:0; }
+.assembly { display:flex; flex-wrap:wrap; gap:4px var(--bc-space-3); font-size:var(--bc-text-xs); color:var(--bc-text-2); }
+.im-cell { display:flex; align-items:center; gap:var(--bc-space-2); flex-wrap:wrap; }
 .im-cell :deep(.el-button.is-link) { padding: 2px; }
+.agent-detail { padding: var(--bc-space-2) var(--bc-space-4) var(--bc-space-4); }
+.agent-detail__grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:var(--bc-space-3) var(--bc-space-5); }
+.agent-detail__item { display:flex; flex-direction:column; gap:2px; }
+.agent-detail__k { font-size:var(--bc-text-xs); color:var(--bc-text-3); }
+.agent-detail__v { font-size:var(--bc-text-sm); color:var(--bc-text-1); word-break:break-word; }
 @media (max-width:768px){ .filterbar__search{width:100%; order:5} .filterbar__spacer{display:none} }
 </style>

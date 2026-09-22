@@ -104,18 +104,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
 import ModeToggle from '../components/ModeToggle.vue'
 import {
-  ArrowDown, ArrowRight, Avatar, ChatLineRound,
-  DataLine, DocumentChecked, Expand, Fold, Key, List,
-  RefreshLeft, Setting, SwitchButton, TrendCharts, User,
+  ArrowDown, ArrowRight, Avatar, ChatLineRound, Collection, Connection, Cpu,
+  DataLine, Document, DocumentChecked, EditPen, Expand, Fold, Key, List,
+  MagicStick, RefreshLeft, Setting, SwitchButton, Tools, TrendCharts, User,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 
-// 导航分组（数字员工 Hub 重组）：实例、渠道接入与装配资产（提示词/模型/技能/MCP/知识）
-// 统一收进「数字员工」一个入口（/agents 嵌套子页），侧边栏只留 Hub 一项；
-// 渠道接入不再是独立系统页（ADR-0012 修订），对话测试从实例行内进入。
+// 导航分组（ADR-0013 面板重组）：数字员工只管实例；组织级共享资产（提示词/模型/技能/MCP/
+// 知识库/文档）归「能力资产」；渠道凭证归「渠道接入」——三者生命周期不同，不再混在一个 Hub 下。
 const navGroups = [
   {
     key: 'overview',
@@ -138,8 +137,27 @@ const navGroups = [
     key: 'agent',
     label: '数字员工',
     items: [
-      // Hub 及其全部子页（/agents/*）都归属这一项：active 用路径前缀匹配
+      // 实例列表与其详情页（/agents/:id）同属这一项：active 用路径前缀匹配
       { name: 'agents', label: '数字员工', icon: Avatar, matchPrefix: '/agents' },
+    ],
+  },
+  {
+    key: 'assets',
+    label: '能力资产',
+    items: [
+      { name: 'prompts', label: '提示词版本', icon: EditPen },
+      { name: 'models', label: '模型管理', icon: Cpu },
+      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
+      { name: 'mcp', label: 'MCP 工具', icon: Tools },
+      { name: 'knowledge-bases', label: '知识库', icon: Collection },
+      { name: 'knowledge', label: '文档管理', icon: Document },
+    ],
+  },
+  {
+    key: 'channel',
+    label: '渠道接入',
+    items: [
+      { name: 'channels', label: '渠道接入', icon: Connection },
     ],
   },
   {
@@ -161,8 +179,8 @@ const titles = {
   dashboard: '仪表盘',
   users: '用户管理',
   roles: '角色与权限',
-  agents: '实例',
-  'agent-detail': '数字员工详情',
+  agents: '实例列表',
+  'agent-detail': '实例详情',
   models: '模型管理',
   knowledge: '文档管理',
   'knowledge-bases': '知识库',

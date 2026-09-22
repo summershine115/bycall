@@ -11,24 +11,21 @@ const routes = [
       { path: '', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
       { path: 'users', name: 'users', component: () => import('./views/Users.vue') },
       { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
-      // 数字员工 Hub：实例 + 装配资产（提示词/模型/技能/MCP/知识）+ 渠道接入统一入口。
-      // 子页 URL 即 tab，路由 name 沿用历史值，既有跳转引用无需改动。
-      {
-        path: 'agents',
-        component: () => import('./views/Agents.vue'),
-        children: [
-          { path: '', name: 'agents', component: () => import('./views/AgentInstances.vue') },
-          { path: 'channels', name: 'channels', component: () => import('./views/Channels.vue') },
-          { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
-          { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
-          { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
-          { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
-          { path: 'knowledge-bases', name: 'knowledge-bases', component: () => import('./views/KnowledgeBases.vue') },
-          { path: 'knowledge', name: 'knowledge', component: () => import('./views/Knowledge.vue') },
-        ],
-      },
-      // :id 限定数字，避免吞掉 /agents/channels 等静态子路径
+      // 数字员工：只有实例列表与详情（个体视角）。
+      // 组织级共享资产（提示词/模型/Skill/MCP/知识库/文档）与渠道凭证已拆为一级页面——
+      // 它们跨实例存在，混在员工入口下会让“配一个员工”变成逛杂物间（ADR-0013）。
+      { path: 'agents', name: 'agents', component: () => import('./views/AgentInstances.vue') },
+      // :id 限定数字，避免吞掉 /agents/channels 等旧静态子路径
       { path: 'agents/:id(\\d+)', name: 'agent-detail', component: () => import('./views/AgentDetail.vue'), props: true },
+      // 能力资产（跨实例的组织级零件库）
+      { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
+      { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
+      { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
+      { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
+      { path: 'knowledge-bases', name: 'knowledge-bases', component: () => import('./views/KnowledgeBases.vue') },
+      { path: 'knowledge', name: 'knowledge', component: () => import('./views/Knowledge.vue') },
+      // 渠道接入（系统凭证：全局默认 Bot + 各实例专属连接总览）
+      { path: 'channels', name: 'channels', component: () => import('./views/Channels.vue') },
       { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       { path: 'approvals', name: 'approvals', component: () => import('./views/Approvals.vue') },
       { path: 'tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },
@@ -39,14 +36,14 @@ const routes = [
       { path: 'ops-metrics', name: 'ops-metrics', component: () => import('./views/OpsMetrics.vue') },
       // 对话测试：数据面体验页，保留独立全屏路由；侧边栏无入口，从数字员工实例行内进入
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },
-      // 旧一级路径 → Hub 子页（保留 query，如 knowledge?kb_id=）
-      { path: 'channels', redirect: (to) => ({ path: '/agents/channels', query: to.query }) },
-      { path: 'prompts', redirect: (to) => ({ path: '/agents/prompts', query: to.query }) },
-      { path: 'models', redirect: (to) => ({ path: '/agents/models', query: to.query }) },
-      { path: 'skills', redirect: (to) => ({ path: '/agents/skills', query: to.query }) },
-      { path: 'mcp', redirect: (to) => ({ path: '/agents/mcp', query: to.query }) },
-      { path: 'knowledge-bases', redirect: (to) => ({ path: '/agents/knowledge-bases', query: to.query }) },
-      { path: 'knowledge', redirect: (to) => ({ path: '/agents/knowledge', query: to.query }) },
+      // 旧「数字员工 Hub」子路径 → 新一级页面（保留 query，如 knowledge?kb_id=）
+      { path: 'agents/channels', redirect: (to) => ({ path: '/channels', query: to.query }) },
+      { path: 'agents/prompts', redirect: (to) => ({ path: '/prompts', query: to.query }) },
+      { path: 'agents/models', redirect: (to) => ({ path: '/models', query: to.query }) },
+      { path: 'agents/skills', redirect: (to) => ({ path: '/skills', query: to.query }) },
+      { path: 'agents/mcp', redirect: (to) => ({ path: '/mcp', query: to.query }) },
+      { path: 'agents/knowledge-bases', redirect: (to) => ({ path: '/knowledge-bases', query: to.query }) },
+      { path: 'agents/knowledge', redirect: (to) => ({ path: '/knowledge', query: to.query }) },
     ],
   },
   // 404 兜底：未知路径回仪表盘（hash 模式下无此路由则整页空白且无导航可点）

@@ -9,7 +9,7 @@
           <div>
             <h3>连接总览</h3>
             <p class="bc-muted bc-text-sm">
-              IM Bot 连接的集中视图：全局默认 Bot 兜底 + 各数字员工专属连接，保存即热重连、无需重启服务。
+              IM Bot 连接的集中视图：全局默认 Bot（组织级入口，不归属任何员工）+ 各数字员工专属连接，保存即热重连、无需重启服务。
               每个数字员工可接入多个不同渠道（每渠道一条专属连接，在数字员工详情「IM 渠道」区配置）；
               同一凭证全局只能绑定一个实例——员工私聊哪个 Bot，就进入哪个数字员工的独立会话。
             </p>
@@ -26,7 +26,7 @@
           <el-table-column label="归属" min-width="160">
             <template #default="{ row }">
               <template v-if="row.scope === 'global'">
-                默认数字员工（未绑定专属 Bot 的入口）
+                无实例归属（全局 Bot 入口）
               </template>
               <template v-else>
                 <span>{{ agentName(row.agent_id) }}</span>
@@ -75,7 +75,8 @@
           <div>
             <h3>全局默认渠道 · 企业微信</h3>
             <p class="bc-muted bc-text-sm">
-              未绑定专属 Bot 的企微入口走这套凭证，进入默认数字员工的会话；
+              未绑定专属 Bot 的企微入口走这套凭证，会话不归属任何数字员工（按对话者角色
+              + 全局激活的人格/模型回答）；
               数字员工的专属凭证在其详情页「IM 渠道」区维护。
             </p>
           </div>

@@ -362,7 +362,10 @@ class Agent(SQLModel, table=True):
     - ``approval_policy``：per-Agent 审批策略覆盖（``{require_approval_tools:[...]}``），
       与全局工具 ``destructiveHint`` 正交，取并集。
     - ``is_enabled``：禁用后新会话拒绝、历史会话只读（软关闭）。
-    - ``is_default``：组织默认 Agent（唯一，fallback 用）；首次 ``init_db`` 灌一个。
+
+    平台**不预置任何实例**（2026-09-22，ADR-0013）：数字员工必须由管理员显式创建，
+    "没有默认员工"是产品约束——无实例归属的会话（历史数据、全局默认 Bot 入口）
+    按 角色 → 全局激活 链路回答，与实例存在与否无关。
     """
 
     __table_args__ = (UniqueConstraint("name", name="uq_agent_name"),)
@@ -386,7 +389,6 @@ class Agent(SQLModel, table=True):
     im_config_encrypted: str = ""  # Fernet 密文（JSON dict），per-Agent IM 覆盖
     approval_policy: dict | None = Field(default=None, sa_column=Column(DictJSONType))
     is_enabled: bool = Field(default=True, index=True)
-    is_default: bool = Field(default=False, index=True)
     created_at: datetime = Field(
         default_factory=_now_utc, sa_column=Column(DateTime, default=_now_utc)
     )
@@ -415,13 +417,6 @@ class Agent(SQLModel, table=True):
         from sqlmodel import select
 
         return select(Agent).where(Agent.name == name)
-
-    @staticmethod
-    def select_default():
-        """默认 Agent（唯一）。"""
-        from sqlmodel import select
-
-        return select(Agent).where(Agent.is_default == True)  # noqa: E712
 
 
 # ============ MCPServer：MCP 工具服务器（M4 工具网关）============
