@@ -13,7 +13,7 @@
           {{ agent.is_enabled ? '已启用' : '已停用' }}
         </el-tag>
         <el-tag v-if="agent.is_default" type="success">默认实例</el-tag>
-        <el-tag v-if="agent.has_im_config" type="success">企微专属 Bot</el-tag>
+        <el-tag v-for="ch in imChannels" :key="ch" type="success">{{ channelLabel(ch) }}专属</el-tag>
         <el-tag type="info" effect="plain">主渠道：{{ channelLabel(agent.channel) }}</el-tag>
         <span class="mono bc-muted bc-text-xs statusbar__id">#{{ agent.id }}</span>
       </div>
@@ -147,48 +147,59 @@
         </div>
       </div>
 
-      <!-- ============ ⑤ IM 渠道（专属 Bot，ADR-0012 真实生效） ============ -->
+      <!-- ============ ⑤ IM 渠道（专属连接，ADR-0012：同实例可接入多个渠道） ============ -->
       <div class="bc-panel section">
         <div class="section__head">
-          <h3 class="section__title">IM 渠道 · 企微专属 Bot</h3>
-          <div v-if="botConn" class="section__conn">
-            <StatusBadge :type="botConn.is_connected ? 'ok' : 'err'" :text="botConn.is_connected ? '已连接' : '未连接'" />
-            <span v-if="botConn.last_error" class="bc-text-xs bc-muted">{{ botConn.last_error }}</span>
-            <el-button size="small" :loading="reconnecting" @click="onReconnectBot">重连</el-button>
+          <h3 class="section__title">IM 渠道 · 专属连接</h3>
+          <div v-if="wecomConn" class="section__conn">
+            <StatusBadge :type="wecomConn.is_connected ? 'ok' : 'err'" :text="wecomConn.is_connected ? '已连接' : '未连接'" />
+            <span v-if="wecomConn.last_error" class="bc-text-xs bc-muted">{{ wecomConn.last_error }}</span>
+            <el-button size="small" :loading="reconnecting" @click="onReconnectBot">重连企微</el-button>
           </div>
         </div>
         <p class="bc-muted bc-text-sm section__desc">
-          为该实例绑定独立的企微机器人：员工私聊这个 Bot 即进入该数字员工的独立会话。
-          bot_id 全局唯一（与其他实例及全局默认 Bot 不得重复）。
+          一个数字员工可同时接入多个不同渠道（每种渠道一条专属连接，会话按 实例×渠道 独立隔离）；
+          同一凭证（如企微 bot_id）全局只能绑定一个实例，不得与其他实例或全局默认 Bot 冲突。
         </p>
         <el-form label-position="top">
           <el-row :gutter="16">
             <el-col :span="12">
               <el-form-item label="企微 bot_id">
-                <el-input v-model="im.bot_id" :placeholder="im.has ? '已配置（***），修改需完整填写' : '企业微信后台「智能机器人」获取'" />
+                <el-input v-model="im.bot_id" :placeholder="hasWecom ? '已配置（***），修改需完整填写' : '企业微信后台「智能机器人」获取'" />
               </el-form-item>
             </el-col>
             <el-col :span="12">
               <el-form-item label="企微 bot_secret">
-                <el-input v-model="im.secret" :placeholder="im.has ? '已配置（***）—— 不修改则留空' : '企微后台获取的 secret'" show-password />
+                <el-input v-model="im.secret" :placeholder="hasWecom ? '已配置（***）—— 不修改则留空' : '企微后台获取的 secret'" show-password />
               </el-form-item>
             </el-col>
           </el-row>
           <div class="bc-hint">
-            保存将整体替换该实例的专属凭证并自动重连；修改时需同时填写 bot_id 与 secret。全局默认 Bot 在数字员工页「渠道接入」标签页维护。
+            保存仅替换企微渠道的凭证（不影响该实例其他渠道）并自动重连；修改时需同时填写 bot_id 与 secret。全局默认 Bot 在数字员工页「渠道接入」标签页维护。
           </div>
         </el-form>
         <div class="section__foot">
           <el-button
-            v-if="im.has"
+            v-if="hasWecom"
             type="danger"
             plain
             :loading="savingKey === 'im-clear'"
             @click="onClearIm"
           >
-            清除专属 Bot
+            清除企微专属 Bot
           </el-button>
           <el-button type="primary" :loading="savingKey === 'im'" @click="saveIm">保存并重连</el-button>
+        </div>
+      </div>
+
+      <!-- 飞书（占位，未实现网关；接入后与企微并列为一项专属连接） -->
+      <div class="bc-panel section">
+        <div class="section__head">
+          <div>
+            <h3 class="section__title">飞书专属连接</h3>
+            <p class="bc-muted bc-text-sm">渠道抽象已预留（FeishuChannel），网关实现排期中。</p>
+          </div>
+          <el-tag type="info" effect="plain">规划中</el-tag>
         </div>
       </div>
     </template>
@@ -230,7 +241,10 @@ const basic = reactive({ display_name: '', description: '', avatar_url: '', chan
 const persona = reactive({ system_prompt_version: null, model_id: null })
 const capability = reactive({ skills: null, knowledge_scope_tags: null, allowed_tools: null })
 const visibility = reactive({ visible_roles: null })
-const im = reactive({ bot_id: '', secret: '', has: false })
+const im = reactive({ bot_id: '', secret: '' })
+// 已配置专属凭证的渠道列表（AgentOut.im_channels，随保存响应自动更新）
+const imChannels = computed(() => agent.value?.im_channels || [])
+const hasWecom = computed(() => imChannels.value.includes('wecom'))
 
 // 选项
 const prompts = ref([])
@@ -240,11 +254,13 @@ const toolOptions = ref([])
 const roleOptions = ref([])
 const sourceOptions = ref([])
 
-const botConn = computed(() =>
-  (imStatusData.value.channels || []).find((c) => c.agent_id === agentId) || null,
+const wecomConn = computed(() =>
+  (imStatusData.value.channels || []).find(
+    (c) => c.agent_id === agentId && (c.channel === 'wecom' || c.key?.startsWith('wecom:')),
+  ) || null,
 )
 
-function channelLabel(ch) { return { api: '对话测试', wecom: '企微' }[ch] || ch }
+function channelLabel(ch) { return { api: '对话测试', wecom: '企微', feishu: '飞书' }[ch] || ch }
 
 async function load() {
   loading.value = true
@@ -283,8 +299,7 @@ async function load() {
     capability.knowledge_scope_tags = a.knowledge_scope_tags ?? null
     capability.allowed_tools = a.allowed_tools ?? null
     visibility.visible_roles = a.visible_roles ?? null
-    // 脱敏预览：值打码为 ***，不回填输入框（修改需完整填写）
-    im.has = !!a.has_im_config
+    // 脱敏预览：值打码为 ***，不回填输入框（修改需完整填写）；渠道列表经 im_channels 计算
     im.bot_id = ''
     im.secret = ''
   } finally {
@@ -326,15 +341,15 @@ async function saveIm() {
   const botId = im.bot_id.trim()
   const secret = im.secret.trim()
   if (!botId && !secret) {
-    ElMessage.warning(im.has ? '未填写任何修改；如需移除请点「清除专属 Bot」' : '请填写 bot_id 与 secret')
+    ElMessage.warning(hasWecom.value ? '未填写任何修改；如需移除请点「清除企微专属 Bot」' : '请填写 bot_id 与 secret')
     return
   }
   if (!botId || !secret) {
-    ElMessage.warning('请同时填写 bot_id 与 secret（保存将整体替换凭证）')
+    ElMessage.warning('请同时填写 bot_id 与 secret（保存将整体替换企微凭证）')
     return
   }
-  await patch('im', { im_config: { wecom_bot_id: botId, wecom_secret: secret } }, '专属 Bot 凭证已保存，正在自动重连')
-  im.has = true
+  // 按渠道合并语义：只替换 wecom 渠道，不影响该实例其他渠道
+  await patch('im', { im_config: { wecom: { bot_id: botId, secret } } }, '企微专属凭证已保存，正在自动重连')
   im.bot_id = ''
   im.secret = ''
   // 后端保存后自动重连该槽位；稍候刷新连接状态
@@ -343,13 +358,13 @@ async function saveIm() {
 
 async function onClearIm() {
   const ok = await ElMessageBox.confirm(
-    '确定清除该实例的专属企微 Bot？清除后其连接立即断开，员工消息不再进入该实例。',
-    '清除专属 Bot',
+    '确定清除该实例的企微专属 Bot？清除后其连接立即断开（其他渠道不受影响）。',
+    '清除企微专属 Bot',
     { type: 'warning' },
   ).catch(() => null)
   if (!ok) return
-  await patch('im-clear', { im_config: {} }, '专属 Bot 已清除')
-  im.has = false
+  // 按渠道移除：wecom 置空分组即移除该渠道，不动其他渠道
+  await patch('im-clear', { im_config: { wecom: {} } }, '企微专属 Bot 已清除')
   im.bot_id = ''
   im.secret = ''
   await refreshStatus()
@@ -359,7 +374,7 @@ async function onReconnectBot() {
   reconnecting.value = true
   try {
     const r = await admin.reloadIm(agentId)
-    ElMessage.success(r.message || '专属 Bot 已重连')
+    ElMessage.success(r.message || '专属连接已重连')
     await refreshStatus()
   } catch {
     // 失败已由拦截器 toast

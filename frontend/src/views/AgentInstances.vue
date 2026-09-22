@@ -16,9 +16,9 @@
           <div class="kpi__meta">{{ defaultAgent ? `slug: ${defaultAgent.name}` : '未设置默认' }}</div>
         </div>
         <div class="kpi bc-panel">
-          <div class="kpi__label">专属 Bot</div>
-          <div class="kpi__value mono">{{ botCount }}</div>
-          <div class="kpi__meta">{{ connectedBotCount }}/{{ botCount }} 已连接 · 企微凭证在详情页「IM 渠道」区维护</div>
+          <div class="kpi__label">专属连接</div>
+          <div class="kpi__value mono">{{ connCount }}</div>
+          <div class="kpi__meta">{{ connectedConnCount }}/{{ connCount }} 已连接 · 凭证在详情页「IM 渠道」区维护</div>
         </div>
       </div>
 
@@ -74,20 +74,25 @@
               </el-table-column>
               <el-table-column label="IM 接入" min-width="190">
                 <template #default="{ row }">
-                  <!-- 专属 Bot：凭证 + 连接状态就地可见，重连不进详情页 -->
+                  <!-- 专属连接：多渠道标签 + 聚合连接状态就地可见，重连不进详情页 -->
                   <div v-if="row.has_im_config" class="im-cell">
-                    <el-tag size="small" type="success">专属 Bot</el-tag>
+                    <el-tag
+                      v-for="ch in imChannelsOf(row)"
+                      :key="ch"
+                      size="small"
+                      type="success"
+                    >{{ channelLabel(ch) }}专属</el-tag>
                     <el-tooltip
-                      :content="botConnTooltip(row)"
-                      :disabled="!connOf(row.id)?.last_error"
+                      :content="connTooltip(row)"
+                      :disabled="!connsOf(row.id).some((c) => c.last_error)"
                       placement="top"
                     >
-                      <span><StatusBadge :type="botConnType(row.id)" :text="botConnText(row.id)" /></span>
+                      <span><StatusBadge :type="connType(row.id)" :text="connText(row.id)" /></span>
                     </el-tooltip>
                     <el-button
                       link
                       :icon="Refresh"
-                      aria-label="重连专属 Bot"
+                      aria-label="重连专属连接"
                       :loading="reloadingId === row.id"
                       @click="onReconnectBot(row)"
                     />
@@ -223,9 +228,12 @@ const reloadingId = ref(null)
 const enabledCount = computed(() => agents.value.filter(a => a.is_enabled).length)
 const disabledCount = computed(() => agents.value.length - enabledCount.value)
 const defaultAgent = computed(() => agents.value.find(a => a.is_default) || null)
-const botCount = computed(() => agents.value.filter(a => a.has_im_config).length)
-const connectedBotCount = computed(() =>
-  agents.value.filter((a) => a.has_im_config && connOf(a.id)?.is_connected).length,
+// 专属连接数：一个实例接入多个渠道时按连接（渠道）计，而非按实例计
+const connCount = computed(() =>
+  agents.value.reduce((n, a) => n + imChannelsOf(a).length, 0),
+)
+const connectedConnCount = computed(() =>
+  connections.value.filter((c) => c.agent_id != null && c.is_connected).length,
 )
 
 const statusChips = computed(() => [
@@ -244,27 +252,35 @@ const filtered = computed(() => {
   })
 })
 
-// 该实例的专属 Bot 槽位连接（未建槽位 = 凭证未生效或实例已停用）
-function connOf(agentId) {
-  return connections.value.find((c) => c.agent_id === agentId) || null
+// 该实例已配置专属凭证的渠道列表（im_channels 缺失时回退 has_im_config 单渠道形态）
+function imChannelsOf(agent) {
+  if (agent.im_channels?.length) return agent.im_channels
+  return agent.has_im_config ? ['wecom'] : []
 }
-function botConnType(agentId) {
-  const c = connOf(agentId)
-  if (!c) return 'idle'
-  return c.is_connected ? 'ok' : 'err'
+// 该实例的全部专属连接槽位（一个实例多渠道 = 多条；未建槽位 = 凭证未生效或实例已停用）
+function connsOf(agentId) {
+  return connections.value.filter((c) => c.agent_id === agentId)
 }
-function botConnText(agentId) {
-  const c = connOf(agentId)
-  if (!c) return '未运行'
-  return c.is_connected ? '已连接' : '未连接'
+function connType(agentId) {
+  const conns = connsOf(agentId)
+  if (!conns.length) return 'idle'
+  return conns.some((c) => c.is_connected) ? 'ok' : 'err'
 }
-function botConnTooltip(row) {
-  const c = connOf(row.id)
-  return c?.last_error || botConnText(row.id)
+function connText(agentId) {
+  const conns = connsOf(agentId)
+  if (!conns.length) return '未运行'
+  const ok = conns.filter((c) => c.is_connected).length
+  // 多渠道时显示聚合（如 已连接 1/2）；单渠道保持原展示
+  return conns.length > 1 ? `已连接 ${ok}/${conns.length}` : ok ? '已连接' : '未连接'
+}
+function connTooltip(row) {
+  const conns = connsOf(row.id)
+  const errs = conns.filter((c) => c.last_error).map((c) => `${c.key}: ${c.last_error}`)
+  return errs.join('\n') || connText(row.id)
 }
 
 function channelType(ch) { return { api: 'info', wecom: 'success' }[ch] || 'info' }
-function channelLabel(ch) { return { api: '对话测试', wecom: '企微' }[ch] || ch }
+function channelLabel(ch) { return { api: '对话测试', wecom: '企微', feishu: '飞书' }[ch] || ch }
 function modelName(id) {
   if (id == null) return ''
   const m = chatModels.value.find(x => x.id === id)
@@ -334,7 +350,7 @@ async function onReconnectBot(row) {
   reloadingId.value = row.id
   try {
     const r = await admin.reloadIm(row.id)
-    ElMessage.success(r.message || '专属 Bot 已重连')
+    ElMessage.success(r.message || '专属连接已重连')
     // 后端重连是异步的，稍候刷新连接状态
     setTimeout(refreshConnections, 1500)
   } catch {

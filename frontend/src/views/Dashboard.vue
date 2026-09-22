@@ -17,7 +17,7 @@
         <div class="kpi bc-panel">
           <div class="kpi__label">数字员工</div>
           <div class="kpi__value mono">{{ fmtNum(agentsDisplay) }}</div>
-          <div class="kpi__meta">{{ agentBotCount }} 个专属 Bot · 已授权 {{ kpi.distinctTools }} 项工具</div>
+          <div class="kpi__meta">{{ agentBotCount }} 个专属连接 · 已授权 {{ kpi.distinctTools }} 项工具</div>
         </div>
         <div class="kpi bc-panel">
           <div class="kpi__label">今日会话</div>
@@ -259,7 +259,10 @@ const kpi = computed(() => {
 // 数字滚动（尊重 prefers-reduced-motion，组合式函数内置）
 const usersDisplay = useCountUp(computed(() => users.value.length))
 const agentsDisplay = useCountUp(computed(() => agents.value.length))
-const agentBotCount = computed(() => agents.value.filter((a) => a.has_im_config).length)
+// 专属连接数：多渠道实例按连接（渠道）计
+const agentBotCount = computed(() =>
+  agents.value.reduce((n, a) => n + (a.im_channels?.length || (a.has_im_config ? 1 : 0)), 0),
+)
 const todayConvosDisplay = useCountUp(computed(() => kpi.value.todayConvos))
 const pendingDisplay = useCountUp(computed(() => kpi.value.pending))
 

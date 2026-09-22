@@ -354,9 +354,11 @@ class Agent(SQLModel, table=True):
     - ``skills``/``knowledge_scope_tags``/``allowed_tools``：per-Agent 白名单。若为空/空列表，
       视为"未覆盖"→沿用角色能力；非空则与角色能力取交集/并集（收紧而非放宽——角色是天花板）。
     - ``visible_roles``：哪些角色可见该 Agent（空/None=全部角色可见），放在能力集之前判定。
-    - ``channel``：该实例主要服务的渠道（``api``/``wecom``/``feishu``），多渠道可扩展为列表。
-    - ``im_config``：per-Agent IM 凭证覆盖（``{wecom: {bot_id, secret_encrypted}}`` 等），
-      加密存库，API 脱敏返回（与 ``Model.api_key`` 同机制）。单 Bot 阶段可为空。
+    - ``channel``：该实例的主渠道标签（``api``/``wecom``/``feishu``，展示与筛选用）；
+      实际 IM 接入由 ``im_config`` 承载（可同时多个渠道）。
+    - ``im_config``：per-Agent IM 专属凭证，按渠道分组（``{wecom: {bot_id, secret}}`` 等，
+      2026-09-22 起多渠道），加密存库，API 脱敏返回（与 ``Model.api_key`` 同机制）。
+      同一凭证全局只能绑一个实例（控制面写入前校验）。可为空（走全局默认 Bot）。
     - ``approval_policy``：per-Agent 审批策略覆盖（``{require_approval_tools:[...]}``），
       与全局工具 ``destructiveHint`` 正交，取并集。
     - ``is_enabled``：禁用后新会话拒绝、历史会话只读（软关闭）。

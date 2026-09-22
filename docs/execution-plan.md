@@ -287,6 +287,8 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 对应实例，会话键落 `:agent:{id}` 后缀（红线 #2 实例维度）；全局默认 Bot（SystemSetting）保留兜底。
 ② 控制面归一：渠道凭证收敛为"全局默认（渠道接入页）+ per-Agent 专属（数字员工详情）"两个作用域，
 bot_id 全局唯一校验，im_config 变更/启停/删除自动重载槽位；`im/status` 返回连接列表。
+（2026-09-22 修订：per-Agent 渠道配置泛化为**多渠道**——同一实例可接入多个不同渠道、
+同一凭证全局唯一，见 ADR-0012 修订记录与 `src/bycall/gateway/channels.py`。）
 ③ 管理面板 IA 重组：导航按"配置/运行"重分组，数字员工改列表+详情页分区编辑，
 Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必需，非视觉打磨）。
 （后续演进：面板二次重组为数字员工 Hub——渠道接入页与装配资产页并入 `/agents` 子页，
