@@ -404,8 +404,9 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     """更新数字员工实例（PATCH 语义：仅传入字段生效）。
 
-    ``name`` 不可改（作 API 寻址键，变更需重建）。``im_config`` 为 write-only：
-    None=不改，{}=清空。
+    ``name`` 不可改（作 API 寻址键，变更需重建）。``im_config`` 为 write-only、
+    **按渠道合并**（2026-09-22 起）：None=不改；{}=清空全部渠道；
+    {"wecom": {...}}=整体替换该渠道（其他渠道不动）；{"wecom": {}}=移除该渠道。
     """
 
     display_name: str | None = None
@@ -418,7 +419,7 @@ class AgentUpdate(BaseModel):
     allowed_tools: list[str] | None = None
     visible_roles: list[str] | None = None
     channel: str | None = None
-    im_config: dict[str, str] | None = None
+    im_config: dict | None = None
     approval_policy: dict | None = None
     is_enabled: bool | None = None
     is_default: bool | None = None
@@ -442,6 +443,9 @@ class AgentOut(BaseModel):
     visible_roles: list[str] | None = None
     channel: str
     has_im_config: bool = False
+    im_channels: list[str] = Field(
+        default_factory=list, description="已配置专属凭证的渠道类型列表（如 ['wecom']）"
+    )
     im_config_preview: dict = Field(
         default_factory=dict, description="脱敏预览（不含 secret 明文）"
     )

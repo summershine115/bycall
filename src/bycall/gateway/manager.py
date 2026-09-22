@@ -4,10 +4,13 @@
 HTTP 服务和其他槽位不动。Bycall 的每条 IM 连接在独立后台线程 + 自己的事件循环里跑
 （企微 SDK 是 asyncio 的，FastAPI 同步路由在线程池），reload 时安全地换掉那套。
 
-槽位模型（多 Bot 平台）：
-- ``wecom:global``——全局默认 Bot（SystemSetting ``im.*``），路由到默认实例（兜底）；
-- ``wecom:agent:{id}``——数字员工专属 Bot（``Agent.im_config``，Fernet 解密），
-  入站消息按连接路由到对应实例（会话键带 ``:agent:{id}`` 后缀）。
+槽位模型（多 Bot 平台，2026-09-22 起 per-Agent 多渠道）：
+- ``{渠道}:global``——全局默认 Bot（SystemSetting ``im.*``，当前仅企微），路由到默认
+  实例（兜底）；
+- ``{渠道}:agent:{id}``——数字员工专属连接（``Agent.im_config`` 按渠道分组、Fernet
+  解密），同一实例可同时接入多个不同渠道（每种渠道一条连接），入站消息按连接路由到
+  对应实例（会话键带 ``:agent:{id}`` 后缀）；同一凭证（如企微 bot_id）全局只能连一个
+  实例，控制面写入前校验拦截。
 - ``im.enable=false`` 是 IM 子系统总开关：全局与专属 Bot 都不启动。
 
 用法：
@@ -22,7 +25,6 @@ HTTP 服务和其他槽位不动。Bycall 的每条 IM 连接在独立后台线�
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from typing import TYPE_CHECKING
@@ -32,13 +34,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 槽位 key：全局默认 Bot / 数字员工专属 Bot。
+# 槽位 key：全局默认 Bot（{渠道}:global）/ 数字员工专属连接（{渠道}:agent:{id}）。
 GLOBAL_SLOT_KEY = "wecom:global"
 
 
-def agent_slot_key(agent_id: int) -> str:
-    """数字员工专属 Bot 的槽位 key。"""
-    return f"wecom:agent:{agent_id}"
+def global_slot_key(channel_type: str) -> str:
+    """全局默认 Bot 的槽位 key（当前仅企微有全局设置）。"""
+    return f"{channel_type}:global"
+
+
+def agent_slot_key(channel_type: str, agent_id: int) -> str:
+    """数字员工某渠道专属连接的槽位 key。"""
+    return f"{channel_type}:agent:{agent_id}"
 
 
 class _ChannelSlot:
@@ -99,11 +106,10 @@ class ChannelManager:
             else:
                 logger.info("全局 IM 渠道未启动：%s", err)
             for agent_id in self._enabled_agent_ids_with_im():
-                agent_channel = self._build_agent_channel(agent_id)
-                if agent_channel is None:
-                    continue
-                self._start_slot_locked(agent_slot_key(agent_id), agent_channel, agent_id=agent_id)
-                started = True
+                for channel_type, agent_channel in self._build_agent_channels(agent_id):
+                    key = agent_slot_key(channel_type, agent_id)
+                    self._start_slot_locked(key, agent_channel, agent_id=agent_id)
+                    started = True
             return started
 
     def reload(self) -> tuple[bool, str]:
@@ -129,37 +135,43 @@ class ChannelManager:
             return True, f"全局 IM 渠道{action}，使用新凭证"
 
     def reload_agent(self, agent_id: int) -> tuple[bool, str]:
-        """热重载某数字员工的专属 Bot 槽位：断开旧连接 + 用最新 im_config 建新连接。
+        """热重载某数字员工的全部专属渠道连接：断开旧连接 + 用最新 im_config 重建。
 
-        无凭证 / 实例禁用或不存在 / IM 未启用时，停掉该槽位并返回说明。
+        一个实例可同时接入多个渠道（每种渠道一条连接），重载时全部停掉再全部重建。
+        无凭证 / 实例禁用或不存在 / IM 未启用时，停掉该实例全部槽位并返回说明。
         """
-        key = agent_slot_key(agent_id)
         with self._lock:
-            was_running = key in self._slots
-            if was_running:
-                self._stop_slot_locked(key)
+            was_running = any(s.agent_id == agent_id for s in self._slots.values())
+            self._stop_agent_slots_locked(agent_id)
             if not self._im_enabled():
-                return True, "IM 未启用（im.enable=false），专属 Bot 未启动"
-            channel = self._build_agent_channel(agent_id)
-            if channel is None:
+                return True, "IM 未启用（im.enable=false），专属连接未启动"
+            channels = self._build_agent_channels(agent_id)
+            if not channels:
                 msg = (
-                    f"Agent #{agent_id} 专属 Bot 已停止（无凭证/实例禁用或不存在）"
+                    f"Agent #{agent_id} 专属连接已全部停止（无凭证/实例禁用或不存在）"
                     if was_running
-                    else f"Agent #{agent_id} 无专属 Bot 凭证，未启动"
+                    else f"Agent #{agent_id} 无专属渠道凭证，未启动"
                 )
                 logger.info("IM reload(agent): %s", msg)
                 return True, msg
-            self._start_slot_locked(key, channel, agent_id=agent_id)
-            return True, f"Agent #{agent_id} 专属 Bot 已（重）连接"
+            for channel_type, agent_channel in channels:
+                self._start_slot_locked(
+                    agent_slot_key(channel_type, agent_id), agent_channel, agent_id=agent_id
+                )
+            names = "、".join(ch for ch, _ in channels)
+            return True, f"Agent #{agent_id} 专属连接已（重）连接（{names}）"
 
     def stop_agent(self, agent_id: int) -> bool:
-        """停止某数字员工的专属 Bot 槽位（实例禁用/删除时调用）。返回是否曾运行。"""
-        key = agent_slot_key(agent_id)
+        """停止某数字员工的全部专属渠道连接（实例禁用/删除时调用）。返回是否曾运行。"""
         with self._lock:
-            if key not in self._slots:
-                return False
+            was_running = any(s.agent_id == agent_id for s in self._slots.values())
+            self._stop_agent_slots_locked(agent_id)
+            return was_running
+
+    def _stop_agent_slots_locked(self, agent_id: int) -> None:
+        """停掉某实例的全部槽位（调用方持锁）。"""
+        for key in [k for k, s in self._slots.items() if s.agent_id == agent_id]:
             self._stop_slot_locked(key)
-            return True
 
     def stop(self) -> None:
         """完全停止全部槽位（应用关闭时调用）。"""
@@ -178,6 +190,7 @@ class ChannelManager:
             channels = [
                 {
                     "key": s.key,
+                    "channel": s.key.split(":", 1)[0],
                     "scope": "agent" if s.agent_id is not None else "global",
                     "agent_id": s.agent_id,
                     "bot_id": s.bot_id,
@@ -191,7 +204,7 @@ class ChannelManager:
             primary = self._slots.get(GLOBAL_SLOT_KEY) or (slots[0] if slots else None)
             return {
                 "running": bool(slots),
-                "channel": "wecom" if slots else None,
+                "channel": primary.key.split(":", 1)[0] if primary else None,
                 "is_connected": primary.state["is_connected"] if primary else False,
                 "last_event": primary.state["last_event"] if primary else None,
                 "reconnect_attempts": primary.state["reconnect_attempts"] if primary else 0,
@@ -235,21 +248,32 @@ class ChannelManager:
 
     # ---- 主动推送 ----
 
-    def send_proactive(self, chatid: str, body: dict, agent_id: int | None = None) -> bool:
+    def send_proactive(
+        self, chatid: str, body: dict, agent_id: int | None = None, channel: str | None = None
+    ) -> bool:
         """尽力主动推送（审批结果/异步任务回推）。**永不向调用方抛异常**
         （审批流程绝不能因推送失败而中断）。
 
-        路由（ADR-0012）：``agent_id`` 指定时优先走该实例的专属 Bot 连接——chatid 是
-        Bot 维度的（哪个 Bot 的会话产生，就要从哪个 Bot 推回去）；否则走全局默认槽位。
+        路由（ADR-0012）：``agent_id`` 指定时优先走该实例的专属连接——chatid 是
+        Bot 维度的（哪个 Bot 的会话产生，就要从哪个 Bot 推回去）。一个实例接入多个
+        渠道时按 ``channel`` 精确命中对应连接（未指定则取该实例任一连接，行为兜底）。
         把协程 marshal 到对应槽位的 IM 事件循环线程执行，同步等待结果（超时 10s）。
         未运行/未连接/异常 → 记日志 + 返回 False。
         """
         with self._lock:
             slot = None
             if agent_id is not None:
-                slot = self._slots.get(agent_slot_key(agent_id))
+                agent_slots = [s for s in self._slots.values() if s.agent_id == agent_id]
+                if channel is not None:
+                    slot = next(
+                        (s for s in agent_slots if s.key.startswith(f"{channel}:agent:")), None
+                    )
+                if slot is None:
+                    slot = agent_slots[0] if agent_slots else None
             if slot is None:
-                slot = self._slots.get(GLOBAL_SLOT_KEY)
+                slot = self._slots.get(
+                    global_slot_key(channel) if channel is not None else GLOBAL_SLOT_KEY
+                )
             if slot is None and self._slots:
                 # 兜底：未配全局 Bot、仅有专属 Bot 的部署也能推出去。
                 slot = next(iter(self._slots.values()))
@@ -305,26 +329,47 @@ class ChannelManager:
             return None, "缺少 wecom_bot_id 或 wecom_secret"
         return self._new_wecom_channel(bot_id, bot_secret, agent_id=None), ""
 
-    def _build_agent_channel(self, agent_id: int) -> Channel | None:
-        """按 ``Agent.im_config``（Fernet 解密）构造该实例的专属 Bot 连接。
+    def _build_agent_channels(self, agent_id: int) -> list[tuple[str, Channel]]:
+        """按 ``Agent.im_config``（解密 + 归一化）构造该实例的全部专属渠道连接。
 
-        实例不存在/禁用/无凭证/解密失败 → None（调用方据此跳过或停止槽位）。
+        一个实例可同时接入多个渠道（2026-09-22 起，ADR-0012 修订）；存量旧扁平格式经
+        `normalize_im_config` 归一为按渠道分组。实例不存在/禁用/无凭证/解密失败 →
+        空列表（调用方据此跳过或停止槽位）。
         """
         from bycall.db import session_scope
+        from bycall.gateway.channels import agent_channels_from_encrypted
         from bycall.governance.models import Agent
-        from bycall.governance.secrets import decrypt_secret
 
         with session_scope() as session:
             agent = session.get(Agent, agent_id)
             if agent is None or not agent.is_enabled or not agent.im_config_encrypted:
-                return None
-            try:
-                cfg = json.loads(decrypt_secret(agent.im_config_encrypted) or "{}")
-            except Exception:
-                logger.exception("Agent #%s 专属 IM 凭证解密失败，槽位未启动", agent_id)
-                return None
-        bot_id = str(cfg.get("wecom_bot_id") or "").strip()
-        secret = str(cfg.get("wecom_secret") or "").strip()
+                return []
+            cfgs = agent_channels_from_encrypted(agent.im_config_encrypted)
+        built: list[tuple[str, Channel]] = []
+        for channel_type, fields in cfgs.items():
+            channel = self._build_channel_for(channel_type, fields, agent_id=agent_id)
+            if channel is None:
+                logger.warning(
+                    "Agent #%s 渠道 %s 无法建连（凭证不完整或未接入连接器），已跳过",
+                    agent_id,
+                    channel_type,
+                )
+                continue
+            built.append((channel_type, channel))
+        return built
+
+    def _build_channel_for(
+        self, channel_type: str, fields: dict[str, str], *, agent_id: int
+    ) -> Channel | None:
+        """按渠道类型构造专属连接（多渠道分派点，当前仅企微）。无法构造返回 None。
+
+        未接入连接器的渠道理论上不会入库（写入侧 `SUPPORTED_CHANNEL_TYPES` 拦截），
+        此处再拦一道是纵深防御——历史数据/手工改库不留运行时缝隙。
+        """
+        if channel_type != "wecom":
+            return None
+        bot_id = str(fields.get("bot_id") or "").strip()
+        secret = str(fields.get("secret") or "").strip()
         if not bot_id or not secret:
             return None
         return self._new_wecom_channel(bot_id, secret, agent_id=agent_id)
@@ -359,7 +404,7 @@ class ChannelManager:
             30000,
             "BYCALL_IM_WECOM_HEARTBEAT_INTERVAL_MS",
         )
-        key = GLOBAL_SLOT_KEY if agent_id is None else agent_slot_key(agent_id)
+        key = GLOBAL_SLOT_KEY if agent_id is None else agent_slot_key("wecom", agent_id)
         return WecomChannel(
             bot_id=bot_id,
             secret=secret,

@@ -9,9 +9,9 @@
           <div>
             <h3>连接总览</h3>
             <p class="bc-muted bc-text-sm">
-              IM Bot 连接的集中视图：全局默认 Bot 兜底 + 各数字员工专属 Bot，保存即热重连、无需重启服务。
-              每个数字员工可绑定一个专属企微 Bot（在数字员工详情「IM 渠道」区配置）；
-              员工私聊哪个 Bot，就进入哪个数字员工的独立会话。
+              IM Bot 连接的集中视图：全局默认 Bot 兜底 + 各数字员工专属连接，保存即热重连、无需重启服务。
+              每个数字员工可接入多个不同渠道（每渠道一条专属连接，在数字员工详情「IM 渠道」区配置）；
+              同一凭证全局只能绑定一个实例——员工私聊哪个 Bot，就进入哪个数字员工的独立会话。
             </p>
           </div>
           <el-button :icon="Refresh" circle aria-label="刷新" @click="loadAll" />
@@ -20,7 +20,7 @@
           <el-table-column label="作用域" width="130">
             <template #default="{ row }">
               <el-tag v-if="row.scope === 'global'" effect="plain">全局默认</el-tag>
-              <el-tag v-else type="primary" effect="plain">专属 Bot</el-tag>
+              <el-tag v-else type="primary" effect="plain">{{ channelLabel(row.channel) }}专属</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="归属" min-width="160">
@@ -136,6 +136,8 @@ const loading = ref(true)
 const saving = ref(false)
 const reloading = ref(false)
 const reloadingKey = ref('')
+// 渠道类型展示名（连接总览按渠道打标）
+function channelLabel(ch) { return { wecom: '企微', feishu: '飞书' }[ch] || ch || '' }
 const form = reactive({})
 const masks = reactive({})
 const imEnable = ref(false)

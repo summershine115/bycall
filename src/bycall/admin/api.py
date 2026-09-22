@@ -1853,19 +1853,23 @@ def test_model(
 
 
 def _agent_to_out(agent: Agent) -> AgentOut:
-    """把 Agent ORM 行转 AgentOut：im_config 脱敏。"""
-    import json as _json
-
-    from bycall.governance.secrets import decrypt_secret
+    """把 Agent ORM 行转 AgentOut：im_config 解密归一 + 脱敏（按渠道分组）。"""
+    from bycall.gateway.channels import agent_channels_from_encrypted
 
     has_im = bool(agent.im_config_encrypted)
     preview: dict = {}
+    data: dict[str, dict[str, str]] = {}
     if has_im:
         try:
-            raw = decrypt_secret(agent.im_config_encrypted)
-            data = _json.loads(raw) if raw else {}
-            # 脱敏：只露 key 名，值打码
-            preview = {k: ("***" if v else "") for k, v in data.items()}
+            data = agent_channels_from_encrypted(agent.im_config_encrypted)
+            # 脱敏：按渠道分组，只露字段名，值打码
+            preview = {
+                ch: {k: ("***" if v else "") for k, v in fields.items()}
+                for ch, fields in data.items()
+            }
+            if not data:
+                # 有密文但解析不出任何渠道（损坏/异常）——不静默当作「未配置」
+                preview = {"_error": "<decrypt failed>"}
         except Exception:
             preview = {"_error": "<decrypt failed>"}
     return AgentOut(
@@ -1882,6 +1886,7 @@ def _agent_to_out(agent: Agent) -> AgentOut:
         visible_roles=agent.visible_roles,
         channel=agent.channel,
         has_im_config=has_im,
+        im_channels=sorted(data.keys()),
         im_config_preview=preview,
         approval_policy=agent.approval_policy,
         is_enabled=agent.is_enabled,
@@ -1905,39 +1910,74 @@ def _get_agent_or_404(session: Session, agent_id: int) -> Agent:
 def _validate_agent_im_config(
     session: Session, agent_id: int | None, im_config: dict | None
 ) -> None:
-    """per-Agent IM 凭证写入校验（ADR-0012）：wecom_bot_id 全局唯一。
+    """per-Agent IM 凭证写入校验（ADR-0012 修订：多渠道 + 凭证全局唯一）。
 
-    Agent 之间、以及与全局默认 Bot（SystemSetting ``im.wecom_bot_id``）冲突即 400——
-    同一 bot_id 建两条连接会被企微单连接策略互踢，必须在写入前拦住。
+    - 渠道类型必须在 ``SUPPORTED_CHANNEL_TYPES``（未接入连接器的渠道配置了也不会生效，
+      写入前拦住，不留「看似生效」的缝隙）；
+    - 凭证必填字段齐全（半套凭证的渠道不会建连）；
+    - 同一渠道的凭证身份字段（企微 bot_id）跨 Agent、以及与全局默认 Bot
+      （SystemSetting ``im.{渠道}_{字段}``）冲突即 400——同一 bot_id 建两条连接会被
+      企微单连接策略互踢，必须在写入前拦住。
     """
-    bot_id = str((im_config or {}).get("wecom_bot_id") or "").strip()
-    if not bot_id:
-        return
-    from bycall.governance.secrets import decrypt_secret
+    from bycall.gateway.channels import (
+        CREDENTIAL_ID_FIELDS,
+        REQUIRED_FIELDS,
+        SUPPORTED_CHANNEL_TYPES,
+        agent_channels_from_encrypted,
+        credential_id,
+        global_credential_setting_key,
+        parse_im_config_patch,
+    )
     from bycall.governance.settings_store import get_setting_value
 
-    global_bot = get_setting_value(
-        "im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID"
-    ).strip()
-    if global_bot and bot_id == global_bot:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=f"wecom_bot_id '{bot_id}' 与全局默认 Bot 冲突（见渠道接入页/运行时设置）",
-        )
-    for other in session.exec(Agent.select_all()).all():
-        if agent_id is not None and other.id == agent_id:
-            continue
-        if not other.im_config_encrypted:
-            continue
-        try:
-            cfg = json.loads(decrypt_secret(other.im_config_encrypted) or "{}")
-        except Exception:
-            continue  # 他人凭证损坏不应阻断本次写入，运行时加载时另行报错
-        if str(cfg.get("wecom_bot_id") or "").strip() == bot_id:
+    if im_config is None:
+        return
+    try:
+        patch = parse_im_config_patch(im_config)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    if not patch:
+        return  # {} = 清空全部渠道，无需校验
+    for channel_type, fields in patch.items():
+        if not any(fields.values()):
+            continue  # 空分组 = 移除该渠道，无需校验
+        label = CREDENTIAL_ID_FIELDS.get(channel_type, "凭证")
+        if channel_type not in SUPPORTED_CHANNEL_TYPES:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                detail=f"wecom_bot_id '{bot_id}' 已被数字员工 '{other.name}' 使用",
+                detail=f"渠道 '{channel_type}' 暂未接入连接器，无法配置专属凭证",
             )
+        missing = [f for f in REQUIRED_FIELDS.get(channel_type, ()) if not fields.get(f)]
+        if missing:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=f"渠道 '{channel_type}' 专属凭证缺少必填字段：{'、'.join(missing)}",
+            )
+        cred = credential_id(channel_type, fields)
+        if not cred:
+            continue
+        # 与全局默认 Bot 冲突检查（env 命名沿用 BYCALL_IM_{渠道}_{字段}）。
+        global_key = global_credential_setting_key(channel_type)
+        global_env = f"BYCALL_IM_{channel_type}_{CREDENTIAL_ID_FIELDS[channel_type]}".upper()
+        global_cred = get_setting_value(global_key, default="", env_var=global_env).strip()
+        if global_cred and cred == global_cred:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{channel_type} {label} '{cred}' 与全局默认 Bot 冲突"
+                    "（见渠道接入页/运行时设置）"
+                ),
+            )
+        # 与其他数字员工冲突检查（读取时归一，兼容存量旧扁平格式）。
+        for other in session.exec(Agent.select_all()).all():
+            if agent_id is not None and other.id == agent_id:
+                continue
+            other_channels = agent_channels_from_encrypted(other.im_config_encrypted)
+            if credential_id(channel_type, other_channels.get(channel_type)) == cred:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail=(f"{channel_type} {label} '{cred}' 已被数字员工 '{other.name}' 使用"),
+                )
 
 
 def _sync_agent_channel_slot(agent: Agent) -> None:
@@ -2026,12 +2066,15 @@ def create_agent(
     """创建数字员工实例。name 唯一冲突 → 409；引用校验失败 → 404/400。"""
     _validate_agent_refs(session, payload)
     _validate_agent_im_config(session, None, payload.im_config)
-    # 加密 per-Agent IM 覆盖
+    # 加密 per-Agent IM 覆盖（按渠道归一后写入新格式）
     im_encrypted = ""
-    if payload.im_config is not None and len(payload.im_config) > 0:
+    if payload.im_config:
+        from bycall.gateway.channels import merge_im_config, parse_im_config_patch
         from bycall.governance.secrets import encrypt_secret
 
-        im_encrypted = encrypt_secret(json.dumps(payload.im_config, ensure_ascii=False))
+        merged = merge_im_config({}, parse_im_config_patch(payload.im_config))
+        if merged:
+            im_encrypted = encrypt_secret(json.dumps(merged, ensure_ascii=False))
     agent = Agent(
         name=payload.name,
         display_name=payload.display_name,
@@ -2080,7 +2123,8 @@ def update_agent(
 
     - skills/knowledge_scope_tags/allowed_tools/visible_roles 传 [] 表示清空覆盖
       （回到"沿用角色"）；传 None 表示不改。
-    - im_config 传 None=不改，{}=清空，已有值则整体替换并重新加密。
+    - im_config（write-only，按渠道合并）传 None=不改；{}=清空全部渠道；
+      {"wecom": {...}}=整体替换该渠道；{"wecom": {}}=移除该渠道。
     """
     agent = _get_agent_or_404(session, agent_id)
     _validate_agent_refs(session, payload)
@@ -2115,14 +2159,20 @@ def update_agent(
     if payload.channel is not None:
         agent.channel = payload.channel
     if payload.im_config is not None:
-        if len(payload.im_config) == 0:
-            agent.im_config_encrypted = ""
-        else:
-            from bycall.governance.secrets import encrypt_secret
+        # 按渠道合并（2026-09-22 起）：{}=清空全部；渠道分组整体替换/空分组移除；
+        # 未提及的渠道不动（区别于旧的「整体替换」语义，多渠道下防误清）。
+        from bycall.gateway.channels import (
+            agent_channels_from_encrypted,
+            merge_im_config,
+            parse_im_config_patch,
+        )
+        from bycall.governance.secrets import encrypt_secret
 
-            agent.im_config_encrypted = encrypt_secret(
-                json.dumps(payload.im_config, ensure_ascii=False)
-            )
+        current = agent_channels_from_encrypted(agent.im_config_encrypted)
+        merged = merge_im_config(current, parse_im_config_patch(payload.im_config))
+        agent.im_config_encrypted = (
+            encrypt_secret(json.dumps(merged, ensure_ascii=False)) if merged else ""
+        )
     if "approval_policy" in payload.model_fields_set:
         agent.approval_policy = payload.approval_policy
     if payload.is_enabled is not None:

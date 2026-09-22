@@ -168,8 +168,10 @@ def im_env(env, monkeypatch):
     pushed: list[dict] = []
 
     class _FakeChannelManager:
-        def send_proactive(self, im_user_id, body, agent_id=None):
-            pushed.append({"im_user_id": im_user_id, "body": body, "agent_id": agent_id})
+        def send_proactive(self, im_user_id, body, agent_id=None, channel=None):
+            pushed.append(
+                {"im_user_id": im_user_id, "body": body, "agent_id": agent_id, "channel": channel}
+            )
             return True
 
     import bycall.tools.approval as approval_mod

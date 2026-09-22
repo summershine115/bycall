@@ -1,13 +1,15 @@
-"""ADR-0012 多 Bot 渠道体系单测。
+"""ADR-0012 多 Bot 渠道体系单测（2026-09-22 起 per-Agent 多渠道）。
 
-覆盖多 Bot 平台的核心契约（不真实建连，全程 mock ``aibot.WSClient``）：
-1. 槽位生命周期：``start_if_enabled`` 同时起全局 + 专属 Bot 槽位；清凭证/禁用后
+覆盖多 Bot 平台的核心契约（不真实建连，全程 mock ``aibot.WSClient`` 或假渠道）：
+1. 槽位生命周期：``start_if_enabled`` 同时起全局 + 专属连接槽位；清凭证/禁用后
    ``reload_agent`` 停槽位；``stop_agent``/``stop`` 清理。
 2. 入站路由：``WecomChannel`` 构造时带 ``agent_id`` → ``InboundMessage.agent_id`` 透传。
 3. 会话隔离：同一用户 × 不同实例（含默认）→ 三条独立 Conversation，``agent_id`` 落库。
 4. 幂等命名空间：专属 Bot 的 msg_id 按 ``{channel}:agent:{id}`` 隔离；全局 Bot 沿用旧键格式。
 5. 实例失效守卫：禁用实例的滞留消息被礼貌拒绝，不回落默认实例。
-6. 控制面校验：``wecom_bot_id`` 全局唯一（Agent 间 + 与全局默认 Bot）。
+6. 控制面校验：同一渠道的凭证身份（企微 bot_id）全局唯一（Agent 间 + 与全局默认 Bot）。
+7. 多渠道（2026-09-22）：同一实例可同时接入多个渠道（每渠道一条槽位）；存量旧扁平
+   im_config 读取兼容；im_config PATCH 按渠道合并/移除。
 """
 
 from __future__ import annotations
@@ -92,9 +94,24 @@ def _patch_wsclient(monkeypatch) -> None:
 
 
 def _encrypt_im(bot_id: str, secret: str = "s") -> str:
+    """新版按渠道分组格式（2026-09-22 起的写入格式）。"""
+    from bycall.governance.secrets import encrypt_secret
+
+    return encrypt_secret(json.dumps({"wecom": {"bot_id": bot_id, "secret": secret}}))
+
+
+def _encrypt_im_legacy(bot_id: str, secret: str = "s") -> str:
+    """旧版扁平格式（ADR-0012 初版）——存量数据的读取兼容用例。"""
     from bycall.governance.secrets import encrypt_secret
 
     return encrypt_secret(json.dumps({"wecom_bot_id": bot_id, "wecom_secret": secret}))
+
+
+def _encrypt_im_raw(cfg: dict) -> str:
+    """任意结构直接加密（多渠道用例）。"""
+    from bycall.governance.secrets import encrypt_secret
+
+    return encrypt_secret(json.dumps(cfg))
 
 
 def _add_agent(session, name: str, *, enabled: bool = True, im_encrypted: str = "") -> int:
@@ -217,7 +234,7 @@ class TestMultiSlotLifecycle:
 
             ok, msg = mgr.reload_agent(agent_id)
             assert ok is True
-            assert "已停止" in msg
+            assert "停止" in msg
             assert f"wecom:agent:{agent_id}" not in mgr._slots
             # 全局槽位不受影响（只动那一个渠道）
             assert "wecom:global" in mgr._slots
@@ -482,7 +499,9 @@ class TestAgentImConfigValidation:
         from bycall.admin.api import _validate_agent_im_config
 
         agent_id = _add_agent(db_session, "self-bot", im_encrypted=_encrypt_im("keep-bot"))
-        _validate_agent_im_config(db_session, agent_id, {"wecom_bot_id": "keep-bot"})  # 不抛
+        _validate_agent_im_config(
+            db_session, agent_id, {"wecom_bot_id": "keep-bot", "wecom_secret": "s"}
+        )  # 不抛
 
     def test_conflict_with_global_default_bot_rejected(self, db_session):
         """与全局默认 Bot 同号 → 400。"""
@@ -498,9 +517,315 @@ class TestAgentImConfigValidation:
         assert exc.value.status_code == 400
 
     def test_distinct_bot_ids_pass(self, db_session):
-        """不同 bot_id 正常放行；空/缺 key 的 im_config 不校验。"""
+        """不同 bot_id 正常放行；空 im_config（{}=清空全部）不校验。"""
         from bycall.admin.api import _validate_agent_im_config
 
         _add_agent(db_session, "a-bot", im_encrypted=_encrypt_im("bot-a"))
-        _validate_agent_im_config(db_session, None, {"wecom_bot_id": "bot-b"})  # 不抛
-        _validate_agent_im_config(db_session, None, {"wecom_secret": "s"})  # 无 bot_id 不校验
+        # 新格式与旧扁平格式均可作为载荷
+        _validate_agent_im_config(db_session, None, {"wecom": {"bot_id": "bot-b", "secret": "s"}})
+        _validate_agent_im_config(db_session, None, {"wecom_bot_id": "bot-b", "wecom_secret": "s"})
+        _validate_agent_im_config(db_session, None, {})  # 清空全部，无需校验
+
+    def test_incomplete_credential_rejected(self, db_session):
+        """半套凭证（缺 secret）→ 400：配置了也不会建连，写入前拦住。"""
+        from fastapi import HTTPException
+
+        from bycall.admin.api import _validate_agent_im_config
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_agent_im_config(db_session, None, {"wecom": {"bot_id": "half-bot"}})
+        assert exc.value.status_code == 400
+
+    def test_unsupported_channel_type_rejected(self, db_session):
+        """未接入连接器的渠道（feishu）→ 400：不留「配置了看似生效」的缝隙。"""
+        from fastapi import HTTPException
+
+        from bycall.admin.api import _validate_agent_im_config
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_agent_im_config(
+                db_session, None, {"feishu": {"app_id": "f1", "app_secret": "fs"}}
+            )
+        assert exc.value.status_code == 400
+        assert "暂未接入" in exc.value.detail
+
+    def test_invalid_payload_shape_rejected(self, db_session):
+        """顶层非渠道分组的标量字段 → 400（拼写错误不被静默吞掉）。"""
+        from fastapi import HTTPException
+
+        from bycall.admin.api import _validate_agent_im_config
+
+        with pytest.raises(HTTPException) as exc:
+            _validate_agent_im_config(db_session, None, {"wecomm": "oops"})
+        assert exc.value.status_code == 400
+
+
+# ============ 7. 多渠道（2026-09-22）：同实例多渠道 + 存量兼容 + PATCH 合并 ============
+
+
+class _FakeChannelObj:
+    """假渠道连接（多渠道槽位/推送测试用，不真实建连）。"""
+
+    def __init__(self, bot_id: str) -> None:
+        self._bot_id = bot_id
+        self.is_connected = True
+        self.sent: list[tuple[str, dict]] = []
+
+    async def start(self, on_message) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+    async def stop_async(self) -> None:
+        return
+
+    async def send_proactive(self, chatid: str, body: dict) -> None:
+        self.sent.append((chatid, body))
+
+
+def _wait_slots_ready(slots, timeout: float = 5.0) -> None:
+    """等各槽位的事件循环线程就绪（slot.loop 由后台线程异步赋值，有界条件等待）。"""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(s.loop is not None for s in slots):
+            return
+        time.sleep(0.02)
+    raise AssertionError("IM 槽位事件循环线程未在时限内就绪")
+
+
+def _patch_fake_channels(monkeypatch, channel_types: set[str]) -> None:
+    """把指定渠道类型的连接构造替换为假连接（类级 monkeypatch，保留未列渠道的原实现）。"""
+    from bycall.gateway.manager import ChannelManager
+
+    original = ChannelManager._build_channel_for
+
+    def patched(self, channel_type, fields, *, agent_id):
+        if channel_type in channel_types:
+            return _FakeChannelObj(str(fields.get("bot_id") or fields.get("app_id") or "fake"))
+        return original(self, channel_type, fields, agent_id=agent_id)
+
+    monkeypatch.setattr(ChannelManager, "_build_channel_for", patched)
+
+
+def _add_multi_channel_agent(session, name: str, *, channels: dict) -> int:
+    from bycall.governance.models import Agent
+
+    agent = Agent(
+        name=name,
+        display_name=name,
+        channel="wecom",
+        im_config_encrypted=_encrypt_im_raw(channels),
+        is_enabled=True,
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent.id
+
+
+class TestMultiChannelPerAgent:
+    """同一数字员工接入多个不同渠道：每种渠道一条独立槽位，互不干扰。"""
+
+    @pytest.mark.asyncio
+    async def test_agent_with_two_channels_gets_two_slots(self, db_session, monkeypatch):
+        """wecom + feishu（假连接）→ 两条独立槽位，status() 逐槽位带 channel 字段。"""
+        from bycall.gateway.manager import ChannelManager
+
+        self._enable_im(db_session)
+        _patch_fake_channels(monkeypatch, {"wecom", "feishu"})
+        agent_id = _add_multi_channel_agent(
+            db_session,
+            "multi-bot",
+            channels={
+                "wecom": {"bot_id": "multi-w", "secret": "s"},
+                "feishu": {"app_id": "multi-f", "app_secret": "fs"},
+            },
+        )
+
+        mgr = ChannelManager()
+        try:
+            assert mgr.start_if_enabled() is True
+            keys = set(mgr._slots)
+            assert keys == {f"wecom:agent:{agent_id}", f"feishu:agent:{agent_id}"}
+            by_key = {c["key"]: c for c in mgr.status()["channels"]}
+            assert by_key[f"wecom:agent:{agent_id}"]["channel"] == "wecom"
+            assert by_key[f"feishu:agent:{agent_id}"]["channel"] == "feishu"
+        finally:
+            mgr.stop()
+
+    @pytest.mark.asyncio
+    async def test_legacy_flat_config_still_loads(self, db_session, monkeypatch):
+        """存量旧扁平 im_config → 读取归一后照常建槽位（懒升级，无需迁移）。"""
+        from bycall.gateway.manager import ChannelManager
+
+        self._enable_im(db_session)
+        _patch_fake_channels(monkeypatch, {"wecom"})
+        agent_id = _add_agent(db_session, "legacy-bot", im_encrypted=_encrypt_im_legacy("lg-w"))
+
+        mgr = ChannelManager()
+        try:
+            mgr.start_if_enabled()
+            assert set(mgr._slots) == {f"wecom:agent:{agent_id}"}
+        finally:
+            mgr.stop()
+
+    @pytest.mark.asyncio
+    async def test_reload_agent_restarts_all_channels(self, db_session, monkeypatch):
+        """reload_agent 重建该实例的全部渠道槽位（不是只建第一个）。"""
+        from bycall.gateway.manager import ChannelManager
+
+        self._enable_im(db_session)
+        _patch_fake_channels(monkeypatch, {"wecom", "feishu"})
+        agent_id = _add_multi_channel_agent(
+            db_session,
+            "reload-bot",
+            channels={
+                "wecom": {"bot_id": "rb-w", "secret": "s"},
+                "feishu": {"app_id": "rb-f", "app_secret": "fs"},
+            },
+        )
+
+        mgr = ChannelManager()
+        try:
+            mgr.start_if_enabled()
+            ok, msg = mgr.reload_agent(agent_id)
+            assert ok is True
+            assert "wecom" in msg and "feishu" in msg
+            assert set(mgr._slots) == {f"wecom:agent:{agent_id}", f"feishu:agent:{agent_id}"}
+        finally:
+            mgr.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_agent_stops_all_channels(self, db_session, monkeypatch):
+        """stop_agent 停掉该实例全部渠道槽位。"""
+        from bycall.gateway.manager import ChannelManager
+
+        self._enable_im(db_session)
+        _patch_fake_channels(monkeypatch, {"wecom", "feishu"})
+        agent_id = _add_multi_channel_agent(
+            db_session,
+            "stop-bot",
+            channels={
+                "wecom": {"bot_id": "sb-w", "secret": "s"},
+                "feishu": {"app_id": "sb-f", "app_secret": "fs"},
+            },
+        )
+
+        mgr = ChannelManager()
+        try:
+            mgr.start_if_enabled()
+            assert mgr.stop_agent(agent_id) is True
+            assert not mgr._slots
+        finally:
+            mgr.stop()
+
+    @pytest.mark.asyncio
+    async def test_send_proactive_routes_by_channel(self, db_session, monkeypatch):
+        """多渠道实例按 channel 精确路由推送：feishu 会话的回推走 feishu 连接。"""
+        from bycall.gateway.manager import ChannelManager
+
+        self._enable_im(db_session)
+        _patch_fake_channels(monkeypatch, {"wecom", "feishu"})
+        agent_id = _add_multi_channel_agent(
+            db_session,
+            "push-bot",
+            channels={
+                "wecom": {"bot_id": "pb-w", "secret": "s"},
+                "feishu": {"app_id": "pb-f", "app_secret": "fs"},
+            },
+        )
+
+        mgr = ChannelManager()
+        try:
+            mgr.start_if_enabled()
+            wecom_slot = mgr._slots[f"wecom:agent:{agent_id}"]
+            feishu_slot = mgr._slots[f"feishu:agent:{agent_id}"]
+            _wait_slots_ready([wecom_slot, feishu_slot])  # 事件循环线程就绪后再推（免竞态）
+            ok = mgr.send_proactive("u1", {"msgtype": "text"}, agent_id=agent_id, channel="feishu")
+            assert ok is True
+            assert feishu_slot.channel.sent == [("u1", {"msgtype": "text"})]
+            assert wecom_slot.channel.sent == []  # 不会误从企微 Bot 推出
+        finally:
+            mgr.stop()
+
+    @staticmethod
+    def _enable_im(session) -> None:
+        from bycall.governance.settings_store import set_setting_value
+
+        set_setting_value(session, "im.enable", "true")
+        session.commit()
+
+
+class TestAgentOutPreview:
+    """AgentOut 脱敏预览：按渠道分组；损坏凭证不静默当作未配置。"""
+
+    def test_preview_grouped_by_channel(self, db_session):
+        from bycall.admin.api import _agent_to_out
+        from bycall.governance.models import Agent
+
+        agent_id = _add_agent(db_session, "preview-bot", im_encrypted=_encrypt_im("pv"))
+        agent = db_session.get(Agent, agent_id)
+        out = _agent_to_out(agent)
+        assert out.im_channels == ["wecom"]
+        assert out.im_config_preview == {"wecom": {"bot_id": "***", "secret": "***"}}
+
+    def test_preview_marks_corrupted_credential(self, db_session):
+        from bycall.admin.api import _agent_to_out
+        from bycall.governance.models import Agent
+
+        agent_id = _add_agent(db_session, "broken-bot", im_encrypted="not-a-fernet-token")
+        agent = db_session.get(Agent, agent_id)
+        out = _agent_to_out(agent)
+        assert out.has_im_config is True
+        assert out.im_config_preview == {"_error": "<decrypt failed>"}
+
+class TestImConfigNormalizeAndMerge:
+    """im_config 规范化 / PATCH 解析 / 按渠道合并的纯函数契约。"""
+
+    def test_normalize_legacy_flat(self):
+        from bycall.gateway.channels import normalize_im_config
+
+        assert normalize_im_config({"wecom_bot_id": "b", "wecom_secret": " s "}) == {
+            "wecom": {"bot_id": "b", "secret": "s"}
+        }
+
+    def test_normalize_drops_empty_channels(self):
+        from bycall.gateway.channels import normalize_im_config
+
+        assert normalize_im_config({"wecom": {"bot_id": "", "secret": ""}, "feishu": {}}) == {}
+
+    def test_parse_patch_keeps_removal_marker(self):
+        """{"wecom": {}} 是显式移除信号，不能被丢弃（区别于「未提及」）。"""
+        from bycall.gateway.channels import parse_im_config_patch
+
+        assert parse_im_config_patch({"wecom": {}}) == {"wecom": {}}
+
+    def test_parse_patch_invalid_shape_raises(self):
+        from bycall.gateway.channels import parse_im_config_patch
+
+        with pytest.raises(ValueError):
+            parse_im_config_patch({"wecom": "not-a-dict"})
+
+    def test_merge_replaces_channel_and_preserves_others(self):
+        from bycall.gateway.channels import merge_im_config
+
+        current = {"wecom": {"bot_id": "a", "secret": "1"}, "feishu": {"app_id": "f"}}
+        merged = merge_im_config(current, {"wecom": {"bot_id": "b", "secret": "2"}})
+        assert merged == {"wecom": {"bot_id": "b", "secret": "2"}, "feishu": {"app_id": "f"}}
+
+    def test_merge_empty_clears_all(self):
+        from bycall.gateway.channels import merge_im_config
+
+        assert merge_im_config({"wecom": {"bot_id": "a", "secret": "1"}}, {}) == {}
+
+    def test_merge_empty_channel_removes_only_it(self):
+        from bycall.gateway.channels import merge_im_config
+
+        merged = merge_im_config(
+            {"wecom": {"bot_id": "a", "secret": "1"}, "feishu": {"app_id": "f"}},
+            {"wecom": {}},
+        )
+        assert merged == {"feishu": {"app_id": "f"}}
