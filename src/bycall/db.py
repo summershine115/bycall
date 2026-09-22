@@ -193,7 +193,6 @@ def _ensure_schema_compatibility() -> None:
             ("im_config_encrypted", "VARCHAR NOT NULL DEFAULT ''"),
             ("approval_policy", "VARCHAR"),
             ("is_enabled", "BOOLEAN NOT NULL DEFAULT 1"),
-            ("is_default", "BOOLEAN NOT NULL DEFAULT 0"),
         ]
         missing = [(n, ddl) for n, ddl in agent_migrations if n not in columns]
         if missing:
@@ -273,6 +272,47 @@ def _migrate_im_bindings() -> None:
                         )
                     )
                     existing[key] = user.id
+
+
+def _cleanup_legacy_default_agent(session) -> None:
+    """清理早期版本在 ``init_db`` 里灌的“默认助手”实例（ADR-0013，幂等）。
+
+    仅当该行**完全等于种子足迹**（名字/描述/渠道未被改过、无专属渠道凭证、无能力覆盖、
+    无会话引用）时才删除——管理员一旦动过它，它就是一个真实实例，保留并向管理员交底，
+    避免升级过程误删用户数据。删除原因：新版本不再有“默认员工”这个概念。
+    """
+    from sqlmodel import select
+
+    from bycall.governance.models import Agent, Conversation
+
+    agent = session.exec(Agent.select_by_name("default")).first()
+    if agent is None:
+        return
+    untouched = (
+        agent.display_name == "默认助手"
+        and agent.description == "组织默认数字员工（开箱即用，可改名/改人格/改模型）"
+        and agent.channel == "api"
+        and agent.is_enabled
+        and not agent.im_config_encrypted
+        and agent.system_prompt_version is None
+        and agent.model_id is None
+        and not agent.skills
+        and not agent.knowledge_scope_tags
+        and not agent.allowed_tools
+        and not agent.visible_roles
+        and not agent.approval_policy
+    )
+    if not untouched:
+        logger.info("保留数字员工 '%s'：已被配置过，不是种子原样", agent.name)
+        return
+    ref = session.exec(
+        select(Conversation).where(Conversation.agent_id == agent.id).limit(1)
+    ).first()
+    if ref is not None:
+        logger.info("保留数字员工 '%s'：仍有会话引用", agent.name)
+        return
+    session.delete(agent)
+    logger.info("已清理历史预置数字员工 '%s'（种子原样且无会话引用）", agent.name)
 
 
 def _seed_defaults() -> None:
@@ -364,20 +404,9 @@ def _seed_defaults() -> None:
                     is_enabled=True,
                 )
             )
-        # 数字员工实例：默认 Agent（组织首个可演进的实例，全托管起点）
-        from bycall.governance.models import Agent
-
-        if session.exec(Agent.select_by_name("default")).first() is None:
-            session.add(
-                Agent(
-                    name="default",
-                    display_name="默认助手",
-                    description="组织默认数字员工（开箱即用，可改名/改人格/改模型）",
-                    channel="api",
-                    is_enabled=True,
-                    is_default=True,
-                )
-            )
+        # 数字员工实例不预置（2026-09-22，ADR-0013）：平台不替组织假设“该有一个员工”，
+        # 首个实例必须由管理员显式创建；此处仅做存量清理（早期版本会灌一条“默认助手”）。
+        _cleanup_legacy_default_agent(session)
         # IM 配置保留在 SystemSetting（渠道凭证，非模型）
         _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
         _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")

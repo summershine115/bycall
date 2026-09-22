@@ -70,11 +70,11 @@
             :disabled="loading || streaming"
             @change="onAgentChange"
           >
-            <el-option label="默认实例（未指定）" :value="null" />
+            <el-option label="不指定实例（按角色/全局配置）" :value="null" />
             <el-option
               v-for="a in enabledAgents"
               :key="a.id"
-              :label="(a.display_name || a.name) + (a.is_default ? '（默认）' : '')"
+              :label="a.display_name || a.name"
               :value="a.id"
             />
           </el-select>
@@ -297,7 +297,8 @@ const streamText = ref('')
 const actAsInfo = ref('')
 const msgContainer = ref(null)
 const convListLoading = ref(false)
-// 数字员工选择（ADR-0012）：null = 默认实例；仅对「新对话」生效，选中历史会话时随会话归属联动
+// 数字员工选择（ADR-0012/0013）：null = 不指定实例（按对话者角色 + 全局激活链路回答）；
+// 仅对「新对话」生效，选中历史会话时随会话归属联动
 const agents = ref([])
 const selectedAgentId = ref(null)
 const enabledAgents = computed(() => agents.value.filter((a) => a.is_enabled))

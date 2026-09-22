@@ -1,6 +1,6 @@
 # Bycall 下一阶段执行计划（Execution Plan）
 
-> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码、T3.2 自动化、T3.3 审批授权三档、T3.5 多 Bot 渠道已落地；真机企微演示与真实使用数据待用户）** · 更新：2026-09-11（T3.2 三条平台流程 REST+IM 端到端自动化锁定） · 关联：[决策登记册](decisions/README.md)
+> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码、T3.2 自动化、T3.3 审批授权三档、T3.5 多 Bot 渠道、T3.6 面板重组已落地；真机企微演示与真实使用数据待用户）** · 更新：2026-09-22（T3.6 面板重组：取消默认员工 + 实例/资产/渠道三分，ADR-0013） · 关联：[决策登记册](decisions/README.md)
 > 本文是 Bycall 当前唯一的**执行级工作方向**。它取代"继续按里程碑 M7+ / S3-S4 堆能力"的默认，
 > 改为"先收口、再评测、后验证"。所有新任务必须对齐本文的阶段与任务编号，未列入冻结清单的新
 > 能力不得动工。里程碑路线图的历史沿革仍见 `product-design.md` §6，本文与其冲突时以本文为准。
@@ -292,7 +292,7 @@ bot_id 全局唯一校验，im_config 变更/启停/删除自动重载槽位；`
 ③ 管理面板 IA 重组：导航按"配置/运行"重分组，数字员工改列表+详情页分区编辑，
 Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必需，非视觉打磨）。
 （后续演进：面板二次重组为数字员工 Hub——渠道接入页与装配资产页并入 `/agents` 子页，
-见 ADR-0012 修订记录 2026-09-02。）
+见 ADR-0012 修订记录 2026-09-02。**再后续：该 Hub 已于 T3.6 拆回独立页面，见 ADR-0013。**）
 **Acceptance**：
 - [x] 配置了专属 Bot 的实例：企微私聊消息路由到该实例（`Conversation.agent_id` 落库），
   同一用户与两个 Bot 对话产生两条独立会话
@@ -302,6 +302,28 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 **Dependencies**：无（数据面 per-Agent 能力集/会话键/模型链已就绪）。**Files**：
 `gateway/manager.py`、`gateway/base.py`、`gateway/wecom.py`、`agent/im_handler.py`、
 `admin/api.py`、`frontend/src/views/`（Channels/AgentDetail/Agents/Layout 等）。**Scope**：L。
+
+#### T3.6 控制台面板重组：取消「默认员工」 + 实例/资产/渠道三分 —— ✅ 已完成（2026-09-22，ADR-0013）
+**Description**：用户 2026-09-22 提出的四项返工（默认员工不该存在 / 面板太杂 / 列表不清晰 /
+详情翻看麻烦）。① 取消「默认员工」：`init_db` 不再灌 `Agent(name="default")`，`Agent.is_default`
+字段与全链路 UI/守卫移除（含删除守卫、Chat 的「默认实例」选项），存量种子实例幂等清理
+（仅当完全等于种子足迹且无会话引用）；全局默认 Bot 澄清为**渠道入口**，其入站会话无实例归属。
+② IA 三分：数字员工只留实例列表/详情；提示词/模型/Skill/MCP/知识库/文档独立成「能力资产」组；
+渠道接入回归独立一级页面；`/agents/*` 旧路径保留重定向。③ 列表瘦身：主表五列 + 展开行明细，
+装配列显示生效来源（实例绑定 / 沿用角色 / 全局激活）而非覆盖项原样 dump，KPI 去「默认实例」。
+④ 详情左锚点分段（六段，右侧只渲染当前段）+ 脏标记/放弃修改 + 「生效预览」（选用户 → 后端
+策略模拟按 `agent_id` 收窄后的真实能力集）。
+**Acceptance**：
+- [x] 新库零数字员工；存量种子实例按规则清理（动过的 / 有会话引用的一律保留）——
+  `tests/unit/test_agent_no_default.py`（5 例，含旧库带 `is_default` 列不报错）
+- [x] 策略模拟支持实例维度：实例收窄生效、实例不存在 404、可见性先于能力集判定——
+  `tests/unit/test_policy_simulate.py`（+3 例）
+- [x] 前端：`npm run build` 通过；旧深链（`/agents/channels` 等）重定向生效；列表/详情/渠道页
+  不再出现「默认」字样
+- [x] `make ci-local` 全绿
+**Dependencies**：无（治理脊柱已支持 `agent_id` 维度能力集）。**Files**：`governance/models.py`、
+`db.py`、`admin/api.py`、`admin/schemas.py`、`frontend/src/{router.js,views/*}`、
+`tests/unit/{test_agent_no_default,test_policy_simulate}.py`。**Scope**：L。
 
 #### T3.4 使用效果看板（后置，待 T3.2 与真实使用数据）
 **Description**：延迟 / 成本 / 人工接管率 / 失败率 / 重复执行率（T2.5 五维）。**本 worktree 不做**——待 T3.2 平台流程跑通且有真实使用数据后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。

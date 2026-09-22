@@ -265,9 +265,11 @@ def policy_simulate(
     让治理结果可独立验证——admin 在控制面就能看到「这个用户对检索/工具会得到什么判定、
     命中了哪些规则」，不靠读代码（战略 §4.1「策略模拟器」）。复用治理脊柱三个真实组件
     （compute_capability_set / build_acl_filters / filter_tools），与数据面实际判定同源，
-    杜绝「模拟与真实不一致」。
+    杜绝「模拟与真实不一致」。``agent_id`` 非空时按实例收窄后模拟——这是数字员工详情页
+    「生效预览」的唯一数据源，避免前端自己推算能力边界。
     """
     from bycall.governance.capability import compute_capability_set
+    from bycall.governance.models import Agent
     from bycall.governance.policy import build_acl_filters, subject_from_capability
     from bycall.tools.gateway import filter_tools
 
@@ -275,8 +277,16 @@ def policy_simulate(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"用户不存在: {payload.user_id}")
 
+    agent: Agent | None = None
+    if payload.agent_id is not None:
+        agent = session.get(Agent, payload.agent_id)
+        if agent is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"数字员工不存在: {payload.agent_id}")
+    agent_ctx = {"agent_id": payload.agent_id, "agent_name": agent.name if agent else ""}
+    scope_label = f"实例 '{agent.name}'" if agent is not None else "角色"
+
     try:
-        cap = compute_capability_set(session, user)
+        cap = compute_capability_set(session, user, agent)
     except PermissionError as e:
         return PolicySimulateResult(
             user_id=payload.user_id,
@@ -290,6 +300,7 @@ def policy_simulate(
             retrieval_filters=[],
             decision="denied",
             detail=f"拒绝：{e}",
+            **agent_ctx,
         )
 
     subject = subject_from_capability(cap)
@@ -304,18 +315,18 @@ def policy_simulate(
         )
         decision = "allowed" if allowed else "denied"
         detail = (
-            f"工具 {payload.tool_name} 在角色白名单内，放行"
+            f"工具 {payload.tool_name} 在{scope_label}白名单内，放行"
             if allowed
-            else f"工具 {payload.tool_name} 不在角色白名单内，拒绝"
+            else f"工具 {payload.tool_name} 不在{scope_label}白名单内，拒绝"
         )
     else:  # retrieve
         if not cap.knowledge_scope_tags:
-            decision, detail = "denied", "无可见知识域（denied_no_access）"
+            decision, detail = "denied", f"{scope_label}无可见知识域（denied_no_access）"
         elif not filters:
             decision, detail = "allowed", "admin/通配：检索不过滤（全可见）"
         else:
             decision = "allowed"
-            detail = "召回前过滤：" + ", ".join(
+            detail = f"{scope_label}召回前过滤：" + ", ".join(
                 f"{f.field} {f.op} {f.value or f.values}" for f in filters
             )
 
@@ -333,6 +344,7 @@ def policy_simulate(
         ],
         decision=decision,
         detail=detail,
+        **agent_ctx,
     )
 
 
@@ -1890,7 +1902,6 @@ def _agent_to_out(agent: Agent) -> AgentOut:
         im_config_preview=preview,
         approval_policy=agent.approval_policy,
         is_enabled=agent.is_enabled,
-        is_default=agent.is_default,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
     )
@@ -2027,15 +2038,6 @@ def _validate_agent_refs(session: Session, payload: AgentCreate | AgentUpdate) -
                 raise HTTPException(status.HTTP_404_NOT_FOUND, f"Skill 不存在: {name}")
 
 
-def _ensure_single_default(session: Session, agent: Agent) -> None:
-    """保证全局只有一个 is_default=True 的 Agent。"""
-    if agent.is_default:
-        for other in session.exec(select(Agent).where(Agent.is_default == True)).all():  # noqa: E712
-            if other.id != agent.id:
-                other.is_default = False
-                session.add(other)
-
-
 @router.get("/agents", response_model=list[AgentOut])
 def list_agents(
     session: Session = Depends(get_session),
@@ -2090,12 +2092,9 @@ def create_agent(
         im_config_encrypted=im_encrypted,
         approval_policy=payload.approval_policy,
         is_enabled=payload.is_enabled,
-        is_default=payload.is_default,
     )
     try:
         session.add(agent)
-        session.flush()
-        _ensure_single_default(session, agent)
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -2177,10 +2176,6 @@ def update_agent(
         agent.approval_policy = payload.approval_policy
     if payload.is_enabled is not None:
         agent.is_enabled = payload.is_enabled
-    if payload.is_default is not None:
-        agent.is_default = payload.is_default
-        if agent.is_default:
-            _ensure_single_default(session, agent)
     session.add(agent)
     session.commit()
     session.refresh(agent)
@@ -2209,15 +2204,9 @@ def delete_agent(
 ) -> None:
     """删除数字员工实例。
 
-    - 默认实例不允许直接删除（需先把 default 切到其他实例）。
-    - 若仍有会话引用该实例（Conversation.agent_id），拒绝删除（409），避免悬空历史。
+    若仍有会话引用该实例（Conversation.agent_id），拒绝删除（409），避免悬空历史。
     """
     agent = _get_agent_or_404(session, agent_id)
-    if agent.is_default:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="默认数字员工不可直接删除，请先将默认切到其他实例",
-        )
     # 校验是否有会话引用（历史完整性，避免删后查历史找不到归属）
     ref = session.exec(
         select(Conversation).where(Conversation.agent_id == agent_id).limit(1)

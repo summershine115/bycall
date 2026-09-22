@@ -19,6 +19,7 @@
 | ADR-0010 | 评测与发布门——离线四类评测集 + 灰度发布/一键回滚 | ✅ 已采纳 | 2026-08-15 | `0010-eval-release-gate.md` |
 | ADR-0011 | 审批授权三档（once/session/always）持久化与撤销 | ✅ 已采纳 | 2026-08-21 | `0011-approval-grant-tiers.md` |
 | ADR-0012 | 多 Bot 渠道体系——per-Agent IM 凭证生效与按连接路由 | ✅ 已采纳 | 2026-09-02 | `0012-multi-bot-channels.md` |
+| ADR-0013 | 控制台面板重组——取消「默认员工」 + 实例/资产/渠道三分 | ✅ 已采纳 | 2026-09-22 | `0013-agent-console-ia-default-removal.md` |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
@@ -44,6 +45,7 @@
 | M5 收口 vs 阶段 3 验证顺序：先收口后验证（严格 0→1→2→3） | ✅ 已拍板（2026-08-13） | execution-plan 阶段总览 |
 | 阶段 2 评测与发布系统：四类离线评测集进 CI、快照回放 diff、发布门 + 稳定哈希灰度 + is_active 回滚、五维 Prometheus 指标 | ✅ 已落地（2026-08-15） | ADR-0010、execution-plan 阶段 2 |
 | 阶段 3 T3.3 审批授权三档：ApprovalGrant 持久化 + 审批门短路 + 台账/撤销 + 免审执行指标 | ✅ 已落地（2026-08-21） | ADR-0011、execution-plan T3.3 |
+| 阶段 3 T3.6 面板重组：取消「默认员工」（无预置实例 + 存量种子清理）、实例/能力资产/渠道接入三分、列表瘦身+展开行、详情左锚点分段 + 生效预览（策略模拟支持 `agent_id`） | ✅ 已落地（2026-09-22） | ADR-0013、execution-plan T3.6 |
 | 冻结清单：S3/S4（含 Skill 晋升闸门、自动提议）、场景包版本化/导入导出、前端视觉/主题打磨、成本预算/推送 outbox、群聊共同授权；恢复条件见 execution-plan §4 | 🧊 已冻结 | execution-plan §4 |
 
 ## 3. 开放决策清单（待拍板）
@@ -104,5 +106,6 @@
 | `docs/gaps.md` | 已就绪（阶段 1 全部闭合） | 六条治理缝隙逐条已闭合并勾掉（T1.1–T1.6）；T1.9 为阶段 1 追加项（RAG 预算化/投毒软降级） |
 | `docs/decisions/0010-eval-release-gate.md` | ✅ 已采纳 | 阶段 2 评测与发布系统 ADR（离线用例 / 回放 diff / 发布门 / 灰度回滚 / 五维指标） |
 | `docs/decisions/0011-approval-grant-tiers.md` | ✅ 已采纳 | T3.3 审批授权三档 ADR（once/session/always / 审批门短路 / 台账撤销 / 治理边界） |
-| `docs/decisions/0012-multi-bot-channels.md` | ✅ 已采纳 | T3.5 多 Bot 渠道 ADR（per-Agent IM 凭证生效 / 按连接路由 / 全局默认 Bot 兜底） |
+| `docs/decisions/0012-multi-bot-channels.md` | ✅ 已采纳 | T3.5 多 Bot 渠道 ADR（per-Agent IM 凭证生效 / 按连接路由；全局默认 Bot 为**渠道入口**而非员工，其入站会话无实例归属——见 ADR-0013） |
+| `docs/decisions/0013-agent-console-ia-default-removal.md` | ✅ 已采纳 | T3.6 面板重组 ADR（取消默认员工 / 实例·资产·渠道三分 / 列表瘦身 / 详情分段 + 生效预览） |
 | `evals/README.md` | 随阶段 2 落地 | 评测 CLI 使用说明（make eval / eval-security / --snapshot / --compare） |

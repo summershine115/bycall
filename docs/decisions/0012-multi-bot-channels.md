@@ -16,8 +16,10 @@
    channel / daemon 线程 / 事件循环 / 生命周期状态。跨线程断开必须经
    `run_coroutine_threadsafe` marshal 到该槽位事件循环线程（沿用既有约定，
    见 `gateway/manager.py` `_stop_locked` 注释）。
-2. **全局默认 Bot 保留为兜底**：`SystemSetting im.*` 语义不变——无专属 Bot 的
-   入站流量路由到默认实例（`agent_id=None`，历史会话键完全兼容）。
+2. **全局默认 Bot 保留为渠道入口**：`SystemSetting im.*` 语义不变——无专属 Bot 的入站
+   流量 `agent_id=None`，会话**不归属任何实例**（历史会话键完全兼容），按对话者角色 +
+   全局激活链路回答。（2026-09-22 订正：原文写作「路由到默认实例」，ADR-0013 起不再成立——
+   平台无「默认员工」这个概念。）
 3. **per-Agent 凭证真正生效**：`Agent.im_config`（Fernet 加密存库）由网关消费。
    启用且有 `im_config` 的实例在应用启动与热重载时各建一条企微长连接；
    `wecom_bot_id` **全局唯一**（Agent 之间、以及与全局默认 Bot 之间冲突即 400）。
@@ -73,3 +75,9 @@
   `channel` 参数按会话渠道精确路由（审批回推传 `req.channel`）；
   ⑤ `GET /im/status` 每条连接明细新增 `channel` 字段，`AgentOut` 新增
   `im_channels`。会话键/幂等键格式不变（本就含渠道维度）。
+
+- **2026-09-22（IA 二次重组，见 ADR-0013）**：「渠道接入」从数字员工页 `/agents` 的标签页
+  回归**独立一级页面**（`/channels`）——它与「能力资产」一样是组织级/系统级配置，不属于
+  某个员工；上述 2026-09-02 的 IA 修订记录自此失效（旧路径保留重定向）。同时平台取消
+  「默认员工」：`init_db` 不再灌 `Agent(name="default")`，`Agent.is_default` 字段与相关 UI/
+  守卫全部移除；决策第 2 条因此改为「无实例归属」表述（见上）。

@@ -398,7 +398,6 @@ class AgentCreate(BaseModel):
     )
     approval_policy: dict | None = Field(default=None, description="per-Agent 审批策略覆盖")
     is_enabled: bool = Field(default=True, description="是否启用")
-    is_default: bool = Field(default=False, description="是否设为默认实例（唯一）")
 
 
 class AgentUpdate(BaseModel):
@@ -422,7 +421,6 @@ class AgentUpdate(BaseModel):
     im_config: dict | None = None
     approval_policy: dict | None = None
     is_enabled: bool | None = None
-    is_default: bool | None = None
 
 
 class AgentOut(BaseModel):
@@ -451,7 +449,6 @@ class AgentOut(BaseModel):
     )
     approval_policy: dict | None = None
     is_enabled: bool
-    is_default: bool
     created_at: datetime
     updated_at: datetime
 
@@ -1122,6 +1119,9 @@ class PolicySimulateRequest(BaseModel):
         default="retrieve", description="动作：retrieve（检索）/ tool_call（调工具）"
     )
     tool_name: str | None = Field(default=None, description="action=tool_call 时的工具名")
+    agent_id: int | None = Field(
+        default=None, description="按数字员工实例模拟（空=无实例归属，仅角色基线）"
+    )
 
 
 class PolicySimulateResult(BaseModel):
@@ -1132,6 +1132,8 @@ class PolicySimulateResult(BaseModel):
     role: str
     level: int
     is_admin: bool
+    agent_id: int | None = None
+    agent_name: str = ""
     allowed_tools: list[str]
     knowledge_scope_tags: list[str]
     visible_kb_ids: list[int]
