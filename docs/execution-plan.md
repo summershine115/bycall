@@ -293,6 +293,9 @@ bot_id 全局唯一校验，im_config 变更/启停/删除自动重载槽位；`
 Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必需，非视觉打磨）。
 （后续演进：面板二次重组为数字员工 Hub——渠道接入页与装配资产页并入 `/agents` 子页，
 见 ADR-0012 修订记录 2026-09-02。**再后续：该 Hub 已于 T3.6 拆回独立页面，见 ADR-0013。**）
+（渠道侧演进（2026-09-23）：预留的渠道抽象已由**飞书渠道**实装验证——自研长连接协议层 +
+卡片伪流式，见 [ADR-0015](decisions/0015-feishu-gateway.md)；渠道注册表
+`SUPPORTED_CHANNEL_TYPES` 现为 wecom/feishu。）
 **Acceptance**：
 - [x] 配置了专属 Bot 的实例：企微私聊消息路由到该实例（`Conversation.agent_id` 落库），
   同一用户与两个 Bot 对话产生两条独立会话

@@ -104,6 +104,7 @@
                     <el-select v-model="basic.channel" style="width:100%">
                       <el-option label="对话测试 (api)" value="api" />
                       <el-option label="企业微信 (wecom)" value="wecom" />
+                      <el-option label="飞书 (feishu)" value="feishu" />
                     </el-select>
                     <div class="bc-hint">仅作标签与筛选；真正接 IM 见「渠道接入」区</div>
                   </el-form-item>
@@ -256,13 +257,40 @@
               <el-button type="primary" :disabled="!dirty.channel" :loading="savingKey === 'im'" @click="saveIm">保存并重连</el-button>
             </div>
 
-            <!-- 飞书占位：接入后与企微并列为一项专属连接（网关实现排期中） -->
-            <div class="soon">
-              <div>
-                <span class="bc-strong bc-text-sm">飞书专属连接</span>
-                <span class="bc-muted bc-text-xs soon__hint">渠道抽象已预留（FeishuChannel），网关实现排期中</span>
+            <!-- 飞书专属连接（FeishuChannel，ADR-0015）：与企微并列的独立凭证 -->
+            <div class="subchannel">
+              <div class="subchannel__head">
+                <div>
+                  <span class="bc-strong bc-text-sm">飞书专属连接</span>
+                  <span class="bc-muted bc-text-xs">
+                    开放平台「企业自建应用」App ID/Secret；应用需开启长连接事件订阅（im.message.receive_v1）
+                  </span>
+                </div>
+                <div v-if="feishuConn" class="section__conn">
+                  <StatusBadge :type="feishuConn.is_connected ? 'ok' : 'err'" :text="feishuConn.is_connected ? '已连接' : '未连接'" />
+                  <span v-if="feishuConn.last_error" class="bc-text-xs bc-muted">{{ feishuConn.last_error }}</span>
+                </div>
               </div>
-              <el-tag type="info" effect="plain" size="small">规划中</el-tag>
+              <el-row :gutter="16">
+                <el-col :span="12">
+                  <el-form-item label="飞书 App ID">
+                    <el-input v-model="fs.app_id" :placeholder="hasFeishu ? '已配置（***），修改需完整填写' : '开放平台应用的 App ID（cli_…）'" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="飞书 App Secret">
+                    <el-input v-model="fs.app_secret" :placeholder="hasFeishu ? '已配置（***）—— 不修改则留空' : '开放平台获取的 App Secret'" show-password />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <div class="section__foot">
+                <el-button v-if="hasFeishu" type="danger" plain :loading="savingKey === 'fs-clear'" @click="onClearFeishu">
+                  清除飞书专属连接
+                </el-button>
+                <el-button type="primary" :disabled="!(fs.app_id.trim() || fs.app_secret.trim())" :loading="savingKey === 'fs'" @click="saveFeishu">
+                  保存飞书凭证并重连
+                </el-button>
+              </div>
             </div>
           </div>
 
@@ -375,12 +403,41 @@ const sections = [
   { key: 'channel', label: '渠道接入', icon: Connection },
   { key: 'preview', label: '生效预览', icon: DataAnalysis },
 ]
-
-// 分区表单：各段独立保存（后端 PATCH 语义，只传本区字段）
-const basic = reactive({ display_name: '', description: '', avatar_url: '', channel: 'api', is_enabled: true })
-const persona = reactive({ system_prompt_version: null, model_id: null })
-const capability = reactive({ skills: null, knowledge_scope_tags: null, allowed_tools: null })
 const visibility = reactive({ visible_roles: null })
+const feishuConn = computed(() =>
+  (imStatusData.value.channels || []).find(
+    (c) => c.agent_id === agentId && (c.channel === 'feishu' || c.key?.startsWith('feishu:')),
+  ) || null,
+)
+const fs = reactive({ app_id: '', app_secret: '' })
+const hasFeishu = computed(() => imChannels.value.includes('feishu'))
+
+async function saveFeishu() {
+  const appId = fs.app_id.trim()
+  const appSecret = fs.app_secret.trim()
+  if (!appId || !appSecret) {
+    ElMessage.warning('请同时填写 App ID 与 App Secret（保存将整体替换飞书凭证）')
+    return
+  }
+  await patch('fs', { im_config: { feishu: { app_id: appId, app_secret: appSecret } } }, '飞书专属凭证已保存，正在自动重连')
+  fs.app_id = ''
+  fs.app_secret = ''
+  setTimeout(refreshStatus, 1500)
+}
+
+async function onClearFeishu() {
+  const ok = await ElMessageBox.confirm(
+    '确定清除该实例的飞书专属连接？清除后其连接立即断开（其他渠道不受影响）。',
+    '清除飞书专属连接',
+    { type: 'warning' },
+  ).catch(() => null)
+  if (!ok) return
+  await patch('fs-clear', { im_config: { feishu: {} } }, '飞书专属连接已清除')
+  fs.app_id = ''
+  fs.app_secret = ''
+  await refreshStatus()
+}
+
 const im = reactive({ bot_id: '', secret: '' })
 // 各段"上次保存后"的基线：用于未保存提示与保存按钮可用态
 const baseline = reactive({ basic: null, persona: null, capability: null, visibility: null })
@@ -859,17 +916,22 @@ onMounted(load)
   font-size: var(--bc-text-xs);
   color: var(--bc-text-3);
 }
-.soon {
+.subchannel {
+  margin-top: var(--bc-space-5);
+  padding-top: var(--bc-space-4);
+  border-top: 1px solid var(--bc-border);
+}
+.subchannel__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--bc-space-3);
-  margin-top: var(--bc-space-4);
-  padding: var(--bc-space-3) var(--bc-space-4);
-  border: 1px dashed var(--bc-border);
-  border-radius: var(--bc-radius-md);
+  margin-bottom: var(--bc-space-3);
 }
-.soon__hint {
-  margin-left: var(--bc-space-2);
+.subchannel__head > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bc-space-2);
+  flex-wrap: wrap;
 }
 </style>

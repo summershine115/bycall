@@ -21,11 +21,13 @@
 from __future__ import annotations
 
 from bycall.gateway.base import Channel, InboundMessage, ReplySender
+from bycall.gateway.feishu import FeishuChannel
 from bycall.gateway.identity import resolve_user_by_im
 from bycall.gateway.wecom import WecomChannel
 
 __all__ = [
     "Channel",
+    "FeishuChannel",
     "InboundMessage",
     "ReplySender",
     "WecomChannel",

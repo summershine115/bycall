@@ -142,8 +142,9 @@ async def test_options_built_with_unlimited_reconnect_from_settings(db_session, 
     from bycall.gateway.manager import ChannelManager
 
     mgr = ChannelManager()
-    channel, err = mgr._build_channel_from_settings()
-    assert channel is not None, err
+    channels, _errors = mgr._build_global_channels()
+    channel = next((ch for ctype, ch in channels if ctype == "wecom"), None)
+    assert channel is not None, _errors
     await channel.start(_noop_on_message)
 
     opts = channel._client.options

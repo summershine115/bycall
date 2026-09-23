@@ -36,6 +36,7 @@
    `POST /im/reload` 支持指定 agent 范围。
 7. **边界**：企微群聊仍一律拒绝（冻结项不变）；飞书仅 UI 占位（无网关实现）；
    tenant 维度不变（ADR-0004 触发条件不受影响）。
+   （后续演进：飞书网关已落地——见 [ADR-0015](0015-feishu-gateway.md)；群聊仍一律拒绝。）
 
 ## 备选方案
 
@@ -70,8 +71,8 @@
   跨 Agent、与全局默认 Bot 冲突即 400（校验泛化到任意渠道，权威在
   `gateway/channels.py`）；②控制面 `im_config` PATCH 改**按渠道合并**——
   渠道分组整体替换、空分组 `{wecom: {}}` 移除该渠道、`{}` 清空全部，未提及渠道不动；
-  ③只有已接入连接器的渠道可配置（`SUPPORTED_CHANNEL_TYPES`，当前仅 wecom；
-  飞书仍为 UI 占位），半套凭证写入即 400；④主动推送 `send_proactive` 增加
+  ③只有已接入连接器的渠道可配置（`SUPPORTED_CHANNEL_TYPES`，当时仅 wecom；
+  飞书为 UI 占位——**飞书网关已于 ADR-0015 落地**），半套凭证写入即 400；④主动推送 `send_proactive` 增加
   `channel` 参数按会话渠道精确路由（审批回推传 `req.channel`）；
   ⑤ `GET /im/status` 每条连接明细新增 `channel` 字段，`AgentOut` 新增
   `im_channels`。会话键/幂等键格式不变（本就含渠道维度）。

@@ -421,6 +421,11 @@ def _seed_defaults() -> None:
         _seed_setting(session, "im.enable", "false", "是否启用 IM 渠道长连接")
         _seed_setting(session, "im.wecom_bot_id", "", "企微智能机器人 ID")
         _seed_setting(session, "im.wecom_bot_secret", "", "企微智能机器人 Secret", is_secret=True)
+        # 飞书渠道（ADR-0015）：自研长连接网关，凭证为开放平台应用 App ID/Secret。
+        _seed_setting(session, "im.feishu_app_id", "", "飞书应用 App ID")
+        _seed_setting(session, "im.feishu_app_secret", "", "飞书应用 App Secret", is_secret=True)
+        # 域名：feishu=国内飞书（默认）/ lark=国际版 Lark（凭证不互通）。
+        _seed_setting(session, "im.feishu_domain", "feishu", "飞书域名（feishu/lark）")
         # M6：企微长连接可靠性参数（非敏感）。默认无限重连，避免渠道连续失败 10 次后静默死亡。
         _seed_setting(
             session, "im.wecom_max_reconnect_attempts", "-1", "最大重连次数（-1=无限重连）"

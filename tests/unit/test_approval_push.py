@@ -1,8 +1,8 @@
 """M6 审批结果主动推送单元测试（P0 criterion）。
 
 验证 ``_push_approval_result`` + ``execute_approved_tool`` 的推送钩子：
-- 企微渠道且有 im_user_id → 推送一次（chatid=im_user_id，markdown 含结果）
-- 渠道非企微 / 无 im_user_id → 不推送
+- 企微/飞书渠道且有 im_user_id → 推送一次（chatid=im_user_id，markdown 含结果）
+- 渠道未接入推送（如 api）/ 无 im_user_id → 不推送
 - 推送失败（异常 / 返回 False）→ 不影响审批执行结果
 - 建单时未捕获 im_user_id 但 IM 绑定存在 → 反查成功推送
 """
@@ -146,10 +146,31 @@ class TestPushApprovalResult:
 
         fake_manager.send_proactive.assert_not_called()
 
-    def test_non_wecom_channel_is_not_notified(self, engine, fake_manager):
-        user_id = _create_user("feishu_user")
-        push_approval_result(_req(user_id=user_id, channel="feishu"), "ok")
+    def test_unsupported_channel_is_not_notified(self, engine, fake_manager):
+        """未接入推送的渠道（如 api）不推送。"""
+        user_id = _create_user("api_user")
+        push_approval_result(_req(user_id=user_id, channel="api"), "ok")
         fake_manager.send_proactive.assert_not_called()
+
+    def test_feishu_channel_pushes_to_feishu_binding(self, engine, fake_manager):
+        """飞书渠道已接入推送：按飞书绑定身份回推（不再被误判为非企微而跳过）。"""
+        user_id = _create_user("feishu_user")
+        _bind_wecom(user_id, "unused")  # 无关渠道的绑定不应被使用
+        from bycall.db import session_scope
+        from bycall.governance.models import IMBinding
+
+        with session_scope() as session:
+            session.add(
+                IMBinding(user_id=user_id, channel="feishu", im_user_id="on_feishu_uid")
+            )
+
+        push_approval_result(
+            _req(user_id=user_id, channel="feishu", im_user_id="on_feishu_uid"), "ok"
+        )
+
+        fake_manager.send_proactive.assert_called_once()
+        assert fake_manager.send_proactive.call_args.args[0] == "on_feishu_uid"
+        assert fake_manager.send_proactive.call_args.kwargs["channel"] == "feishu"
 
     def test_push_failure_is_swallowed(self, engine, fake_manager):
         user_id = _create_user("push_failure_user")

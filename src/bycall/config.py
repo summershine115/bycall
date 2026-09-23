@@ -98,6 +98,11 @@ class IMConfig(BaseSettings):
     # 企微智能机器人凭证（企业微信后台获取）
     wecom_bot_id: str = ""
     wecom_bot_secret: str = ""
+    # 飞书开放平台应用凭证（运行时凭证以 SystemSetting im.feishu_* 为准，.env 仅引导）
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    # feishu=国内飞书（默认）/ lark=国际版
+    feishu_domain: Literal["feishu", "lark"] = "feishu"
 
 
 class ObservabilityConfig(BaseSettings):

@@ -108,14 +108,55 @@
         </div>
       </div>
 
-      <!-- ============ 飞书（占位，未实现网关） ============ -->
-      <div class="bc-panel feishu-card">
+      <!-- ============ 全局默认渠道 · 飞书（FeishuChannel，ADR-0015） ============ -->
+      <div class="bc-panel im-card">
         <div class="im-card__head">
           <div>
-            <h3>飞书</h3>
-            <p class="bc-muted bc-text-sm">渠道抽象已预留（FeishuChannel），网关实现排期中。</p>
+            <h3>全局默认渠道 · 飞书</h3>
+            <p class="bc-muted bc-text-sm">
+              未绑定专属 Bot 的飞书入口走这套凭证。凭证为开放平台「企业自建应用」的
+              App ID/Secret；应用需开启「事件与回调 → 使用长连接接收事件」并订阅
+              接收消息（im.message.receive_v1）。同一 app 全局只能接入一个入口。
+            </p>
           </div>
-          <el-tag type="info" effect="plain">规划中</el-tag>
+          <div class="im-card__status">
+            <StatusBadge :type="imEnable ? 'ok' : 'idle'" :text="imEnable ? '已启用' : '未启用'" />
+          </div>
+        </div>
+        <el-form label-position="top" class="im-card__form">
+          <div class="im-row">
+            <el-form-item label="飞书 App ID">
+              <el-input v-model="form['im.feishu_app_id']" placeholder="开放平台企业自建应用的 App ID（cli_…）" />
+            </el-form-item>
+            <el-form-item label="飞书 App Secret">
+              <el-input
+                v-model="form['im.feishu_app_secret']"
+                :placeholder="masks['im.feishu_app_secret'] || '开放平台获取的 App Secret'"
+                show-password
+              />
+              <div v-if="masks['im.feishu_app_secret']" class="bc-hint">
+                当前已设置：{{ masks['im.feishu_app_secret'] }} —— 不修改则留空保存
+              </div>
+            </el-form-item>
+          </div>
+          <div class="im-row">
+            <el-form-item label="服务区域">
+              <el-select v-model="form['im.feishu_domain']" style="width: 100%">
+                <el-option label="飞书（国内，默认）" value="feishu" />
+                <el-option label="Lark（国际版）" value="lark" />
+              </el-select>
+              <div class="bc-hint">国内飞书与国际版 Lark 凭证不互通</div>
+            </el-form-item>
+            <el-form-item label="用户绑定标识">
+              <el-input value="union_id（推荐）" disabled />
+              <div class="bc-hint">
+                员工在「用户管理」里绑定飞书 union_id（on_ 开头）；多个飞书应用需注册在同一开发者主体下
+              </div>
+            </el-form-item>
+          </div>
+        </el-form>
+        <div class="im-card__foot">
+          <el-button type="primary" :loading="saving" @click="onSave">保存设置</el-button>
         </div>
       </div>
     </template>
@@ -145,8 +186,14 @@ const imEnable = ref(false)
 const connections = ref([])
 const agents = ref([])
 // 影响长连接的 IM 字段：任一变化才需要重连（避免未改凭证也每次弹重连）。
-const IM_KEYS = ['im.enable', 'im.wecom_bot_id', 'im.wecom_bot_secret']
-const imSnapshot = reactive({})
+const IM_KEYS = [
+  'im.enable',
+  'im.wecom_bot_id',
+  'im.wecom_bot_secret',
+  'im.feishu_app_id',
+  'im.feishu_app_secret',
+  'im.feishu_domain',
+]
 
 function agentName(agentId) {
   const a = agents.value.find((x) => x.id === agentId)
@@ -292,9 +339,6 @@ onMounted(() => loadAll().catch(() => {}))  // 失败已由拦截器 toast
   grid-template-columns: 1fr 1fr;
   gap: 0 var(--bc-space-5);
   align-items: start;
-}
-.feishu-card {
-  padding: var(--bc-space-4) var(--bc-space-6);
 }
 @media (max-width: 960px) {
   .im-row {

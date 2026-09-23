@@ -5,12 +5,8 @@ HTTP 服务和其他槽位不动。Bycall 的每条 IM 连接在独立后台线�
 （企微 SDK 是 asyncio 的，FastAPI 同步路由在线程池），reload 时安全地换掉那套。
 
 槽位模型（多 Bot 平台，2026-09-22 起 per-Agent 多渠道）：
-- ``{渠道}:global``——全局默认 Bot（SystemSetting ``im.*``，当前仅企微），路由到默认
+- ``{渠道}:global``——全局默认渠道（SystemSetting ``im.*``，企微/飞书各一条），路由到默认
   实例（兜底）；
-- ``{渠道}:agent:{id}``——数字员工专属连接（``Agent.im_config`` 按渠道分组、Fernet
-  解密），同一实例可同时接入多个不同渠道（每种渠道一条连接），入站消息按连接路由到
-  对应实例（会话键带 ``:agent:{id}`` 后缀）；同一凭证（如企微 bot_id）全局只能连一个
-  实例，控制面写入前校验拦截。
 - ``im.enable=false`` 是 IM 子系统总开关：全局与专属 Bot 都不启动。
 
 用法：
@@ -99,12 +95,12 @@ class ChannelManager:
                 logger.info("IM 未启用（im.enable=false），跳过全部渠道槽位")
                 return False
             started = False
-            channel, err = self._build_channel_from_settings()
-            if channel is not None:
-                self._start_slot_locked(GLOBAL_SLOT_KEY, channel, agent_id=None)
+            channels, errors = self._build_global_channels()
+            for channel_type, channel in channels:
+                self._start_slot_locked(global_slot_key(channel_type), channel, agent_id=None)
                 started = True
-            else:
-                logger.info("全局 IM 渠道未启动：%s", err)
+            if errors:
+                logger.info("未启动的全局 IM 渠道：%s", "；".join(errors))
             for agent_id in self._enabled_agent_ids_with_im():
                 for channel_type, agent_channel in self._build_agent_channels(agent_id):
                     key = agent_slot_key(channel_type, agent_id)
@@ -113,26 +109,30 @@ class ChannelManager:
             return started
 
     def reload(self) -> tuple[bool, str]:
-        """热重载全局默认渠道：断开旧连接 + 用当前设置建新连接。不影响 Agent 槽位。
+        """热重载全部全局默认渠道：断开旧连接 + 用当前设置重建。不影响 Agent 槽位。
 
-        返回 (是否成功, 消息)。无凭证时停止该槽位。
+        返回 (是否成功, 消息)。无凭证的渠道停止对应槽位。
         """
         with self._lock:
-            was_running = GLOBAL_SLOT_KEY in self._slots
-            if was_running:
-                self._stop_slot_locked(GLOBAL_SLOT_KEY)
-            channel, err = self._build_channel_from_settings()
-            if channel is None:
+            global_keys = [k for k in self._slots if k.endswith(":global")]
+            was_running = bool(global_keys)
+            for key in global_keys:
+                self._stop_slot_locked(key)
+            channels, errors = self._build_global_channels()
+            if not channels:
+                reason = "；".join(errors) or "无可用凭证"
                 msg = (
-                    f"全局 IM 渠道已停止（{err}）"
+                    f"全局 IM 渠道已全部停止（{reason}）"
                     if was_running
-                    else f"全局 IM 渠道未启动（{err}）"
+                    else f"全局 IM 渠道未启动（{reason}）"
                 )
                 logger.info("IM reload(global): %s", msg)
                 return True, msg
-            self._start_slot_locked(GLOBAL_SLOT_KEY, channel, agent_id=None)
+            for channel_type, channel in channels:
+                self._start_slot_locked(global_slot_key(channel_type), channel, agent_id=None)
             action = "已重连" if was_running else "已启动"
-            return True, f"全局 IM 渠道{action}，使用新凭证"
+            names = "、".join(ch for ch, _ in channels)
+            return True, f"全局 IM 渠道{action}（{names}），使用新凭证"
 
     def reload_agent(self, agent_id: int) -> tuple[bool, str]:
         """热重载某数字员工的全部专属渠道连接：断开旧连接 + 用最新 im_config 重建。
@@ -201,7 +201,7 @@ class ChannelManager:
                 }
                 for s in slots
             ]
-            primary = self._slots.get(GLOBAL_SLOT_KEY) or (slots[0] if slots else None)
+            primary = self._primary_global_slot_locked() or (slots[0] if slots else None)
             return {
                 "running": bool(slots),
                 "channel": primary.key.split(":", 1)[0] if primary else None,
@@ -216,10 +216,17 @@ class ChannelManager:
     def is_connected(self) -> bool:
         """真实连接状态（供 /ready 健康检查快速判断）：全局槽位优先，否则任一已连。"""
         with self._lock:
-            glob = self._slots.get(GLOBAL_SLOT_KEY)
+            glob = self._primary_global_slot_locked()
             if glob is not None:
                 return glob.state["is_connected"]
             return any(s.state["is_connected"] for s in self._slots.values())
+
+    def _primary_global_slot_locked(self) -> _ChannelSlot | None:
+        """挑一个全局槽位作为 status() 顶层视图（wecom 优先，历史兼容），无则 None。"""
+        glob = self._slots.get(GLOBAL_SLOT_KEY)
+        if glob is not None:
+            return glob
+        return next((s for s in self._slots.values() if s.key.endswith(":global")), None)
 
     # ---- 生命周期状态（WecomChannel 回调，在 IM 事件循环线程被调用）----
 
@@ -312,22 +319,39 @@ class ChannelManager:
                 return [r.id for r in rows if r.im_config_encrypted]  # type: ignore[misc]
         except Exception:
             logger.exception("读取 Agent 专属 Bot 清单失败")
-            return []
 
-    def _build_channel_from_settings(self) -> tuple[Channel | None, str]:
-        """从当前 DB/.env 设置构造全局默认渠道。无凭证返回 (None, 原因)。"""
+    def _build_global_channels(self) -> tuple[list[tuple[str, Channel]], list[str]]:
+        """从当前 DB/.env 设置构造全部全局默认渠道（每种一条连接）。
+
+        返回 (已构建渠道列表, 未启动原因列表)。IM 未启用时两者为 (空, [原因])。
+        """
         from bycall.governance.settings_store import get_setting_value
 
         if not self._im_enabled():
-            return None, "IM 未启用（im.enable=false）"
+            return [], ["IM 未启用（im.enable=false）"]
 
+        built: list[tuple[str, Channel]] = []
+        errors: list[str] = []
         bot_id = get_setting_value("im.wecom_bot_id", default="", env_var="BYCALL_IM_WECOM_BOT_ID")
         bot_secret = get_setting_value(
             "im.wecom_bot_secret", default="", env_var="BYCALL_IM_WECOM_BOT_SECRET"
         )
-        if not bot_id or not bot_secret:
-            return None, "缺少 wecom_bot_id 或 wecom_secret"
-        return self._new_wecom_channel(bot_id, bot_secret, agent_id=None), ""
+        if bot_id and bot_secret:
+            built.append(("wecom", self._new_wecom_channel(bot_id, bot_secret, agent_id=None)))
+        else:
+            errors.append("wecom 缺少凭证（im.wecom_bot_id / im.wecom_bot_secret）")
+
+        app_id = get_setting_value(
+            "im.feishu_app_id", default="", env_var="BYCALL_IM_FEISHU_APP_ID"
+        )
+        app_secret = get_setting_value(
+            "im.feishu_app_secret", default="", env_var="BYCALL_IM_FEISHU_APP_SECRET"
+        )
+        if app_id and app_secret:
+            built.append(("feishu", self._new_feishu_channel(app_id, app_secret, agent_id=None)))
+        else:
+            errors.append("feishu 缺少凭证（im.feishu_app_id / im.feishu_app_secret）")
+        return built, errors
 
     def _build_agent_channels(self, agent_id: int) -> list[tuple[str, Channel]]:
         """按 ``Agent.im_config``（解密 + 归一化）构造该实例的全部专属渠道连接。
@@ -361,18 +385,49 @@ class ChannelManager:
     def _build_channel_for(
         self, channel_type: str, fields: dict[str, str], *, agent_id: int
     ) -> Channel | None:
-        """按渠道类型构造专属连接（多渠道分派点，当前仅企微）。无法构造返回 None。
+        """按渠道类型构造专属连接（多渠道分派点：企微 / 飞书）。无法构造返回 None。
 
-        未接入连接器的渠道理论上不会入库（写入侧 `SUPPORTED_CHANNEL_TYPES` 拦截），
+        未接入连接器的渠道理论上不会入库（写入侧 ``SUPPORTED_CHANNEL_TYPES`` 拦截），
         此处再拦一道是纵深防御——历史数据/手工改库不留运行时缝隙。
         """
-        if channel_type != "wecom":
-            return None
-        bot_id = str(fields.get("bot_id") or "").strip()
-        secret = str(fields.get("secret") or "").strip()
-        if not bot_id or not secret:
-            return None
-        return self._new_wecom_channel(bot_id, secret, agent_id=agent_id)
+        if channel_type == "wecom":
+            bot_id = str(fields.get("bot_id") or "").strip()
+            secret = str(fields.get("secret") or "").strip()
+            if not bot_id or not secret:
+                return None
+            return self._new_wecom_channel(bot_id, secret, agent_id=agent_id)
+        if channel_type == "feishu":
+            app_id = str(fields.get("app_id") or "").strip()
+            app_secret = str(fields.get("app_secret") or "").strip()
+            if not app_id or not app_secret:
+                return None
+            return self._new_feishu_channel(app_id, app_secret, agent_id=agent_id)
+        return None
+
+    def _new_feishu_channel(self, app_id: str, app_secret: str, *, agent_id: int | None) -> Channel:
+        """构造 FeishuChannel：域名按 ``im.feishu_domain``（feishu/lark 国际版），on_lifecycle 绑槽位。
+
+        重连节奏不像企微从 SystemSetting 读——飞书协议里服务端 ``ClientConfig``
+        权威下发（端点接口 + pong 帧动态调整），本地不覆盖。
+        """
+        from bycall.gateway.feishu import FeishuChannel
+        from bycall.gateway.feishu_wire import FEISHU_DOMAIN, LARK_DOMAIN
+        from bycall.governance.settings_store import get_setting_value
+
+        try:
+            domain = get_setting_value(
+                "im.feishu_domain", default="feishu", env_var="BYCALL_IM_FEISHU_DOMAIN"
+            )
+        except Exception:
+            domain = "feishu"
+        key = global_slot_key("feishu") if agent_id is None else agent_slot_key("feishu", agent_id)
+        return FeishuChannel(
+            app_id,
+            app_secret,
+            domain=LARK_DOMAIN if str(domain).strip().lower() == "lark" else FEISHU_DOMAIN,
+            on_lifecycle=lambda event, **kw: self._on_lifecycle(key, event, **kw),
+            agent_id=agent_id,
+        )
 
     def _new_wecom_channel(self, bot_id: str, secret: str, *, agent_id: int | None) -> Channel:
         """构造 WecomChannel：重连/心跳参数统一从 SystemSetting 读，on_lifecycle 绑定槽位。
