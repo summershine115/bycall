@@ -84,6 +84,13 @@
 
 ## 修订记录
 
+- **2026-09-22（存量列迁移）**：取消 `is_default` 留下一个升级陷阱——旧模型把该列建为 `NOT NULL`
+  且**无数据库默认值**，字段从模型消失后 INSERT 不再提供它，存量库新建实例必然
+  `NOT NULL constraint failed`（且被 `except IntegrityError` 误报成 409「已存在」）。
+  故 `_ensure_schema_compatibility()` 新增幂等迁移：`agent.is_default` 存在则删索引 + 删列
+  （新库无此列，无影响）；同时 `create_agent` 仅对 slug 唯一键冲突回 409，其余完整性错误回 500
+  并落日志。教训记入测试：`tests/unit/test_agent_legacy_schema.py` 用旧模型真实 DDL 建表回归。
+
 - **2026-09-22（slug 修订）**：新建实例不再要求管理员填 slug——它不是寻址键（全仓无任何按 name
   查 Agent 的运行路径，寻址一律用 `id`；模型/接口文档的「API 寻址键」表述已订正为「内部标识」），
   由 `admin.api._auto_agent_slug()` 按显示名自动生成：显示名 ASCII 化即用它

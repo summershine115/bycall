@@ -1,5 +1,4 @@
 """数字员工内部标识（slug）自动生成——管理员无需指定（ADR-0013 修订）。
-
 slug 不是寻址键（控制面/数据面一律按 ``id`` 寻址），只作审计与排障标识。控制面因此
 把它对管理员隐藏：创建时只填名称，标识由后端按显示名生成（ASCII 化失败则退化随机后缀）。
 """
@@ -91,3 +90,20 @@ def test_explicit_name_still_supported_and_unique(client: TestClient):
     # 非法显式 name 仍被 schema 拒绝（不静默改写）
     bad = client.post("/api/admin/agents", json={"name": "Bad Slug"})
     assert bad.status_code == 422
+
+
+def test_name_conflict_discriminator_covers_both_dialects():
+    """重名判定必须认得各方言的报错文案，且不得把 NOT NULL 失败当成重名。"""
+    from sqlalchemy.exc import IntegrityError
+
+    from bycall.admin.api import _is_agent_name_conflict
+
+    def _err(msg: str) -> IntegrityError:
+        return IntegrityError("stmt", {}, Exception(msg))
+
+    assert _is_agent_name_conflict(_err("UNIQUE constraint failed: agent.name"))  # sqlite
+    assert _is_agent_name_conflict(
+        _err('duplicate key value violates unique constraint "uq_agent_name"')  # postgres
+    )
+    # NOT NULL 失败也带 agent.name，但属另一种真因，必须暴露而不是伪装成重名
+    assert not _is_agent_name_conflict(_err("NOT NULL constraint failed: agent.is_default"))
