@@ -183,6 +183,17 @@ export const admin = {
   createAgent: (data) => http.post('/api/admin/agents', data).then((r) => r.data),
   updateAgent: (id, data) => http.put(`/api/admin/agents/${id}`, data).then((r) => r.data),
   deleteAgent: (id) => http.delete(`/api/admin/agents/${id}`),
+  // 数字员工头像：本地图片上传（后端按文件头校验类型/大小并落盘，不使用外链 URL）
+  uploadAgentAvatar: (id, file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return http
+      .post(`/api/admin/agents/${id}/avatar`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data)
+  },
+  deleteAgentAvatar: (id) => http.delete(`/api/admin/agents/${id}/avatar`).then((r) => r.data),
   // MCP 工具服务器（M4）
   listMcpServers: () => http.get('/api/admin/mcp-servers').then((r) => r.data),
   createMcpServer: (data) => http.post('/api/admin/mcp-servers', data).then((r) => r.data),

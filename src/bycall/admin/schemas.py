@@ -380,7 +380,9 @@ class AgentCreate(BaseModel):
     )
     display_name: str = Field(default="", description="人类可读显示名")
     description: str = Field(default="", description="一句话说明")
-    avatar_url: str = Field(default="", description="头像 URL（可选）")
+    avatar_url: str = Field(
+        default="", description="头像站内路径（控制台本地图片上传；存量外链兼容）"
+    )
     system_prompt_version: int | None = Field(
         default=None, description="绑定的 SystemPrompt.version，空=沿用角色/全局"
     )

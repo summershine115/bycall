@@ -375,7 +375,7 @@ class Agent(SQLModel, table=True):
     name: str = Field(index=True)  # 内部标识 slug（自动生成，非寻址键）
     display_name: str = ""  # 人类可读名
     description: str = ""
-    avatar_url: str = ""  # 头像 URL（可选，前端展示用）
+    avatar_url: str = ""  # 头像站内路径（本地上传，见 admin/avatars.py）；存量外链兼容
     # 绑定：人格 / 模型
     system_prompt_version: int | None = Field(default=None, index=True)  # SystemPrompt.version
     model_id: int | None = Field(default=None, index=True)  # Model.id (chat)

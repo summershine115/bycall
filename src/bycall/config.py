@@ -201,6 +201,9 @@ class AppConfig(BaseSettings):
     secret_encryption_key: SecretStr = SecretStr("")
     # 仅首次生产启动且 DB 尚无 admin 时使用；创建成功后可从环境移除。
     bootstrap_admin_password: SecretStr = SecretStr("")
+    # 数字员工头像等控制台上传图片的本地存储目录（相对进程工作目录）。
+    # 与 dev SQLite（sqlite:///./data/bycall.db）同属运行时数据根 ./data/，不进 git。
+    avatar_dir: str = "./data/avatars"
     # 会话稳健性地基（M3）：会话租约 + 消息幂等去重。前缀 BYCALL_SESSION_/BYCALL_IDEMPOTENCY_。
     # 租约 TTL：持有一轮对话（turn）的最长时间；心跳每 TTL/3 续租一次，进程死亡后到期自动释放。
     session_lease_ttl_seconds: int = 60

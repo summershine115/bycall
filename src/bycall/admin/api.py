@@ -34,7 +34,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -2270,6 +2270,103 @@ def delete_agent(
     _audit_admin(
         session, request, "delete_agent", f"Agent({agent.name})", before={"name": agent.name}
     )
+
+
+# ============ 数字员工头像（本地图片上传，不使用外链 URL）============
+
+
+@router.post(
+    "/agents/{agent_id}/avatar",
+    response_model=AgentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_agent_avatar(
+    agent_id: int,
+    file: UploadFile,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> AgentOut:
+    """上传数字员工头像（本地图片，管理员不再手贴 URL）。
+
+    类型按**文件头魔数**识别（PNG/JPEG/GIF/WebP，拒 SVG），上限 2MB；落盘后把
+    ``avatar_url`` 写成带内容哈希的站内读取路径并返回更新后的实例，前端据此直接渲染。
+    """
+    from bycall.admin import avatars
+
+    agent = _get_agent_or_404(session, agent_id)
+    raw = await file.read(avatars.MAX_AVATAR_BYTES + 1)
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="头像文件为空")
+    if len(raw) > avatars.MAX_AVATAR_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"头像过大（上限 {avatars.MAX_AVATAR_BYTES // (1024 * 1024)}MB）",
+        )
+    sniffed = avatars.sniff_image(raw)
+    if sniffed is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail="仅支持 PNG / JPEG / GIF / WebP 图片"
+        )
+    ext, _mime = sniffed
+
+    before = agent.avatar_url
+    avatars.save_avatar(agent_id, raw, ext)
+    agent.avatar_url = avatars.avatar_web_url(agent_id, raw)
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    _audit_admin(
+        session,
+        request,
+        "upload_agent_avatar",
+        f"Agent({agent.name})",
+        before=before,
+        after=agent.avatar_url,
+    )
+    session.commit()
+    return _agent_to_out(agent)
+
+
+@router.get("/agents/{agent_id}/avatar")
+def get_agent_avatar(
+    agent_id: int,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> FileResponse:
+    """读取数字员工头像字节（站内路径；存量外链不在此端点服务，前端直接渲染原值）。"""
+    from bycall.admin import avatars
+
+    _get_agent_or_404(session, agent_id)
+    path = avatars.avatar_path(agent_id)
+    if path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="该数字员工尚未上传头像")
+    media_type = avatars.CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    # 缓存靠 avatar_url 的 ?v= 内容哈希失效，长缓存安全。
+    return FileResponse(
+        path, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"}
+    )
+
+
+@router.delete("/agents/{agent_id}/avatar", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_avatar(
+    agent_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> None:
+    """移除数字员工头像：清空 ``avatar_url`` 并删除本地文件（存量外链一并清除）。"""
+    from bycall.admin import avatars
+
+    agent = _get_agent_or_404(session, agent_id)
+    before = agent.avatar_url
+    avatars.remove_avatar(agent_id)
+    agent.avatar_url = ""
+    session.add(agent)
+    session.commit()
+    if before:
+        _audit_admin(session, request, "delete_agent_avatar", f"Agent({agent.name})", before=before)
+        session.commit()
 
 
 # ============ 知识库管理（KnowledgeBase + Document，参考 WeKnora）============

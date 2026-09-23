@@ -63,8 +63,35 @@
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
-                  <el-form-item label="头像 URL">
-                    <el-input v-model="basic.avatar_url" placeholder="https://...（可选）" />
+                  <el-form-item label="头像">
+                    <div class="avatar-picker">
+                      <span class="avatar-picker__preview">
+                        <img v-if="basic.avatar_url" :src="basic.avatar_url" alt="头像预览" />
+                        <span v-else aria-hidden="true">{{ avatarInitial }}</span>
+                      </span>
+                      <div class="avatar-picker__body">
+                        <input
+                          ref="avatarInput"
+                          class="avatar-picker__file"
+                          type="file"
+                          accept="image/png,image/jpeg,image/gif,image/webp"
+                          @change="onAvatarFile"
+                        />
+                        <div class="avatar-picker__actions">
+                          <el-button size="small" :loading="uploadingAvatar" @click="pickAvatar">
+                            {{ basic.avatar_url ? '重新上传' : '上传图片' }}
+                          </el-button>
+                          <el-button
+                            v-if="basic.avatar_url"
+                            size="small"
+                            text
+                            :disabled="uploadingAvatar"
+                            @click="onRemoveAvatar"
+                          >移除</el-button>
+                        </div>
+                        <div class="bc-hint">本地图片：PNG / JPEG / GIF / WebP，不超过 2MB；上传后立即生效，无需保存</div>
+                      </div>
+                    </div>
                   </el-form-item>
                 </el-col>
               </el-row>
@@ -334,6 +361,8 @@ const loading = ref(true)
 const agent = ref(null)
 const savingKey = ref('')
 const reconnecting = ref(false)
+const uploadingAvatar = ref(false)
+const avatarInput = ref(null)
 const imStatusData = ref({ channels: [] })
 
 // 左导航分段：一次只渲染一段，改一项不必滚到底（ADR-0013）
@@ -388,11 +417,12 @@ function modelLabel(id) {
 }
 
 // ============ 未保存改动 ============
+// 头像不参与本区保存：它是独立的即时动作（选图即上传），因此不进快照——
+// 「放弃修改」不会回滚已上传的头像，脏标记也不会被它带偏。
 function basicSnap() {
   return {
     display_name: basic.display_name,
     description: basic.description,
-    avatar_url: basic.avatar_url,
     channel: basic.channel,
     is_enabled: basic.is_enabled,
   }
@@ -427,6 +457,50 @@ function markBaseline() {
 }
 
 function resetBasic() { Object.assign(basic, baseline.basic) }
+
+// ============ 头像（本地图片上传，后端落盘 + 站内路径回吐）============
+const avatarInitial = computed(() =>
+  (basic.display_name || agent.value?.name || '?').slice(0, 1).toUpperCase(),
+)
+
+function pickAvatar() {
+  avatarInput.value?.click()
+}
+
+function applyAvatar(url) {
+  // 头像不进 basicSnap/基线，故这里只回填展示值——不会把本区其他字段的脏标记带偏
+  basic.avatar_url = url
+  if (agent.value) agent.value = { ...agent.value, avatar_url: url }
+}
+
+async function onAvatarFile(e) {
+  const file = e.target.files?.[0]
+  e.target.value = '' // 允许连续选择同一个文件
+  if (!file) return
+  uploadingAvatar.value = true
+  try {
+    const updated = await admin.uploadAgentAvatar(agentId, file)
+    applyAvatar(updated.avatar_url)
+    ElMessage.success('头像已更新')
+  } catch {
+    // 400/413 细节已由 api 拦截器 toast
+  } finally {
+    uploadingAvatar.value = false
+  }
+}
+
+async function onRemoveAvatar() {
+  uploadingAvatar.value = true
+  try {
+    await admin.deleteAgentAvatar(agentId)
+    applyAvatar('')
+    ElMessage.success('头像已移除')
+  } catch {
+    // 失败已由拦截器 toast
+  } finally {
+    uploadingAvatar.value = false
+  }
+}
 function resetPersona() { Object.assign(persona, baseline.persona) }
 function resetCapability() { Object.assign(capability, baseline.capability) }
 function resetVisibility() { Object.assign(visibility, baseline.visibility) }
@@ -723,6 +797,43 @@ onMounted(load)
   justify-content: flex-end;
   gap: var(--bc-space-3);
   margin-top: var(--bc-space-2);
+}
+/* 头像选择：左预览 + 右操作，上传即时生效（与分区保存解耦） */
+.avatar-picker {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bc-space-3);
+}
+.avatar-picker__preview {
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: var(--bc-radius-full);
+  background: var(--bc-primary-2);
+  color: var(--bc-primary-8);
+  font-size: var(--bc-text-lg);
+  font-weight: var(--bc-weight-semibold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.avatar-picker__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.avatar-picker__body {
+  min-width: 0;
+}
+.avatar-picker__file {
+  display: none;
+}
+.avatar-picker__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bc-space-1, 4px);
 }
 .preview__picker {
   display: flex;

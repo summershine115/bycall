@@ -109,7 +109,8 @@
                 <template #default="{ row }">
                   <div class="agent-cell">
                     <span class="agent-cell__avatar" aria-hidden="true">
-                      {{ (row.display_name || row.name).slice(0, 1).toUpperCase() }}
+                      <img v-if="row.avatar_url" :src="row.avatar_url" alt="" />
+                      <template v-else>{{ (row.display_name || row.name).slice(0, 1).toUpperCase() }}</template>
                     </span>
                     <div class="agent-cell__names">
                       <span class="bc-strong">{{ row.display_name || row.name }}</span>
@@ -436,7 +437,8 @@ onMounted(load)
 .table-foot { display:flex; align-items:center; justify-content:space-between; gap:var(--bc-space-3); border-top:1px solid var(--bc-border); padding:var(--bc-space-2) var(--bc-space-4); font-size:var(--bc-text-xs); color:var(--bc-text-3); }
 .table-foot__num { font-variant-numeric:tabular-nums; }
 .agent-cell { display:flex; align-items:center; gap:var(--bc-space-3); }
-.agent-cell__avatar { width:30px; height:30px; border-radius:var(--bc-radius-full); background:var(--bc-primary-2); color:var(--bc-primary-8); font-size:var(--bc-text-xs); font-weight:var(--bc-weight-semibold); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.agent-cell__avatar { width:30px; height:30px; border-radius:var(--bc-radius-full); background:var(--bc-primary-2); color:var(--bc-primary-8); font-size:var(--bc-text-xs); font-weight:var(--bc-weight-semibold); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; }
+.agent-cell__avatar img { width:100%; height:100%; object-fit:cover; display:block; }
 .agent-cell__names { display:flex; flex-direction:column; line-height:1.3; min-width:0; }
 .agent-cell__desc { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .assembly { display:flex; flex-wrap:wrap; gap:4px var(--bc-space-3); font-size:var(--bc-text-xs); color:var(--bc-text-2); }
