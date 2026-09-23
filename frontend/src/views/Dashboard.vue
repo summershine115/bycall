@@ -124,7 +124,7 @@
           </div>
           <div class="dash-card__foot">
             <span class="bc-muted bc-text-xs">全量留痕可回溯</span>
-            <el-button text size="small" @click="$router.push({ name: 'audit' })">
+            <el-button text size="small" @click="$router.push({ name: 'supervision', query: { tab: 'audit' } })">
               查看全部<el-icon class="el-icon--right"><ArrowRight /></el-icon>
             </el-button>
           </div>
@@ -136,7 +136,7 @@
         <div class="bc-panel dash-card">
           <div class="dash-card__head">
             <span class="dash-card__title">最近会话</span>
-            <el-button text size="small" @click="$router.push({ name: 'conversations' })">
+            <el-button text size="small" @click="$router.push({ name: 'runtime', query: { tab: 'conversations' } })">
               查看全部会话<el-icon class="el-icon--right"><ArrowRight /></el-icon>
             </el-button>
           </div>
@@ -182,7 +182,7 @@
         <div class="bc-panel dash-card">
           <div class="dash-card__head">
             <span class="dash-card__title">知识库</span>
-            <el-button text size="small" @click="$router.push({ name: 'knowledge-bases' })">
+            <el-button text size="small" @click="$router.push({ name: 'knowledge-hub', query: { tab: 'bases' } })">
               管理知识库<el-icon class="el-icon--right"><ArrowRight /></el-icon>
             </el-button>
           </div>
