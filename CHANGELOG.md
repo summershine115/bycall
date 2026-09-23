@@ -35,6 +35,10 @@
 
 ### 修复
 
+- **存量库升级后新建数字员工必然失败（伪 409「数字员工已存在: agent」）**：取消「默认员工」时把 `Agent.is_default` 从模型删掉，但旧模型建出的 `agent.is_default` 列是 `NOT NULL` 且**没有数据库默认值**（Python 侧 `default=False` 不写进 DDL），模型不再提供该列 → INSERT 必然 `NOT NULL constraint failed: agent.is_default`；更糟的是 `except IntegrityError` 一律映射成 409「数字员工已存在」，把真因掩盖成「重名」。修复：
+  - 启动迁移幂等清理该历史列（SQLite 先删 `ix_agent_is_default` 索引再 `DROP COLUMN`；Postgres 删列自带索引），既有实例数据原样保留（`db.py::_ensure_schema_compatibility`）。
+  - 只有 slug 唯一键冲突才回 409，其他完整性错误回 500 并把真因写入服务端日志——同类问题不再被伪装。
+  - 回归用例 `tests/unit/test_agent_legacy_schema.py`：用旧模型的真实 DDL 建表（含历史列与索引）→ 跑迁移 → 断言列被清、数据不丢、控制面创建恢复 201；已验证**修复前该用例必失败**。
 - **工具网关对 MCP 工具「带默认值的可选参数」传 `None` 导致调用失败**：LLM 未提供可选参数时，动态参数 schema 以 `None` 填充且类型仍为 `str`，`None` 一路传到 MCP 服务端被 pydantic 拒绝（`string_type` 校验错），任何带可选参数的 MCP 工具在 LLM 省参调用时必然失败。现按工具声明的 JSON Schema `default` 填充（即连接器函数签名的默认值），无声明时才放宽为 Optional。由 T3.2 端到端测试（`create_ticket` 省略 `description`）发现。
 - **`make seed-reference` 未同步 IMBinding 规范化表**：demo 账号的企微绑定只写入 `User.im_bindings` JSON 字段，而 IM 身份映射（`resolve_user_by_im`）与审批结果推送反查均查 `IMBinding` 表——灌入种子后（不重启服务）demo 账号 IM 收不到任何回复、审批结果也无法推送回发起员工。现种子脚本对 demo 账号立即补齐 IMBinding 行（幂等，冲突报错与 init_db 迁移语义一致）。
 - 「渠道接入」页路由缺失：ADR-0012 管理面板重组时侧边栏分组与页面标题均已接入 `channels`，但 `router.js` 漏注册路由，点击侧边栏「渠道接入」菜单无响应。补上路由后 `Channels.vue` 首次进入构建图（打包级 ESM 解析验证通过）。

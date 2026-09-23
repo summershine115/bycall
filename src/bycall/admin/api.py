@@ -2079,6 +2079,17 @@ def _auto_agent_slug(session: Session, display_name: str) -> str:
     raise HTTPException(status.HTTP_409_CONFLICT, detail="无法生成唯一的数字员工标识，请稍后重试")
 
 
+def _is_agent_name_conflict(exc: IntegrityError) -> bool:
+    """该完整性错误是否就是 slug 唯一键冲突（各方言报错文案不同）。
+
+    SQLite：``UNIQUE constraint failed: agent.name``；Postgres：``duplicate key value
+    violates unique constraint "uq_agent_name"``。不能只匹配约束名，也不能只匹配
+    ``agent.name``（NOT NULL 失败也带 ``agent.name``，那属另一种真因，必须暴露）。
+    """
+    msg = str(exc)
+    return "uq_agent_name" in msg or "UNIQUE constraint failed: agent.name" in msg
+
+
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
 def create_agent(
     payload: AgentCreate,
@@ -2121,8 +2132,16 @@ def create_agent(
         session.commit()
     except IntegrityError as exc:
         session.rollback()
+        # 只有 slug 唯一键冲突才算「已存在」；其他完整性错误（如存量库历史列约束）必须露出真因
+        # 并落日志——曾经把 agent.is_default 的 NOT NULL 失败伪装成「数字员工已存在」，白查一轮。
+        if _is_agent_name_conflict(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {slug}"
+            ) from exc
+        logger.exception("创建数字员工失败（非唯一键冲突）：%s", slug)
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {slug}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="创建数字员工失败：数据库约束冲突（详见服务端日志）",
         ) from exc
     session.refresh(agent)
     # ADR-0012：创建即带凭证时自动建专属 Bot 连接（im.enable 关闭时 reload_agent 内部跳过）。

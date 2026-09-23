@@ -199,6 +199,16 @@ def _ensure_schema_compatibility() -> None:
             with engine.begin() as connection:
                 for n, ddl in missing:
                     connection.execute(text(f'ALTER TABLE agent ADD COLUMN "{n}" {ddl}'))
+        # 淘汰「默认员工」遗留列（ADR-0013 修订）：旧模型把 is_default 建为 NOT NULL 且
+        # **无数据库默认值**，模型去掉字段后 INSERT 不再提供它 → 存量库新建实例必然触发
+        # NOT NULL 失败（还会被 IntegrityError 分支误报成「已存在」）。幂等清理：
+        # SQLite 需先删索引（否则拒绝 DROP COLUMN），Postgres 删列自带索引。
+        if "is_default" in columns:
+            with engine.begin() as connection:
+                if engine.dialect.name == "sqlite":
+                    connection.execute(text('DROP INDEX IF EXISTS "ix_agent_is_default"'))
+                connection.execute(text('ALTER TABLE agent DROP COLUMN "is_default"'))
+                logger.info("已移除 agent 表的历史 is_default 列（默认员工概念已取消）")
 
     # document: 补 level 列（T1.1 密级/职级 ABAC：文档密级，检索按 level <= user_level 过滤）。
     if "document" in inspector.get_table_names():
