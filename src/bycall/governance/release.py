@@ -20,6 +20,15 @@ from sqlmodel import Session, select
 from bycall.governance.models import Model, ReleaseState, SystemPrompt
 
 
+class ReleaseTargetMissing(ValueError):
+    """发布/回滚的目标不可解析（版本或模型已不存在，或压根没有上一版本）。
+
+    切换 ``is_active`` 的前提是目标**真的存在**：目标缺失时必须 fail-closed 抛错且
+    **不改动任何 is_active**。否则「先全部置 False、再激活目标」会退化成「全部置 False、
+    没有目标可激活」——系统提示词静默变成空串、会话无模型可用，比直接报错危险得多。
+    """
+
+
 def in_canary(scope_id: int | None, percent: int) -> bool:
     """稳定哈希灰度：同一 scope 在比例不变时始终落在同一侧（不跳变）。"""
     if percent <= 0:
@@ -148,35 +157,61 @@ def _deactivate_all_chat_models(session: Session) -> None:
 
 
 def activate_target(session: Session, release: ReleaseState) -> None:
-    """全量激活 release.target（prompt / model），由调用方统一 commit。"""
+    """全量激活 release.target（prompt / model），由调用方统一 commit。
+
+    目标不存在（版本被删 / 模型被删或已非 chat）→ :class:`ReleaseTargetMissing`，
+    且**不改动任何 is_active**（先解析目标，再动 is_active——空目标不得清空全部激活）。
+    """
     if release.kind == "prompt":
-        _deactivate_all_prompts(session)
         target = _get_prompt_by_version(session, release.target_prompt_version)
-        if target is not None:
-            target.is_active = True
-            session.add(target)
-        return
-    _deactivate_all_chat_models(session)
-    target = _get_chat_model_by_id(session, release.target_model_id)
-    if target is not None:
+        if target is None:
+            raise ReleaseTargetMissing(
+                f"发布目标提示词 v{release.target_prompt_version} 已不存在，"
+                "is_active 保持原状（请先恢复该版本或改选目标）"
+            )
+        _deactivate_all_prompts(session)
         target.is_active = True
         session.add(target)
+        return
+    target = _get_chat_model_by_id(session, release.target_model_id)
+    if target is None:
+        raise ReleaseTargetMissing(
+            f"发布目标 chat 模型 id={release.target_model_id} 已不存在（或已非 chat 类型），"
+            "is_active 保持原状"
+        )
+    _deactivate_all_chat_models(session)
+    target.is_active = True
+    session.add(target)
 
 
 def activate_previous(session: Session, release: ReleaseState) -> None:
-    """回滚：把 is_active 切回 previous（prompt 版本 / chat 模型），由调用方统一 commit。"""
+    """回滚：把 is_active 切回 previous（prompt 版本 / chat 模型），由调用方统一 commit。
+
+    没有上一版本（首次发布）或上一版本已被删除 → :class:`ReleaseTargetMissing`，
+    且**不改动任何 is_active**——回滚不是「清空」，没有回退目标就必须失败。
+    """
     if release.kind == "prompt":
-        _deactivate_all_prompts(session)
+        if release.previous_prompt_version is None:
+            raise ReleaseTargetMissing("该发布没有上一版本（首次发布），无法回滚")
         previous = _get_prompt_by_version(session, release.previous_prompt_version)
-        if previous is not None:
-            previous.is_active = True
-            session.add(previous)
-        return
-    _deactivate_all_chat_models(session)
-    previous = _get_chat_model_by_id(session, release.previous_model_id)
-    if previous is not None:
+        if previous is None:
+            raise ReleaseTargetMissing(
+                f"上一版本提示词 v{release.previous_prompt_version} 已被删除，无法回滚"
+            )
+        _deactivate_all_prompts(session)
         previous.is_active = True
         session.add(previous)
+        return
+    if release.previous_model_id is None:
+        raise ReleaseTargetMissing("该发布没有上一版本（首次发布），无法回滚")
+    previous = _get_chat_model_by_id(session, release.previous_model_id)
+    if previous is None:
+        raise ReleaseTargetMissing(
+            f"上一版本 chat 模型 id={release.previous_model_id} 已被删除或已非 chat 类型，无法回滚"
+        )
+    _deactivate_all_chat_models(session)
+    previous.is_active = True
+    session.add(previous)
 
 
 def promote_release(session: Session, kind: str) -> ReleaseState | None:
@@ -206,6 +241,7 @@ def rollback_release(session: Session, kind: str) -> ReleaseState | None:
 
 __all__ = [
     "ReleaseState",
+    "ReleaseTargetMissing",
     "activate_previous",
     "activate_target",
     "get_release",

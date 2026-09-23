@@ -229,6 +229,7 @@ def test_publish_canary_promote_rollback(client):
 
 def test_model_publish_full_and_rollback(client):
     """chat 模型全量发布 + 回滚（复用 is_active 切换）。"""
+
     # seed 无模型：先建 old（激活）+ new。
     resp = client.post(
         "/api/admin/models",
@@ -270,3 +271,47 @@ def test_model_publish_full_and_rollback(client):
     assert resp.status_code == 200, resp.text
     old = next(m for m in client.get("/api/admin/models").json() if m["id"] == old_id)
     assert old["is_active"] is True
+
+
+# ============ 目标缺失时 fail-closed（不得静默清空 is_active） ============
+
+
+def test_promote_with_deleted_target_keeps_active_prompt(client):
+    """灰度目标版本被删除后再转全量：409，且当前激活提示词不被清空。
+
+    旧行为是「先全部置 False、再激活目标」——目标没了就退化成全部未激活，
+    系统提示词静默变空串且返回 200（静默失效）。回归锁定 fail-closed。
+    """
+    _create_prompt(client, 2, "CANDIDATE")
+    assert (
+        client.post(
+            "/api/admin/prompts/2/publish", json={"canary_percent": 50, "skip_gate": True}
+        ).status_code
+        == 200
+    )
+    assert client.delete("/api/admin/prompts/2").status_code == 204  # 灰度期间删掉候选
+
+    resp = client.post("/api/admin/releases/prompt/promote")
+    assert resp.status_code == 409, resp.text
+    assert _active_prompt_version(client) == 1  # 激活版本原样保留
+
+
+def test_rollback_with_deleted_previous_keeps_active_prompt(client):
+    """上一版本被删除后回滚：409，仍保持当前激活版本。
+
+    旧行为会让 ``activate_previous`` 把所有版本置 False 却无目标可激活——
+    系统提示词静默变空串且返回 200。
+    """
+    _create_prompt(client, 2, "CANDIDATE")
+    assert (
+        client.post(
+            "/api/admin/prompts/2/publish", json={"canary_percent": 0, "skip_gate": True}
+        ).status_code
+        == 200
+    )
+    assert _active_prompt_version(client) == 2
+    assert client.delete("/api/admin/prompts/1").status_code == 204  # 删掉上一版本
+
+    resp = client.post("/api/admin/releases/prompt/rollback")
+    assert resp.status_code == 409, resp.text
+    assert _active_prompt_version(client) == 2  # 没有被清空

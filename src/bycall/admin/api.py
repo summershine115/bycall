@@ -889,7 +889,11 @@ def rollback_release_endpoint(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"发布类型不存在: {kind}")
     from bycall.governance.release import rollback_release
 
-    release = rollback_release(session, kind)
+    try:
+        release = rollback_release(session, kind)
+    except ValueError as exc:
+        # 无上一版本 / 上一版本已被删除 → 409，且 is_active 保持原状（fail-closed）。
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     if release is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"没有可回滚的 {kind} 发布")
     _audit_admin(

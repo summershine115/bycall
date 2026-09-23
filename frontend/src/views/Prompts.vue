@@ -1,7 +1,7 @@
 <template>
   <div class="bc-page">
     <div class="page-head">
-      <p class="bc-muted bc-text-sm">数字员工人格的版本化资产：创建即激活，历史版本可随时回滚。</p>
+      <p class="bc-muted bc-text-sm">数字员工人格的版本化资产：新建版本为候选，点「发布」过评测门后生效，历史版本可随时回滚。</p>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建版本</el-button>
     </div>
 
@@ -58,21 +58,21 @@
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
               <StatusBadge v-if="row.is_active" type="ok" text="激活中" />
-              <span v-else class="bc-muted bc-text-sm">历史版本</span>
+              <span v-else class="bc-muted bc-text-sm">未生效</span>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="{ row }">
               <el-button size="small" @click="onView(row)">查看</el-button>
-              <el-button v-if="!row.is_active" size="small" type="success" plain @click="onActivate(row)">
-                回滚到此
+              <el-button v-if="!row.is_active" size="small" type="success" plain @click="onPublish(row)">
+                发布
               </el-button>
             </template>
           </el-table-column>
         </el-table>
 
         <div class="list-panel__foot">
-          <span>新建版本将立即激活；回滚是原子切换 is_active，立即对全部会话生效</span>
+          <span>发布前跑评测门（任一失败用例即阻断）；全量发布原子切换 is_active，灰度按用户稳定哈希分流——灰度与回滚在「发布与回滚」页统一查看</span>
         </div>
       </div>
 
@@ -124,14 +124,22 @@
             :rows="12"
             placeholder="数字员工的系统提示词..."
           />
-          <div class="bc-hint">创建后将立即激活为当前版本，旧版本自动转为历史版本</div>
+          <div class="bc-hint">创建后为候选版本（不生效）；在版本列表点「发布」、过评测门后生效</div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="onSave">创建并激活</el-button>
+        <el-button type="primary" :loading="saving" @click="onSave">创建候选版本</el-button>
       </template>
     </el-dialog>
+
+    <PublishDialog
+      v-model="publishVisible"
+      kind="prompt"
+      :target-id="publishTarget.version"
+      :target-label="`v${publishTarget.version}`"
+      @published="load"
+    />
 
     <el-dialog v-model="viewVisible" width="760px">
       <template #header>
@@ -148,7 +156,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import { formatTime as fmtTime } from '../utils/format'
@@ -156,6 +164,8 @@ import { useCrud } from '../composables/useCrud'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import PublishDialog from '../components/PublishDialog.vue'
+import { useHubTabRefresh } from '../composables/useHubTab'
 
 const prompts = ref([])
 const { loading, dialogVisible, saving, form, openCreate } = useCrud({
@@ -163,6 +173,9 @@ const { loading, dialogVisible, saving, form, openCreate } = useCrud({
 })
 const viewVisible = ref(false)
 const viewing = ref({})
+// 发布（T2.4）：走评测门 + 灰度/全量，替代此前的直接激活
+const publishVisible = ref(false)
+const publishTarget = ref({})
 
 const activePrompt = computed(() => prompts.value.find((p) => p.is_active) || null)
 
@@ -247,9 +260,8 @@ async function onSave() {
   try {
     // 版本号 = 当前最大 + 1
     const nextVersion = (prompts.value[0]?.version || 0) + 1
-    let created
     try {
-      created = await admin.createPrompt({
+      await admin.createPrompt({
         version: nextVersion,
         label: form.label || `v${nextVersion}`,
         content: form.content,
@@ -261,9 +273,7 @@ async function onSave() {
       await load().catch(() => {})
       return
     }
-    // 创建后立即激活
-    await admin.activatePrompt(created.version)
-    ElMessage.success('已创建并激活')
+    ElMessage.success(`已创建候选版本 v${nextVersion}，发布后生效`)
     dialogVisible.value = false
     await load()
   } finally {
@@ -271,14 +281,9 @@ async function onSave() {
   }
 }
 
-async function onActivate(row) {
-  const ok = await ElMessageBox.confirm(`确定回滚到 v${row.version}？当前激活版本将停用`, '确认回滚', {
-    type: 'warning',
-  }).catch(() => null)
-  if (!ok) return  // 用户取消
-  await admin.activatePrompt(row.version)
-  ElMessage.success('已激活')
-  await load()
+function onPublish(row) {
+  publishTarget.value = row
+  publishVisible.value = true
 }
 
 function onView(row) {
@@ -287,6 +292,8 @@ function onView(row) {
 }
 
 onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
+// 「发布与回滚」回滚/转全量会改 is_active：切回本页时重新拉取，避免显示陈旧生效版本
+useHubTabRefresh('prompts', () => load().catch(() => {}))
 </script>
 
 <style scoped>

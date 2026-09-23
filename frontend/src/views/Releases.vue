@@ -4,6 +4,7 @@
       title="发布与回滚"
       description="提示词与 chat 模型的灰度发布状态：发布前过评测门，灰度可转全量，一键回滚到上一版本。"
     >
+      <el-button type="primary" :icon="Upload" @click="publishVisible = true">发起发布</el-button>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </PageHeader>
 
@@ -40,7 +41,7 @@
           v-if="!releases.length"
           icon="RefreshLeft"
           title="暂无发布记录"
-          description="在「提示词版本」或「模型管理」发布新版本后，记录会出现在这里。"
+          description="点右上「发起发布」发布提示词版本或 chat 模型；每条发布都先过评测门，并保留回滚目标。"
         />
 
         <el-table v-else v-loading="loading" :data="releases">
@@ -101,14 +102,18 @@
                 提速至 100%
               </el-button>
               <el-button
-                v-if="row.status === 'canary' || row.status === 'active'"
+                v-if="row.status !== 'rolled_back'"
                 size="small"
                 type="danger"
                 plain
+                :disabled="!hasPrevious(row)"
                 @click="rollback(row.kind)"
               >
                 一键回滚
               </el-button>
+              <span v-if="row.status !== 'rolled_back' && !hasPrevious(row)" class="bc-muted bc-text-xs no-prev">
+                无上一版本
+              </span>
             </template>
           </el-table-column>
         </el-table>
@@ -117,6 +122,8 @@
           <span>回滚立即生效、不经过灰度；灰度（1–99%）期间按用户/会话稳定哈希分流</span>
         </div>
       </div>
+
+      <PublishDialog v-model="publishVisible" @published="load" />
     </template>
   </div>
 </template>
@@ -124,14 +131,17 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Upload } from '@element-plus/icons-vue'
 import { admin } from '../api'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PublishDialog from '../components/PublishDialog.vue'
+import { useHubTabRefresh } from '../composables/useHubTab'
 
 const loading = ref(false)
 const releases = ref([])
+const publishVisible = ref(false)
 
 const kpi = computed(() => {
   const list = releases.value
@@ -150,6 +160,13 @@ function targetLabel(row) {
 function prevLabel(row) {
   if (row.kind === 'prompt') return row.previous_prompt_version ? `v${row.previous_prompt_version}` : '（无）'
   return row.previous_model_id ? `model #${row.previous_model_id}` : '（无）'
+}
+
+// 无上一版本（首次发布）不可回滚——服务端也会 409，这里先禁用避免白点一次
+function hasPrevious(row) {
+  return row.kind === 'prompt'
+    ? row.previous_prompt_version != null
+    : row.previous_model_id != null
 }
 
 function gateOf(row) {
@@ -202,6 +219,7 @@ function kindLabel(kind) {
 }
 
 onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
+useHubTabRefresh('releases', () => load().catch(() => {}))
 </script>
 
 <style scoped>
@@ -293,6 +311,9 @@ onMounted(() => load().catch(() => {}))  // 失败已由拦截器 toast
   text-align: right;
 }
 .gate-fail {
+  margin-left: 6px;
+}
+.no-prev {
   margin-left: 6px;
 }
 </style>

@@ -58,8 +58,7 @@ export const admin = {
   createPrompt: (data) => http.post('/api/admin/prompts', data).then((r) => r.data),
   updatePrompt: (version, data) => http.put(`/api/admin/prompts/${version}`, data).then((r) => r.data),
   deletePrompt: (version) => http.delete(`/api/admin/prompts/${version}`),
-  activatePrompt: (version) =>
-    http.post('/api/admin/prompts/activate', { version }).then((r) => r.data),
+  // 提示词生效只能经「发布」（T2.4 发布门）；控制台不再提供直接激活入口
   // Skill（领域知识文档，name 主键；PUT 是 PATCH 语义）
   listSkills: () => http.get('/api/admin/skills').then((r) => r.data),
   getSkill: (name) => http.get(`/api/admin/skills/${name}`).then((r) => r.data),

@@ -100,6 +100,17 @@
           <el-table-column label="操作" width="270" fixed="right">
             <template #default="{ row }">
               <el-button
+                v-if="row.model_type === 'chat'"
+                size="small"
+                :type="row.is_active ? 'info' : 'success'"
+                :plain="!row.is_active"
+                :disabled="row.is_active"
+                @click="onPublish(row)"
+              >
+                {{ row.is_active ? '已生效' : '发布' }}
+              </el-button>
+              <el-button
+                v-else
                 size="small"
                 :type="row.is_active ? 'info' : 'success'"
                 :plain="!row.is_active"
@@ -116,7 +127,7 @@
         </el-table>
 
         <div class="models-panel__foot">
-          <span>API Key 仅在创建时可查看，此后以掩码存储；切换向量模型需重建索引</span>
+          <span>chat 模型走「发布」（先过评测门，可灰度）；向量/重排模型直接激活，切换向量模型需重建索引</span>
         </div>
       </div>
     </template>
@@ -165,7 +176,12 @@
           <div class="bc-hint">可先随意填，保存后点「测试连接」自动探测真实维度</div>
         </el-form-item>
         <el-form-item v-if="!editing" label="创建后激活">
-          <el-switch v-model="form.is_active" />
+          <el-switch v-model="form.is_active" :disabled="form.model_type === 'chat'" />
+          <div class="bc-hint">
+            {{ form.model_type === 'chat'
+              ? 'chat 模型不走直接激活：保存后在列表点「发布」，先过评测门（可选灰度）'
+              : '向量/重排模型无发布门，直接激活即可' }}
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -174,6 +190,14 @@
         <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
       </template>
     </el-dialog>
+
+    <PublishDialog
+      v-model="publishVisible"
+      kind="model"
+      :target-id="publishTarget.id"
+      :target-label="publishTarget.display_name || publishTarget.name"
+      @published="load"
+    />
   </div>
 </template>
 
@@ -185,10 +209,15 @@ import { admin } from '../api'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import PublishDialog from '../components/PublishDialog.vue'
+import { useHubTabRefresh } from '../composables/useHubTab'
 
 const loading = ref(true)
 const activeKind = ref('all')
 const allModels = ref([])
+// chat 模型发布（T2.4）：过评测门 + 可选灰度，替代直接激活
+const publishVisible = ref(false)
+const publishTarget = ref({})
 const providers = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -333,7 +362,8 @@ async function onSave() {
         base_url: form.base_url,
         api_key: form.api_key,
         embed_dimension: form.model_type === 'embedding' ? form.embed_dimension : 0,
-        is_active: form.is_active,
+        // chat 模型只能经发布门生效（避免"建即生效"绕过评测门）
+        is_active: form.model_type === 'chat' ? false : form.is_active,
       })
     }
     ElMessage.success('保存成功')
@@ -386,6 +416,11 @@ async function onTest(model) {
   await doTest(model.id)
 }
 
+function onPublish(model) {
+  publishTarget.value = model
+  publishVisible.value = true
+}
+
 async function onActivate(model) {
   try {
     const result = await admin.activateModel(model.id)
@@ -423,6 +458,8 @@ async function onDelete(model) {
 }
 
 onMounted(load)
+// 「发布与回滚」回滚/转全量会改 is_active：切回本页时重新拉取，避免显示陈旧生效模型
+useHubTabRefresh('models', () => load().catch(() => {}))
 </script>
 
 <style scoped>

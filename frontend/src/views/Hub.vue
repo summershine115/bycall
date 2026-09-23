@@ -29,6 +29,9 @@ const activeKey = computed({
   set: (key) => replaceTab(key),
 })
 
+// 当前生效 tab key：供各子页在「被切回」时刷新（见 composables/useHubTab.js）
+provide('bcHubActiveTab', activeKey)
+
 function replaceTab(key) {
   // replace：tab 是同一页面的视图模式，不占浏览历史（返回键仍回到上一个页面）
   if (route.query.tab === key || !key) return
