@@ -81,14 +81,25 @@ body {
   --el-button-active-bg-color: var(--bc-primary-8);
   box-shadow: none;
 }
-.el-button--primary.is-plain {
+/* plain 态必须直接覆写 color：上面 .el-button.el-button--primary 的 color 直写声明
+   （优先级 (0,2,0)）压过 EP .el-button 的 color: var(--el-button-text-color)，
+   只改 --el-button-* 自定义属性拦不住它——文字会掉回 --bc-on-primary 白字，
+   落在 --bc-primary-1 浅灰底上（如对话页侧栏「新对话」白字淹没）。
+   选择器带上 :hover/:focus/:active 以对齐上面同优先级的状态规则。 */
+.el-button--primary.is-plain,
+.el-button--primary.is-plain:hover,
+.el-button--primary.is-plain:focus,
+.el-button--primary.is-plain:active {
+  color: var(--bc-primary-7);
   --el-button-text-color: var(--bc-primary-7);
   --el-button-hover-text-color: var(--bc-primary-8);
   --el-button-active-text-color: var(--bc-primary-8);
   --el-button-bg-color: var(--bc-primary-1);
   --el-button-border-color: var(--bc-primary-3);
   --el-button-hover-bg-color: var(--bc-primary-2);
+  --el-button-hover-border-color: var(--bc-primary-4);
   --el-button-active-bg-color: var(--bc-primary-2);
+  --el-button-active-border-color: var(--bc-primary-4);
 }
 .el-button:not(.el-button--primary, .is-text, .is-link) {
   --el-button-hover-text-color: var(--bc-primary-7);
@@ -482,6 +493,8 @@ html.dark .el-button.el-button--primary:focus {
   box-shadow: none;
 }
 html.dark .el-button.el-button--primary.is-plain {
+  /* 同上：兜住上面 html.dark 实心规则直写的 color 白字，plain 底是半透明绿渍 */
+  color: var(--bc-success-text);
   --el-button-bg-color: var(--bc-success-bg);
   --el-button-text-color: var(--bc-success-text);
   --el-button-border-color: var(--bc-success);
