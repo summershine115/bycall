@@ -21,6 +21,20 @@
       </div>
 
       <nav class="sidebar__nav" aria-label="主导航">
+        <!-- 首页位：仪表盘是"回首页"，不占分组标签 -->
+        <router-link
+          :to="{ name: homeItem.name }"
+          class="nav-item nav-item--home"
+          :class="{ 'nav-item--active': isItemActive(homeItem) }"
+          :title="collapsed ? homeItem.label : ''"
+          :aria-current="route.name === homeItem.name ? 'page' : undefined"
+        >
+          <el-icon :size="17" class="nav-item__icon" aria-hidden="true">
+            <component :is="homeItem.icon" />
+          </el-icon>
+          <span v-if="!collapsed" class="nav-item__label">{{ homeItem.label }}</span>
+        </router-link>
+
         <div v-for="group in navGroups" :key="group.key" class="nav-group">
           <div v-if="!collapsed" class="nav-group__label">{{ group.label }}</div>
           <div v-else class="nav-group__divider" aria-hidden="true" />
@@ -66,6 +80,18 @@
           <span class="topbar__page">{{ pageTitle }}</span>
         </div>
         <div class="topbar__actions">
+          <!-- 运行时设置：系统级低频配置，从侧边栏移到顶栏入口（ADR-0014） -->
+          <button
+            class="topbar__gear"
+            type="button"
+            :class="{ 'topbar__gear--active': route.name === 'settings' }"
+            :aria-current="route.name === 'settings' ? 'page' : undefined"
+            aria-label="运行时设置"
+            title="运行时设置"
+            @click="goSettings"
+          >
+            <el-icon :size="17" aria-hidden="true"><Setting /></el-icon>
+          </button>
           <!-- 明暗切换：light ⇄ dark（手动切换覆盖 auto 并持久化） -->
           <ModeToggle />
           <span class="topbar__env">{{ envLabel }}</span>
@@ -103,113 +129,52 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
 import ModeToggle from '../components/ModeToggle.vue'
-import {
-  ArrowDown, ArrowRight, Avatar, ChatLineRound, Collection, Connection, Cpu,
-  DataLine, Document, DocumentChecked, EditPen, Expand, Fold, Key, List,
-  MagicStick, RefreshLeft, Setting, SwitchButton, Tools, TrendCharts, User,
-} from '@element-plus/icons-vue'
+import { crumbGroups, homeItem, hubs, navGroups, resolveTab } from '../nav'
+import { ArrowDown, ArrowRight, Expand, Fold, Setting, SwitchButton } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const collapsed = ref(false)
 
-// 导航分组（ADR-0013 面板重组）：数字员工只管实例；组织级共享资产（提示词/模型/技能/MCP/
-// 知识库/文档）归「能力资产」；渠道凭证归「渠道接入」——三者生命周期不同，不再混在一个 Hub 下。
-const navGroups = [
-  {
-    key: 'overview',
-    label: '总览',
-    items: [
-      { name: 'dashboard', label: '仪表盘', icon: DataLine },
-      { name: 'settings', label: '运行时设置', icon: Setting },
-    ],
-  },
-  {
-    key: 'identity',
-    label: '组织与身份',
-    items: [
-      { name: 'users', label: '用户管理', icon: User },
-      { name: 'roles', label: '角色与权限', icon: Key },
-      { name: 'policy-simulator', label: '策略模拟', icon: List },
-    ],
-  },
-  {
-    key: 'agent',
-    label: '数字员工',
-    items: [
-      // 实例列表与其详情页（/agents/:id）同属这一项：active 用路径前缀匹配
-      { name: 'agents', label: '数字员工', icon: Avatar, matchPrefix: '/agents' },
-    ],
-  },
-  {
-    key: 'assets',
-    label: '能力资产',
-    items: [
-      { name: 'prompts', label: '提示词版本', icon: EditPen },
-      { name: 'models', label: '模型管理', icon: Cpu },
-      { name: 'skills', label: 'Skill 管理', icon: MagicStick },
-      { name: 'mcp', label: 'MCP 工具', icon: Tools },
-      { name: 'knowledge-bases', label: '知识库', icon: Collection },
-      { name: 'knowledge', label: '文档管理', icon: Document },
-    ],
-  },
-  {
-    key: 'channel',
-    label: '渠道接入',
-    items: [
-      { name: 'channels', label: '渠道接入', icon: Connection },
-    ],
-  },
-  {
-    key: 'runtime',
-    label: '运行与监督',
-    items: [
-      { name: 'conversations', label: '会话管理', icon: ChatLineRound },
-      { name: 'approvals', label: '审批队列', icon: DocumentChecked },
-      { name: 'tasks', label: '任务执行', icon: List },
-      { name: 'audit', label: '审计日志', icon: List },
-      { name: 'releases', label: '发布与回滚', icon: RefreshLeft },
-      { name: 'ops-metrics', label: '运营指标', icon: TrendCharts },
-    ],
-  },
-]
+// 侧边栏导航模型（分组 + 首页位）与 Hub 定义统一在 src/nav.js（ADR-0014），此处只读不定义。
 
-// 路由 name → 中文标题（与分组解耦，路由不变）
-const titles = {
+// 非 Hub 页的标题；Hub 页标题由「页面名 · tab 名」组合（见 pageTitle）
+const standaloneTitles = {
   dashboard: '仪表盘',
-  users: '用户管理',
-  roles: '角色与权限',
-  agents: '实例列表',
-  'agent-detail': '实例详情',
-  models: '模型管理',
-  knowledge: '文档管理',
-  'knowledge-bases': '知识库',
-  conversations: '会话管理',
-  prompts: '提示词版本',
-  skills: 'Skill 管理',
-  mcp: 'MCP 工具',
   approvals: '审批队列',
-  tasks: '任务执行',
-  channels: '渠道接入',
   settings: '运行时设置',
-  audit: '审计日志',
-  'policy-simulator': '策略模拟',
-  releases: '发布与回滚',
-  'ops-metrics': '运营指标',
+  'agent-detail': '实例详情',
   chat: '对话测试',
 }
 
-const pageTitle = computed(() => titles[route.name] || 'Bycall')
+// 当前 Hub 与生效 tab：地址栏 ?tab= 即状态，缺省用 Hub 的 defaultTab 兜底
+const activeHub = computed(() => {
+  const hub = hubs[route.name]
+  if (!hub) return null
+  return { hub, tab: hub.tabs.find((t) => t.key === resolveTab(hub, route.query)) }
+})
 
-// Hub 子页（/agents/channels 等）路由 name 不在 navGroups 里，
-// 用路径前缀把整组子路由归到「数字员工」一项上
+const pageTitle = computed(() => {
+  const active = activeHub.value
+  if (!active) return standaloneTitles[route.name] || 'Bycall'
+  const { hub, tab } = active
+  // tab 名与页面名相同时不重复（如「知识库 · 知识库」）
+  return !tab || tab.label === hub.title ? hub.title : `${hub.title} · ${tab.label}`
+})
+
+// 详情页（/agents/:id）用路径前缀归到「数字员工」一项上
 function isItemActive(item) {
   return item.matchPrefix ? route.path.startsWith(item.matchPrefix) : route.name === item.name
 }
 const currentGroupLabel = computed(
-  () => navGroups.find((g) => g.items.some(isItemActive))?.label || ''
+  () =>
+    navGroups.find((g) => g.items.some(isItemActive))?.label || crumbGroups[route.name] || ''
 )
 const envLabel = import.meta.env.DEV ? '开发环境' : '生产环境'
+
+function goSettings() {
+  router.push({ name: 'settings' })
+}
 
 async function onUserCommand(cmd) {
   if (cmd === 'logout') {
@@ -353,6 +318,10 @@ async function onUserCommand(cmd) {
   justify-content: center;
   padding: var(--bc-space-2) 0;
 }
+/* 首页位：与下方第一个分组之间留出分组间距，形成"首页 / 功能区"两级 */
+.nav-item--home {
+  margin-bottom: var(--bc-space-5);
+}
 
 .sidebar__footer {
   border-top: 1px solid var(--bc-sidebar-border);
@@ -433,6 +402,26 @@ async function onUserCommand(cmd) {
   padding: 2px var(--bc-space-2);
   background: var(--bc-gray-2);
   border-radius: var(--bc-radius-sm);
+}
+.topbar__gear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--bc-radius-md);
+  background: transparent;
+  color: var(--bc-text-2);
+  cursor: pointer;
+  transition:
+    background var(--bc-duration-fast) var(--bc-ease-out),
+    color var(--bc-duration-fast) var(--bc-ease-out);
+}
+.topbar__gear:hover,
+.topbar__gear--active {
+  background: var(--bc-gray-2);
+  color: var(--bc-text-1);
 }
 .topbar__user {
   display: flex;

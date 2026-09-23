@@ -1,7 +1,48 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { hubs } from './nav'
 
 // 路由：hash 模式（FastAPI 托管时无需 SPA fallback 特殊处理）。
 // 守卫：未登录 → 跳登录页（除登录页自身）。
+//
+// 一级页面分三类（ADR-0014）：
+//   ① Hub 页（同源页面合并的 tab 容器）——由导航模型 nav.js 生成，避免路径与 tab 漂移；
+//   ② 独立页（数字员工详情 / 审批队列 / 运行时设置 / 对话测试）；
+//   ③ 旧路径重定向——合并前的每个入口都保留可达（深链不破）。
+const hubRoutes = Object.entries(hubs).map(([name, hub]) => ({
+  path: hub.path.replace(/^\//, ''),
+  name,
+  component: () => import('./views/Hub.vue'),
+}))
+
+// 旧路径 →（新一级页面, tab）：三列即"合并前 → 合并后"的完整对照表
+const legacyRoutes = [
+  ['users', 'org', 'users'],
+  ['roles', 'org', 'roles'],
+  ['policy-simulator', 'org', 'policy'],
+  ['prompts', 'assets', 'prompts'],
+  ['models', 'assets', 'models'],
+  ['skills', 'assets', 'skills'],
+  ['mcp', 'assets', 'mcp'],
+  ['releases', 'assets', 'releases'],
+  ['knowledge-bases', 'knowledge-hub', 'bases'],
+  ['conversations', 'runtime', 'conversations'],
+  ['tasks', 'runtime', 'tasks'],
+  ['ops-metrics', 'supervision', 'metrics'],
+  ['channels', 'agents', 'channels'],
+  // ADR-0012 时代的「数字员工 Hub」子路径（二次重组后仍保留可达）
+  ['agents/prompts', 'assets', 'prompts'],
+  ['agents/models', 'assets', 'models'],
+  ['agents/skills', 'assets', 'skills'],
+  ['agents/mcp', 'assets', 'mcp'],
+  ['agents/knowledge-bases', 'knowledge-hub', 'bases'],
+  ['agents/knowledge', 'knowledge-hub', 'docs'],
+  ['agents/channels', 'agents', 'channels'],
+].map(([path, name, tab]) => ({
+  path,
+  // 保留原 query（如 knowledge?kb_id=）再补 tab
+  redirect: (to) => ({ name, query: { ...to.query, tab } }),
+}))
+
 const routes = [
   { path: '/login', name: 'login', component: () => import('./views/Login.vue') },
   {
@@ -9,41 +50,15 @@ const routes = [
     component: () => import('./views/Layout.vue'),
     children: [
       { path: '', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
-      { path: 'users', name: 'users', component: () => import('./views/Users.vue') },
-      { path: 'roles', name: 'roles', component: () => import('./views/Roles.vue') },
-      // 数字员工：只有实例列表与详情（个体视角）。
-      // 组织级共享资产（提示词/模型/Skill/MCP/知识库/文档）与渠道凭证已拆为一级页面——
-      // 它们跨实例存在，混在员工入口下会让“配一个员工”变成逛杂物间（ADR-0013）。
-      { path: 'agents', name: 'agents', component: () => import('./views/AgentInstances.vue') },
+      ...hubRoutes,
       // :id 限定数字，避免吞掉 /agents/channels 等旧静态子路径
       { path: 'agents/:id(\\d+)', name: 'agent-detail', component: () => import('./views/AgentDetail.vue'), props: true },
-      // 能力资产（跨实例的组织级零件库）
-      { path: 'prompts', name: 'prompts', component: () => import('./views/Prompts.vue') },
-      { path: 'models', name: 'models', component: () => import('./views/Models.vue') },
-      { path: 'skills', name: 'skills', component: () => import('./views/Skills.vue') },
-      { path: 'mcp', name: 'mcp', component: () => import('./views/MCP.vue') },
-      { path: 'knowledge-bases', name: 'knowledge-bases', component: () => import('./views/KnowledgeBases.vue') },
-      { path: 'knowledge', name: 'knowledge', component: () => import('./views/Knowledge.vue') },
-      // 渠道接入（系统凭证：全局默认 Bot + 各实例专属连接总览）
-      { path: 'channels', name: 'channels', component: () => import('./views/Channels.vue') },
-      { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       { path: 'approvals', name: 'approvals', component: () => import('./views/Approvals.vue') },
-      { path: 'tasks', name: 'tasks', component: () => import('./views/Tasks.vue') },
+      // 运行时设置：已从侧边栏移入顶栏齿轮（低频、系统级，不占导航位）
       { path: 'settings', name: 'settings', component: () => import('./views/Settings.vue') },
-      { path: 'audit', name: 'audit', component: () => import('./views/Audit.vue') },
-      { path: 'policy-simulator', name: 'policy-simulator', component: () => import('./views/PolicySimulator.vue') },
-      { path: 'releases', name: 'releases', component: () => import('./views/Releases.vue') },
-      { path: 'ops-metrics', name: 'ops-metrics', component: () => import('./views/OpsMetrics.vue') },
       // 对话测试：数据面体验页，保留独立全屏路由；侧边栏无入口，从数字员工实例行内进入
       { path: 'chat', name: 'chat', component: () => import('./views/Chat.vue') },
-      // 旧「数字员工 Hub」子路径 → 新一级页面（保留 query，如 knowledge?kb_id=）
-      { path: 'agents/channels', redirect: (to) => ({ path: '/channels', query: to.query }) },
-      { path: 'agents/prompts', redirect: (to) => ({ path: '/prompts', query: to.query }) },
-      { path: 'agents/models', redirect: (to) => ({ path: '/models', query: to.query }) },
-      { path: 'agents/skills', redirect: (to) => ({ path: '/skills', query: to.query }) },
-      { path: 'agents/mcp', redirect: (to) => ({ path: '/mcp', query: to.query }) },
-      { path: 'agents/knowledge-bases', redirect: (to) => ({ path: '/knowledge-bases', query: to.query }) },
-      { path: 'agents/knowledge', redirect: (to) => ({ path: '/knowledge', query: to.query }) },
+      ...legacyRoutes,
     ],
   },
   // 404 兜底：未知路径回仪表盘（hash 模式下无此路由则整页空白且无导航可点）

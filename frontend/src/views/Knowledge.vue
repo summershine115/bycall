@@ -169,7 +169,7 @@
           title="先选择一个知识库"
           description="文档按知识库隔离管理；还没有知识库？先去「知识库」页创建。"
         >
-          <el-button type="primary" @click="$router.push({ name: 'knowledge-bases' })">
+          <el-button type="primary" @click="$router.push({ name: 'knowledge-hub', query: { tab: 'bases' } })">
             去管理知识库
           </el-button>
         </EmptyState>

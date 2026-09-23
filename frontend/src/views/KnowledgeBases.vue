@@ -273,7 +273,7 @@ async function onDelete(row) {
 }
 
 function goDocuments(row) {
-  router.push({ name: 'knowledge', query: { kb_id: row.id } })
+  router.push({ name: 'knowledge-hub', query: { tab: 'docs', kb_id: row.id } })
 }
 
 onMounted(load)
