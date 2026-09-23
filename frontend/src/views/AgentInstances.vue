@@ -85,6 +85,10 @@
                         </span>
                       </div>
                       <div class="agent-detail__item">
+                        <span class="agent-detail__k">内部标识</span>
+                        <span class="agent-detail__v mono">{{ row.name }}</span>
+                      </div>
+                      <div class="agent-detail__item">
                         <span class="agent-detail__k">主渠道</span>
                         <span class="agent-detail__v">{{ channelLabel(row.channel) }}</span>
                       </div>
@@ -109,7 +113,7 @@
                     </span>
                     <div class="agent-cell__names">
                       <span class="bc-strong">{{ row.display_name || row.name }}</span>
-                      <span class="mono bc-text-xs bc-muted">{{ row.name }}</span>
+                      <span v-if="row.description" class="bc-text-xs bc-muted agent-cell__desc">{{ row.description }}</span>
                     </div>
                     <el-tag v-if="!row.is_enabled" size="small" type="info" effect="plain">停用</el-tag>
                   </div>
@@ -204,12 +208,9 @@
     <!-- 新建对话框（精简：创建后进详情页完成其余配置） -->
     <el-dialog v-model="dialogVisible" title="新建数字员工" width="520px">
       <el-form :model="form" label-position="top">
-        <el-form-item label="Slug (唯一标识)">
-          <el-input v-model="form.name" placeholder="小写字母/数字/连字符，如 sales-assistant" />
-          <div class="bc-hint">作 API 寻址键，创建后不可改</div>
-        </el-form-item>
-        <el-form-item label="显示名">
+        <el-form-item label="名称">
           <el-input v-model="form.display_name" placeholder="如 销售助手" />
+          <div class="bc-hint">员工在列表与对话里显示的名字；内部标识由系统自动生成，无需你操心</div>
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" placeholder="一句话说明该数字员工的职责与边界" />
@@ -253,7 +254,7 @@ const loading = ref(true)
 // 新建弹窗（精简表单）
 const dialogVisible = ref(false)
 const saving = ref(false)
-const form = ref({ name: '', display_name: '', description: '', channel: 'api' })
+const form = ref({ display_name: '', description: '', channel: 'api' })
 
 const keyword = ref('')
 const statusFilter = ref('all')
@@ -343,17 +344,16 @@ async function refreshConnections() {
 }
 
 function openCreate() {
-  form.value = { name: '', display_name: '', description: '', channel: 'api' }
+  form.value = { display_name: '', description: '', channel: 'api' }
   dialogVisible.value = true
 }
 
 async function onCreate() {
-  const name = form.value.name.trim()
-  if (!name) { ElMessage.warning('Slug 不能为空'); return }
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) { ElMessage.warning('Slug 需小写字母/数字/连字符，首字符非连字符'); return }
+  const displayName = form.value.display_name.trim()
+  if (!displayName) { ElMessage.warning('请填写名称'); return }
   saving.value = true
   try {
-    const created = await admin.createAgent({ ...form.value, name })
+    const created = await admin.createAgent({ ...form.value, display_name: displayName })
     ElMessage.success('已创建，继续完成详情配置')
     dialogVisible.value = false
     router.push({ name: 'agent-detail', params: { id: String(created.id) } })
@@ -438,6 +438,7 @@ onMounted(load)
 .agent-cell { display:flex; align-items:center; gap:var(--bc-space-3); }
 .agent-cell__avatar { width:30px; height:30px; border-radius:var(--bc-radius-full); background:var(--bc-primary-2); color:var(--bc-primary-8); font-size:var(--bc-text-xs); font-weight:var(--bc-weight-semibold); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
 .agent-cell__names { display:flex; flex-direction:column; line-height:1.3; min-width:0; }
+.agent-cell__desc { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .assembly { display:flex; flex-wrap:wrap; gap:4px var(--bc-space-3); font-size:var(--bc-text-xs); color:var(--bc-text-2); }
 .im-cell { display:flex; align-items:center; gap:var(--bc-space-2); flex-wrap:wrap; }
 .im-cell :deep(.el-button.is-link) { padding: 2px; }
