@@ -21,6 +21,7 @@
 | ADR-0012 | 多 Bot 渠道体系——per-Agent IM 凭证生效与按连接路由 | ✅ 已采纳 | 2026-09-02 | `0012-multi-bot-channels.md` |
 | ADR-0013 | 控制台面板重组——取消「默认员工」 + 实例/资产/渠道三分 | ✅ 已采纳 | 2026-09-22 | `0013-agent-console-ia-default-removal.md` |
 | ADR-0014 | 控制台导航精简合并——19 项入口 → 8 项（Hub tab 容器 + 顶栏设置入口） | ✅ 已采纳 | 2026-09-23 | `0014-console-nav-consolidation.md` |
+| ADR-0015 | 飞书渠道接入——自研长连接协议层（对齐官方 lark-oapi 1.7.3）+ 卡片伪流式 | ✅ 已采纳 | 2026-09-23 | `0015-feishu-gateway.md` |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
@@ -48,6 +49,7 @@
 | 阶段 3 T3.3 审批授权三档：ApprovalGrant 持久化 + 审批门短路 + 台账/撤销 + 免审执行指标 | ✅ 已落地（2026-08-21） | ADR-0011、execution-plan T3.3 |
 | 阶段 3 T3.6 面板重组：取消「默认员工」（无预置实例 + 存量种子清理）、实例/能力资产/渠道接入三分、列表瘦身+展开行、详情左锚点分段 + 生效预览（策略模拟支持 `agent_id`） | ✅ 已落地（2026-09-22） | ADR-0013、execution-plan T3.6 |
 | 阶段 3 T3.7 导航精简合并：同源页面并为 Hub tab 容器（导航 19 项 → 8 项 / 4 组，页面零删除）、运行时设置移顶栏齿轮、21 条旧路径重定向 | ✅ 已落地（2026-09-23） | ADR-0014、execution-plan T3.7 |
+| 飞书渠道接入：自研长连接协议层（不对齐官方 SDK 的全局 loop 模型，wire format 用官方 golden bytes 锚定）、union_id 优先绑定、p2p 清空 chat_id、卡片伪流式回复、全局默认 + per-Agent 专属双作用域 | ✅ 已落地（2026-09-23） | ADR-0015、`src/bycall/gateway/feishu*.py` |
 | 冻结清单：S3/S4（含 Skill 晋升闸门、自动提议）、场景包版本化/导入导出、前端视觉/主题打磨、成本预算/推送 outbox、群聊共同授权；恢复条件见 execution-plan §4 | 🧊 已冻结 | execution-plan §4 |
 
 ## 3. 开放决策清单（待拍板）
@@ -111,4 +113,5 @@
 | `docs/decisions/0012-multi-bot-channels.md` | ✅ 已采纳 | T3.5 多 Bot 渠道 ADR（per-Agent IM 凭证生效 / 按连接路由；全局默认 Bot 为**渠道入口**而非员工，其入站会话无实例归属——见 ADR-0013） |
 | `docs/decisions/0013-agent-console-ia-default-removal.md` | ✅ 已采纳 | T3.6 面板重组 ADR（取消默认员工 / 实例·资产·渠道三分 / 列表瘦身 / 详情分段 + 生效预览） |
 | `docs/decisions/0014-console-nav-consolidation.md` | ✅ 已采纳 | T3.7 导航精简合并 ADR（同源页面并 Hub tab / 19 项 → 8 项 / 顶栏设置入口 / 21 条旧路径重定向） |
+| `docs/decisions/0015-feishu-gateway.md` | ✅ 已采纳 | 飞书渠道 ADR（自研长连接协议层对齐官方 lark-oapi 1.7.3 / union_id 优先绑定 / p2p chat_id 适配 / 卡片伪流式 / 全局+专属双作用域） |
 | `evals/README.md` | 随阶段 2 落地 | 评测 CLI 使用说明（make eval / eval-security / --snapshot / --compare） |
