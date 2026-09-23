@@ -537,17 +537,24 @@ class TestAgentImConfigValidation:
         assert exc.value.status_code == 400
 
     def test_unsupported_channel_type_rejected(self, db_session):
-        """未接入连接器的渠道（feishu）→ 400：不留「配置了看似生效」的缝隙。"""
+        """未接入连接器的渠道（如钉钉）→ 400：不留「配置了看似生效」的缝隙。"""
         from fastapi import HTTPException
 
         from bycall.admin.api import _validate_agent_im_config
 
         with pytest.raises(HTTPException) as exc:
             _validate_agent_im_config(
-                db_session, None, {"feishu": {"app_id": "f1", "app_secret": "fs"}}
+                db_session, None, {"dingtalk": {"app_id": "f1", "app_secret": "fs"}}
             )
         assert exc.value.status_code == 400
         assert "暂未接入" in exc.value.detail
+
+    def test_feishu_credentials_validated(self, db_session):
+        """飞书已接入连接器：完整凭证通过；与其他 Agent 的 app_id 冲突仍被拦。"""
+        from bycall.admin.api import _validate_agent_im_config
+
+        # 完整凭证（无冲突）通过——不再 400。
+        _validate_agent_im_config(db_session, None, {"feishu": {"app_id": "cli_a", "app_secret": "s"}})
 
     def test_invalid_payload_shape_rejected(self, db_session):
         """顶层非渠道分组的标量字段 → 400（拼写错误不被静默吞掉）。"""

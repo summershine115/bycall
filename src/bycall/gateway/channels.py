@@ -25,18 +25,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 # 已接入连接器、可配置 per-Agent 专属凭证的渠道类型。
-# feishu 等待 FeishuChannel 连接器落地后再加入（渠道接入页有占位卡）。
-SUPPORTED_CHANNEL_TYPES: frozenset[str] = frozenset({"wecom"})
+# feishu：FeishuChannel 已落地（ADR-0015，长连接协议层自研参考官方 lark-oapi）。
+SUPPORTED_CHANNEL_TYPES: frozenset[str] = frozenset({"wecom", "feishu"})
 
 # 各渠道凭证里的「身份字段」：同一渠道内该字段全局唯一（跨 Agent / 与全局默认）。
-# 全局默认 Bot 的 SystemSetting 键约定为 ``im.{渠道}_{身份字段}``（如 im.wecom_bot_id）。
+# 全局默认 Bot 的 SystemSetting 键约定为 ``im.{渠道}_{身份字段}``（如 im.wecom_bot_id /
+# im.feishu_app_id）。飞书同一 app 建多条连接会收到重复事件（连接数上限内不互踢），
+# app_id 全局唯一同样必要。
 CREDENTIAL_ID_FIELDS: dict[str, str] = {
     "wecom": "bot_id",
+    "feishu": "app_id",
 }
 
 # 各渠道专属凭证的必填字段（写入前校验：配置了半套凭证的渠道不会生效，直接拦）。
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "wecom": ("bot_id", "secret"),
+    "feishu": ("app_id", "app_secret"),
 }
 
 # 旧版扁平 im_config 字段 → (渠道类型, 新字段名)。读取兼容用，写入一律新格式。

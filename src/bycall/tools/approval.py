@@ -332,14 +332,16 @@ _PUSH_RESULT_TRUNCATE = 800
 
 
 def push_approval_result(req, result_text: str) -> None:
-    """提交审批结果后，向当前仍获授权的企微身份尽力推送。
+    """提交审批结果后，向当前仍获授权的发起渠道身份尽力推送。
 
-    通知是已提交状态的附加效果，不能影响审批事务。发送前重新验证用户仍启用且企微绑定
+    通知是已提交状态的附加效果，不能影响审批事务。发送前重新验证用户仍启用且渠道绑定
     未变化，避免审批等待期间身份转移后把敏感结果推给错误账号。
     """
-    if getattr(req, "channel", "") != "wecom":
+    if getattr(req, "channel", "") not in ("wecom", "feishu"):
         logger.debug(
-            "审批 #%s 推送跳过：非企微渠道 channel=%s", req.id, getattr(req, "channel", "")
+            "审批 #%s 推送跳过：未接入推送的渠道 channel=%s",
+            req.id,
+            getattr(req, "channel", ""),
         )
         return
 
@@ -383,11 +385,12 @@ def _resolve_conversation_agent_id(req) -> int | None:
 
 
 def _resolve_current_im_user_id(req) -> str:
-    """返回当前仍属于请求用户的有效企微身份；授权变化时返回空串。"""
+    """返回当前仍属于请求用户的有效 IM 身份（按发起渠道）；授权变化时返回空串。"""
     from sqlmodel import select
 
     from bycall.governance.models import IMBinding, User
 
+    channel = getattr(req, "channel", "") or ""
     try:
         with session_scope() as session:
             user = session.get(User, req.user_id)
@@ -396,18 +399,18 @@ def _resolve_current_im_user_id(req) -> str:
                 return ""
             binding = session.exec(
                 select(IMBinding).where(
-                    IMBinding.channel == "wecom",
+                    IMBinding.channel == channel,
                     IMBinding.user_id == req.user_id,
                 )
             ).first()
             current_id = getattr(binding, "im_user_id", "") or ""
     except Exception:
-        logger.exception("反查当前企微身份异常: user_id=%s", req.user_id)
+        logger.exception("反查当前 %s 身份异常: user_id=%s", channel, req.user_id)
         return ""
 
     captured_id = getattr(req, "im_user_id", "") or ""
     if not current_id:
-        logger.debug("审批 #%s 推送跳过：当前无企微绑定", req.id)
+        logger.debug("审批 #%s 推送跳过：当前无 %s 绑定", req.id, channel)
         return ""
     if captured_id and captured_id != current_id:
         logger.warning("审批 #%s 推送跳过：发起身份与当前绑定不一致", req.id)
