@@ -366,12 +366,17 @@ class ModelTestResult(BaseModel):
 
 
 class AgentCreate(BaseModel):
-    """创建数字员工实例。``name`` 全局唯一 slug，小写字母/数字/连字符。"""
+    """创建数字员工实例。
 
-    name: str = Field(
-        ...,
+    ``name`` 是**内部标识 slug**，管理员无需感知：留空即按显示名自动生成（见
+    ``admin.api._auto_agent_slug``）。它不是寻址键（控制面/数据面一律按 ``id`` 寻址），
+    只作审计与排障用的稳定标识，所以不要求人类可读。
+    """
+
+    name: str | None = Field(
+        default=None,
         pattern=r"^[a-z0-9][a-z0-9-]*$",
-        description="唯一 slug，如 sales-assistant",
+        description="内部标识 slug；留空自动生成",
     )
     display_name: str = Field(default="", description="人类可读显示名")
     description: str = Field(default="", description="一句话说明")

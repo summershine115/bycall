@@ -3,7 +3,7 @@
     <ContentLoader v-if="loading" :rows="8" />
 
     <template v-else-if="agent">
-      <PageHeader :title="agent.display_name || agent.name" :description="agent.description || `数字员工实例 · slug: ${agent.name}`">
+      <PageHeader :title="agent.display_name || agent.name" :description="agent.description || `数字员工实例 · 标识 ${agent.name}`">
         <el-button :icon="ArrowLeft" @click="goBack">返回列表</el-button>
         <el-button :icon="ChatDotRound" @click="goChat">对话测试</el-button>
       </PageHeader>
@@ -48,7 +48,7 @@
             <div class="section__head">
               <div>
                 <h3 class="section__title">基础信息</h3>
-                <p class="bc-muted bc-text-sm section__desc">展示名、描述与启停。slug（{{ agent.name }}）是 API 寻址键，创建后不可改。</p>
+                <p class="bc-muted bc-text-sm section__desc">展示名、描述与启停。内部标识（{{ agent.name }}）由系统生成，仅供审计排障，不可改。</p>
               </div>
               <div class="section__actions">
                 <el-button v-if="dirty.basic" text @click="resetBasic">放弃修改</el-button>

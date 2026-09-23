@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -2058,6 +2060,25 @@ def get_agent(
     return _agent_to_out(_get_agent_or_404(session, agent_id))
 
 
+def _auto_agent_slug(session: Session, display_name: str) -> str:
+    """按显示名生成数字员工的内部标识 slug（管理员无需感知，ADR-0013 修订）。
+
+    slug 不是寻址键（控制面/数据面一律按 ``id`` 寻址），只作审计与排障用的稳定标识，
+    因此不要求人类可读：显示名能 ASCII 化就用它（``Sales Assistant`` → ``sales-assistant``），
+    中文等纯非 ASCII 名称则退化为 ``agent-<4 位随机>``；同名冲突时追加随机后缀重试。
+    """
+    base = re.sub(r"[^a-z0-9]+", "-", (display_name or "").lower()).strip("-")[:32]
+    if not base or not base[0].isalnum():
+        base = "agent"
+    candidate = base
+    for _ in range(64):
+        exists = session.exec(select(Agent).where(Agent.name == candidate)).first()
+        if exists is None:
+            return candidate
+        candidate = f"{base}-{secrets.token_hex(2)}"
+    raise HTTPException(status.HTTP_409_CONFLICT, detail="无法生成唯一的数字员工标识，请稍后重试")
+
+
 @router.post("/agents", response_model=AgentOut, status_code=status.HTTP_201_CREATED)
 def create_agent(
     payload: AgentCreate,
@@ -2065,9 +2086,11 @@ def create_agent(
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
 ) -> AgentOut:
-    """创建数字员工实例。name 唯一冲突 → 409；引用校验失败 → 404/400。"""
+    """创建数字员工实例。``name`` 留空则自动生成内部标识；显式冲突 → 409；引用校验失败 → 404/400。"""
     _validate_agent_refs(session, payload)
     _validate_agent_im_config(session, None, payload.im_config)
+    # 内部标识：管理员不指定（无感），按显示名生成；显式传入时沿用不再改
+    slug = (payload.name or "").strip() or _auto_agent_slug(session, payload.display_name)
     # 加密 per-Agent IM 覆盖（按渠道归一后写入新格式）
     im_encrypted = ""
     if payload.im_config:
@@ -2078,7 +2101,7 @@ def create_agent(
         if merged:
             im_encrypted = encrypt_secret(json.dumps(merged, ensure_ascii=False))
     agent = Agent(
-        name=payload.name,
+        name=slug,
         display_name=payload.display_name,
         description=payload.description,
         avatar_url=payload.avatar_url,
@@ -2099,7 +2122,7 @@ def create_agent(
     except IntegrityError as exc:
         session.rollback()
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {payload.name}"
+            status_code=status.HTTP_409_CONFLICT, detail=f"数字员工已存在: {slug}"
         ) from exc
     session.refresh(agent)
     # ADR-0012：创建即带凭证时自动建专属 Bot 连接（im.enable 关闭时 reload_agent 内部跳过）。

@@ -346,7 +346,8 @@ class Agent(SQLModel, table=True):
     落地隔离（红线 #2），每个 ``(agent_id, user, channel)`` 独立会话。
 
     设计要点（全托管）：
-    - ``name`` 唯一 slug（如 ``sales-assistant``），作 API 与 IMP 寻址键，创建后不可改。
+    - ``name``：内部标识 slug（如 ``sales-assistant``），创建后不可改。**不是寻址键**——
+      控制面/数据面一律按 ``id`` 寻址；由控制面按显示名自动生成，管理员无需指定（ADR-0013 修订）。
     - ``system_prompt_version``：绑定的提示词版本（``SystemPrompt.version``），空→fallback
       角色绑定→全局激活（与 ``RoleConfig.system_prompt_version`` 同fallback 链）。
     - ``model_id``：绑定的对话模型（``Model.id``，``model_type=chat``），空→fallback
@@ -371,7 +372,7 @@ class Agent(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("name", name="uq_agent_name"),)
 
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(index=True)  # slug，唯一，如 sales-assistant
+    name: str = Field(index=True)  # 内部标识 slug（自动生成，非寻址键）
     display_name: str = ""  # 人类可读名
     description: str = ""
     avatar_url: str = ""  # 头像 URL（可选，前端展示用）

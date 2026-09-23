@@ -320,6 +320,9 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
   `tests/unit/test_policy_simulate.py`（+3 例）
 - [x] 前端：`npm run build` 通过；旧深链（`/agents/channels` 等）重定向生效；列表/详情/渠道页
   不再出现「默认」字样
+- [x] 新建不要求管理员填 slug：内部标识由后端按名称自动生成（`admin.api._auto_agent_slug`，
+  中文名退化为 `agent`/`agent-<4 位随机>`，同名加随机后缀），显式传入仍兼容——
+  `tests/unit/test_agent_auto_slug.py`（4 例）
 - [x] `make ci-local` 全绿
 **Dependencies**：无（治理脊柱已支持 `agent_id` 维度能力集）。**Files**：`governance/models.py`、
 `db.py`、`admin/api.py`、`admin/schemas.py`、`frontend/src/{router.js,views/*}`、
