@@ -35,6 +35,7 @@
 
 ### 修复
 
+- **streamable HTTP 传输的 MCP server 一律连不上（`streamable_http_client() got an unexpected keyword argument 'headers'`）**：`MCPClient` 的 http 分支沿用旧式 API 传 `headers=`，而现名 `streamable_http_client`（mcp ≥1.24 引入）只接受 `http_client`——凡配成「streamable HTTP 远程」的 MCP server 建连即 TypeError（stdio 传输不受影响）。现自建带 header 的 `httpx.AsyncClient` 传入并自行管理其生命周期（SDK 仅在未传 `http_client` 时托管 client，超时对齐 SDK 推荐值：一般请求 30s、SSE 读 300s）。依赖下限 `mcp>=1.2` 修正为 `mcp>=1.24`（该函数自 1.24 起才存在，更低版本连 import 都失败）。既有测试全部注入内存传输（`session_cm_factory`），http 分支从未被真实执行，故长期未被发现；新增回归用例 `tests/integration/test_mcp_http_transport.py`：起真实 FastMCP streamable-HTTP server，验证建连/发现工具/调用，并断言配置的 header 真的到达 server——已验证**修复前该用例必失败**。
 - **存量库升级后新建数字员工必然失败（伪 409「数字员工已存在: agent」）**：取消「默认员工」时把 `Agent.is_default` 从模型删掉，但旧模型建出的 `agent.is_default` 列是 `NOT NULL` 且**没有数据库默认值**（Python 侧 `default=False` 不写进 DDL），模型不再提供该列 → INSERT 必然 `NOT NULL constraint failed: agent.is_default`；更糟的是 `except IntegrityError` 一律映射成 409「数字员工已存在」，把真因掩盖成「重名」。修复：
   - 启动迁移幂等清理该历史列（SQLite 先删 `ix_agent_is_default` 索引再 `DROP COLUMN`；Postgres 删列自带索引），既有实例数据原样保留（`db.py::_ensure_schema_compatibility`）。
   - 只有 slug 唯一键冲突才回 409，其他完整性错误回 500 并把真因写入服务端日志——同类问题不再被伪装。

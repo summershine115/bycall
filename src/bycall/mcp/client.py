@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -35,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 # 工具名前缀：mcp__{server_name}__{tool_name}。命名空间化，避免与内置工具冲突。
 _TOOL_PREFIX = "mcp__"
+
+# streamable HTTP 传输的 httpx 超时：对齐 MCP SDK 推荐值（一般请求 30s，SSE 长连接读 300s）。
+_HTTP_TIMEOUT = 30.0
+_HTTP_SSE_READ_TIMEOUT = 300.0
 
 
 @dataclass(frozen=True)
@@ -162,12 +167,16 @@ class MCPClient:
             async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 yield session
         elif cfg.transport == "http":
+            # ``streamable_http_client``（mcp ≥1.24）只接受 ``http_client``，不再接受
+            # ``headers``：header 与超时都要通过自建 httpx.AsyncClient 传入。SDK 只在未传
+            # http_client 时托管 client 生命周期，故这里必须自己 ``async with`` 关掉。
             async with (
-                streamable_http_client(cfg.url, headers=dict(cfg.headers) or None) as (
-                    read,
-                    write,
-                    _,
-                ),
+                httpx.AsyncClient(
+                    headers=dict(cfg.headers) or None,
+                    timeout=httpx.Timeout(_HTTP_TIMEOUT, read=_HTTP_SSE_READ_TIMEOUT),
+                    follow_redirects=True,
+                ) as http_client,
+                streamable_http_client(cfg.url, http_client=http_client) as (read, write, _),
                 ClientSession(read, write) as session,
             ):
                 yield session
