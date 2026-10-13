@@ -6,7 +6,7 @@
 > 记忆资产（Chat Memory / Skill / Wiki / CodeGraph），沉淀→流动→按身份装配（Loadout）给 Agent。
 > 本文记录 TAM 中值得 Bycall 借鉴的机制。**与 QM 不同：TAM 的信任模型比 Bycall 宽松**（agent 可自主
 > 提炼记忆并进 system 权重），因此每条借鉴项都需"治理化改造"才能落地——本文逐条标注改造点与红线关系。
-> 关联决策：`docs/decisions/0007-governed-cognition-two-plane.md`（受治理认知：两平面信任模型）。
+> 关联决策：`doc/decisions/0007-governed-cognition-two-plane.md`（受治理认知：两平面信任模型）。
 
 ## 0. 信任模型差异（决定借鉴方式）
 

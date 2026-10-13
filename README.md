@@ -1,17 +1,17 @@
 # Bycall
 
-> **企业级数字员工 Agent** —— 常驻企业微信/飞书等 IM 的企业级数字员工，前期以 RAG 业务知识问答为主，后续扩展 Skill / MCP / 多能力。
+> **企业级数字员工 Agent** —— 常驻企业微信/飞书等 IM 的企业级数字员工，已支持受治理 RAG、Skill、MCP 工具与持久化多步任务。
 >
-> 路线 B（分层混搭自研）：LangGraph 编排 + LangBot IM 层 + zvec 向量库 + PostgreSQL 记忆/元数据 + MCP 网关。
+> 路线 B（分层混搭自研）：LangGraph 编排 + 企微/飞书渠道适配层 + zvec 向量库 + PostgreSQL 记忆/元数据 + MCP 网关。
 
 > **当前版本：v0.3.0 / M6 已完成** —— 已具备治理脊柱、多用户会话、混合检索、
 > LangGraph + MCP/HITL，以及企微主动推送、多模态附件、来源卡片、模板卡片、可靠重连和
 > 连接可观测；v0.3.0 起 Agent 可执行多步任务（调度触发 + 可视化）。版本新增功能、修复项和
 > 升级说明见 [`CHANGELOG.md`](CHANGELOG.md)。
 >
-> 完整设计见 [`docs/product-design.md`](docs/product-design.md)（产品形态/治理架构/信任模型），
-> 后续方向见 [`docs/product-strategy.md`](docs/product-strategy.md)，技术分层与
-> 架构红线见 [`docs/architecture.md`](docs/architecture.md)。
+> 完整设计见 [`doc/product-design.md`](doc/product-design.md)（产品形态/治理架构/信任模型），
+> 文档入口见 [`doc/README.md`](doc/README.md)，当前进度见 [`doc/execution-plan.md`](doc/execution-plan.md)，技术分层与
+> 架构红线见 [`doc/architecture.md`](doc/architecture.md)。
 
 ---
 
@@ -38,7 +38,7 @@ make venv && source .venv/bin/activate
 make install
 
 # 3. 复制配置
-cp .env.example .env   # 按需改 LLM key 等（M0 不强求真实 key，测试用 mock）
+cp .env.example .env   # 填启动引导；模型与 IM 凭证由控制台管理
 
 # 4. 起 API（热重载，端口 8000）
 make dev
@@ -47,7 +47,7 @@ make dev
 # → http://localhost:8000/docs    Swagger UI
 
 # 5. 跑测试
-make ci-local          # lint + unit test（全部本地可跑，无需外部服务）
+make ci-local          # lint + 全部测试 + 四类评测 + 安全评测（全部本地可跑，无需外部服务）
 
 # 6.（可选）体验参考场景（示例 MCP 连接器 + 3 类角色 + demo 账号，见 ADR-0009）
 make seed-reference   # 幂等灌入；之后 make dev 会拉起 demo 工单/库存连接器
@@ -61,7 +61,11 @@ make docker-up
 > 平台**场景无关**（ADR-0009）：`examples/connectors/` 是可整体删除的参考场景包，
 > 用于演示如何把业务系统接成 MCP 连接器并套上治理（白名单 / 高危审批 / 身份透传）。
 
-## 里程碑进度
+## 历史里程碑
+
+当前处于阶段 3：自动化参考流程已落地，真机演示与真实使用数据待完成。
+阶段 1 按单组织范围收口，完整 ABAC、多租户全链路与字段/行级治理仍后置。
+详见 [执行计划](doc/execution-plan.md) 和 [交付边界](doc/gaps.md)。
 
 - [x] **M0** 基础设施搭建（骨架 + VectorStore + LLM 抽象 + Docker + CI）
   - 项目骨架、配置管理、CI、文档 ✅
@@ -83,7 +87,7 @@ src/bycall/
 ├── governance/        # ★ 治理脊柱：身份/角色/权限矩阵/能力集（贯穿控制面+数据面）
 ├── admin/             # ★ 控制面 REST API + schemas（用户/角色/提示词/模型/知识库/SKILL/MCP/审计/审批）
 ├── agent/             # 数据面执行：runner（治理链路单一真相源）+ im_handler（IM 消息）
-├── gateway/           # IM 渠道抽象 + 企微长连接（ChannelManager 单例，热重载）
+├── gateway/           # IM 渠道抽象 + 企微/飞书长连接（ChannelManager 单例，热重载）
 ├── rag/               # 检索 + 拼 prompt + 入库（per-KB 切块，混合检索 RRF）
 ├── mcp/               # ★ MCP 工具网关（红线 #5：agent 不直连 MCP server）
 ├── tools/             # 工具注册表 + 治理（filter_tools 白名单 + 审批门）
@@ -97,5 +101,5 @@ tests/
 └── integration/       # 端到端治理链路（TestClient，含 IM/MCP/SKILL/HITL 注入边界）
 ```
 
-详见 [`docs/architecture.md`](docs/architecture.md) 与
-[`docs/decisions/`](docs/decisions/)（ADR）。
+详见 [`doc/architecture.md`](doc/architecture.md) 与
+[`doc/decisions/`](doc/decisions/)（ADR）。

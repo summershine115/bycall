@@ -1,22 +1,22 @@
 # Bycall 治理缝隙清单（Governance Gaps）
 
-> 状态：阶段 0 产出（T0.4） · 更新：2026-08-13 · 关联：`docs/execution-plan.md` §阶段 1、`docs/product-strategy.md` §3
-> 六条「治理承诺 vs 实际执行」缝隙。阶段 1 逐条闭合后在此勾掉；闭合前任何一条都不允许对外宣称「已治理」。
+> 状态：阶段 0 产出（T0.4） · 更新：2026-10-13 · 关联：`doc/execution-plan.md` §阶段 1、`doc/product-strategy.md` §3
+> 六条「治理承诺 vs 实际执行」缝隙。已实现机制与后置边界分别列出，不以“当前范围已交付”替代原完整目标的验收。
 
 ## 总览
 
 | # | 缝隙 | 现状（源码定位） | 目标行为 | 任务 | 状态 |
 |---|------|------------------|----------|------|------|
-| 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 已闭合（level/密级；dept 待 User.dept 字段） |
-| 2 | 会话键多租户预留 | `Conversation` 曾缺 `tenant_id`/`agent_id` 列 | 补 `tenant_id`/`agent_id` 预留列 + 迁移 + 红线条文对齐 | T1.5 | ✅ 已闭合（列就位；完整多租户运行时按 ADR-0004 后置） |
+| 1 | 完整 ABAC 闭环 | `governance/capability.py` + `rag/retrieve.py`：曾只做 `source IN (...)` 角色标签过滤 | `governance/policy.py` 统一产出 `source IN` + `level <= user_level` | T1.1 | ✅ 当前范围已交付；部门/独立敏感度规则后置 |
+| 2 | 会话键多租户预留 | `Conversation` 曾缺 `tenant_id`/`agent_id` 列 | 补 `tenant_id`/`agent_id` 预留列 + 迁移 + 红线条文对齐 | T1.5 | ✅ 单组织实例会话隔离已落地；多租户/实例长期记忆隔离后置 |
 | 3 | 模型绑定生效 | `Conversation.model_id` 已预留，运行时曾仍取全局激活 | `llm/resolver.py` 新增 `get_chat_model_for_conversation`，api/IM 两路按会话路由 | T1.3 | ✅ 已闭合 |
 | 4 | `visible_kb_ids` 语义落地 | `governance/capability.py` 计算 + `agent/runner.py` 检索前过滤 | 已是数据面 KB 级 ACL（runner 检索前过滤）；澄清语义 + 补数据面测试 | T1.2 | ✅ 已闭合 |
-| 5 | 工具结果脱敏平台化 | `tools/base.py` + `tools/gateway.py`：靠单工具声明 redactor、无大小上限 | 新增 `tools/redactor.py::sanitize_tool_result`（脱敏+截断），网关/审批共用 | T1.6 | ✅ 已闭合（统一管道+大小限制+默认截断）；字段分级/行级过滤待输出 schema |
+| 5 | 工具结果脱敏平台化 | `tools/base.py` + `tools/gateway.py`：靠单工具声明 redactor、无大小上限 | 新增 `tools/redactor.py::sanitize_tool_result`（脱敏+截断），网关/审批共用 | T1.6 | ✅ 统一管道+长度限制；字段/行级过滤及未声明类型默认拒绝后置 |
 | 6 | 同步/流式治理链收敛 | `agent/runner.py`：`run_agent` / `run_agent_stream` 各自采集 | 抽共享 `_prepare_turn`（步骤1-4）+ `_finalize_turn`（步骤6-7） | T1.4 | ✅ 已闭合 |
 
 ## 逐条明细
 
-### 缝隙 #1：完整 ABAC 未闭环（T1.1）
+### 缝隙 #1：ABAC 预过滤（T1.1，当前范围已交付）
 - **已落地（T1.1，commit 见 git log）**：新增 `governance/policy.py`（`build_acl_filters`）；`Document.level` → chunk ACL → zvec `level` 字段 → 检索 `level <= user_level` 预过滤。检索不再手写 `source IN`。
 - **剩余**：`dept` 维度——zvec schema 已建字段，但 `User` 尚无 dept 属性，待数据模型补齐后追加 `dept` 条件。
 - **原现状**：`ACLMetadata` 已预留 `tenant_id/dept/level/敏感度` 字段；检索入口主要把 `knowledge_scope_tags` 翻译为 `source IN (...)`，部门/职级/密级尚未真正参与召回前过滤。
@@ -26,7 +26,8 @@
 - **源码**：`governance/policy.py`（新）、`governance/capability.py`、`rag/retrieve.py`、`api/dataplane.py`。
 
 ### 缝隙 #2：会话键单组织落地（T1.5）
-- **已闭合（T1.5）**：`Conversation` 补 `tenant_id`（默认 `default`）/ `agent_id`（可空）预留列 + 幂等迁移；architecture.md 红线 #2「DB 落地」对齐。ADR-0004 单组织部署 → 运行时恒 `tenant_id="default"`、`agent_id=None`；完整多租户/多 Agent 运行时隔离（记忆/审批/审计/MCP/缓存全链路）按 ADR-0004 后置。
+- **当前交付（T1.5 + T3.5）**：`Conversation` 含 `tenant_id`（默认 `default`）/ `agent_id`（可空）；运行时会话键为 `{channel}:{user_id}` 或 `{channel}:{user_id}:agent:{agent_id}`。专属 Bot 路由携带实例 ID，全局 Bot 无实例归属；消息与摘要按会话隔离。
+- **后置边界**：多租户运行时与全链路隔离尚未实现；长期记忆加载以 `user_id` 为范围，同用户跨实例共享，不宣称实例级长期记忆隔离。
 - **原现状**：红线定义 `(agent_id, channel, tenant_id, user_id)`，DB 实际主要是 `(user_id, channel)`。
 - **风险**：多租户 / 同租户多 Agent / 组织合并场景下会话与记忆可串扰。
 - **目标**：会话、记忆、审批、审计、MCP、缓存均带显式 tenant/agent 隔离键。
@@ -46,7 +47,7 @@
 - **目标**：二选一——作为数据面 ACL 接入检索，或更名移出能力集；禁止既不算又不改名。
 - **源码**：`governance/capability.py`、`api/dataplane.py`、`agent/runner.py`。
 
-### 缝隙 #5：工具结果脱敏未平台化（T1.6）
+### 缝隙 #5：工具结果后处理（T1.6，字段/行级策略后置）
 - **已闭合（T1.6）**：新增 `tools/redactor.py::sanitize_tool_result`（redactor 先跑 → 统一截断 `MAX_TOOL_RESULT_CHARS=4000` → 非 str 转 str）；`tools/gateway._wrap_with_redactor` 与 `tools/approval.execute_approved_tool` 共用该管道——无论是否声明 redactor 都过截断（默认裁剪），防超大工具返回撑爆上下文/费用 DoS。
 - **后置**：字段分级 / 行级过滤 / 默认拒绝未声明数据类型需工具声明输出 schema（数据模型尚无该概念），待后续。
 - **原现状**：结果脱敏依赖单个工具声明 redactor，MCP server 主要靠 capability meta 自行鉴权。

@@ -1,6 +1,6 @@
 # Bycall 下一阶段执行计划（Execution Plan）
 
-> 状态：**主方向（进行中：阶段 0/1/2 已完成，阶段 3 进行中——T3.1 代码、T3.2 自动化、T3.3 审批授权三档、T3.5 多 Bot 渠道、T3.6 面板重组、T3.7 导航精简合并已落地；真机企微演示与真实使用数据待用户）** · 更新：2026-09-23（T3.7 导航精简合并：同源页面并 Hub tab，19 项 → 8 项，ADR-0014） · 关联：[决策登记册](decisions/README.md)
+> 状态：**主方向（进行中：阶段 0 已完成、阶段 1 按单组织范围收口、阶段 2 已完成，阶段 3 进行中——T3.1 代码、T3.2 自动化、T3.3 审批授权三档、T3.5 多 Bot 渠道、T3.6 面板重组、T3.7 导航精简合并已落地；真机企微演示与真实使用数据待用户）** · 更新：2026-10-13（按代码核对交付范围；文档统一到 doc/） · 关联：[决策登记册](decisions/README.md)
 > 本文是 Bycall 当前唯一的**执行级工作方向**。它取代"继续按里程碑 M7+ / S3-S4 堆能力"的默认，
 > 改为"先收口、再评测、后验证"。所有新任务必须对齐本文的阶段与任务编号，未列入冻结清单的新
 > 能力不得动工。里程碑路线图的历史沿革仍见 `product-design.md` §6，本文与其冲突时以本文为准。
@@ -57,15 +57,15 @@
 - [x] 行业定位已拍板（2026-08-15）：不锁定行业——平台场景无关（ADR-0009），以参考场景包支撑验证
 - [x] 单租户优先已由 ADR-0004 拍板，不再重复讨论；本计划按"单组织私有部署"推进
 - [x] 登记册 §3 每项标记为"已拍板（记录见 ADR/正文）"或"后置（不阻塞）"
-**Verify**：`docs/decisions/README.md` §3 无可阻塞本计划的 open 项。
-**Files**：`docs/decisions/README.md`（+ 需要时新增 ADR-0009）。**Scope**：S。
+**Verify**：`doc/decisions/README.md` §3 无可阻塞本计划的 open 项。
+**Files**：`doc/decisions/README.md`（+ 需要时新增 ADR-0009）。**Scope**：S。
 
 #### T0.2 冻结范围决策
 **Description**：把 S3/S4、场景包资产化、前端视觉/主题/排版打磨正式移入冻结清单（§4），登记为已采纳决策。
 **Acceptance**：
 - [x] §4 冻结清单写入登记册 §2（"已采纳：冻结项"）
 - [x] 未来 12 周任务清单不引用被冻结项
-**Files**：`docs/decisions/README.md`、本文 §4。**Scope**：S。
+**Files**：`doc/decisions/README.md`、本文 §4。**Scope**：S。
 
 #### T0.3 文档纠偏
 **Description**：清理过时状态——`product-design.md` §6 M1 验收标准标注过时、README 里程碑 M6 表述统一、
@@ -73,16 +73,16 @@
 **Acceptance**：
 - [x] 文档状态栏（登记册 §5）与代码实况一致
 - [x] 无"宣称已完成、实际未做"的误导性表述
-**Files**：`docs/product-design.md`、`README.md`、`docs/specs/agent-framework-upgrade.md`。**Scope**：S。
+**Files**：`doc/product-design.md`、`README.md`、`doc/specs/agent-framework-upgrade.md`。**Scope**：S。
 
 #### T0.4 建立治理缝隙清单
 **Description**：把战略 §3 六条缝隙落成带 owner + 目标里程碑 + 现状源码定位的清单。
 **Acceptance**：
 - [x] 六条缝隙逐条标注 owner + 对应阶段任务编号（T1.1–T1.6）
 - [x] 每条附"当前源码位置 + 目标行为"，可直接作为阶段 1 任务输入
-**Files**：`docs/gaps.md`（新）。**Scope**：S。
+**Files**：`doc/gaps.md`（新）。**Scope**：S。
 
-**阶段 0 出口门**：登记册 §3 无可阻塞项；§4 冻结清单已登记；`docs/gaps.md` 就绪。
+**阶段 0 出口门**：登记册 §3 无可阻塞项；§4 冻结清单已登记；`doc/gaps.md` 就绪。
 
 ---
 
@@ -90,32 +90,30 @@
 
 > 六条缝隙（战略 §3）+ M5 企业身份。这是"能否进真实生产"的门槛。
 
-#### T1.1 完整 ABAC 闭环（缝隙 #1）
-**Description**：落地 ADR-0005 的"统一 ABAC Policy 接口"（当前 `governance/` 尚无 `policy.py` 类，仅
-`knowledge_scope_tags → source IN (...)` 的角色标签过滤）。新增统一 policy 引擎，把
-`ACLMetadata`(tenant_id/dept/level/敏感度) + 用户属性 + 资源属性 + 上下文翻译成**召回前**过滤条件。
-**Acceptance**：
-- [x] `governance/policy.py` 提供统一 `evaluate()`，输入（用户, 资源, 动作, 上下文）→ 过滤条件
-- [x] `rag/retrieve.py` 的检索 filter 由 policy 产出，不再是手写 `source IN`
-- [x] 加一条"跨部门+职级+密级"文档，验证召回前即被过滤（不进 LLM、不留痕）
+#### T1.1 ABAC 预过滤接口（缝隙 #1）——已交付知识域 + 职级，完整属性规则后置
+**Description**：已实现 `PolicySubject` + `build_acl_filters()`，统一产出知识域 `source IN (...)`
+和文档密级 `level <= role.level` 条件；KB 可见性由 T1.2 在进入检索前限制。
+**Acceptance（当前交付范围）**：
+- [x] `governance/policy.py` 提供统一过滤构造接口，检索层消费其结果
+- [x] 知识域与职级限制在召回前生效，有测试验证
+- [ ] 后置：部门与独立敏感度规则、通用 `evaluate(用户, 资源, 动作, 上下文)`；当前 `User` 无部门属性，不宣称跨部门 ABAC 已完成
 **Verify**：`make test-unit` + 集成测试（越权召回=0）。
 **Dependencies**：T0.4。**Files**：`governance/policy.py`（新）、`governance/capability.py`、`rag/retrieve.py`、`api/dataplane.py`。**Scope**：L。
 
 #### T1.2 `visible_kb_ids` 语义落地（缝隙 #4）
-**Description**：`CapabilitySet.visible_kb_ids` 已计算但数据面 runner 仍遍历全部 KB。二选一并落地：作为数据面
-ACL 接入检索，或更名移出能力集——**禁止**让未生效字段继续被误认为安全边界。
+**Description**：`visible_kb_ids` 已作为数据面 KB ACL 生效，runner 在检索前限制可搜索知识库。
 **Acceptance**：
-- [x] 若作为 ACL：检索入口只对 `visible_kb_ids` 内的 KB 召回（测试验证）
-- [x] 若更名：字段改名/移除，代码与文档同步，不再产生"看似是边界"的误读
+- [x] 非 admin 只检索可见 KB；空列表拒绝检索（测试验证）
+- [x] 保留字段并明确 ACL 语义；不采用更名/移除方案
 **Verify**：`make test-unit` + `make test-integration`。
 **Dependencies**：T1.1。**Files**：`governance/capability.py`、`api/dataplane.py`、`agent/runner.py`。**Scope**：M。
 
 #### T1.3 per-session 模型绑定生效（缝隙 #3）
-**Description**：`Conversation.model_id` 已预留但运行时仍取全局激活模型。把模型选择纳入能力集 + 成本/驻留策略，
-runner 按会话绑定模型调用。
+**Description**：`get_chat_model_for_conversation()` 已在 REST/IM 两路按会话解析模型。
+优先级为会话绑定 → 实例绑定 → 灰度候选 → 全局激活；无效绑定继续 fallback。
 **Acceptance**：
-- [x] 会话绑定模型后，该会话走绑定模型而非全局激活（有测试锁定）
-- [x] 未绑定时 fallback 全局激活（零回归）
+- [x] 会话绑定优先于全局激活（测试验证）
+- [x] 未绑定/绑定失效按上述优先级回退
 **Verify**：`make test-integration`（多会话模型路由）。
 **Dependencies**：None。**Files**：`agent/runner.py`、`llm/resolver.py`、`governance/models.py`。**Scope**：M。
 
@@ -126,23 +124,27 @@ runner 按会话绑定模型调用。
 - [x] 两路经同一 pipeline 入口，审计字段一致（有测试锁定）
 - [x] 流式逐 token 语义不破坏（现有企微流式测试绿）
 **Verify**：`make ci-local` 全绿 + 新增管线单测。
-**Dependencies**：None。**Files**：`agent/pipeline.py`（新）、`agent/runner.py`、`api/dataplane.py`。**Scope**：L。
+**Dependencies**：None。**Files**：`agent/runner.py` 内共享准备/收尾函数、`agent/runner.py`、`api/dataplane.py`。**Scope**：L。
 
-#### T1.5 会话键真多租户化（缝隙 #2）
-**Description**：红线定义 `(agent_id, channel, tenant_id, user_id)`，当前 DB 主要是 `(user_id, channel)`。
-补显式隔离键，跨租户/跨 Agent 会话与记忆互不可见。
-**Acceptance**：
-- [x] 会话、记忆、审批、审计、MCP、缓存均带 tenant/agent 隔离键
-- [x] 跨租户会话与记忆互不可见（测试覆盖）
-**Verify**：`make test-integration`（多租户隔离）。
+#### T1.5 单组织会话键与实例隔离（缝隙 #2）——当前范围已落地，多租户后置
+**Description**：按 ADR-0004 单组织部署，`Conversation.tenant_id` 默认为 `default`，不参与运行时会话键。
+T3.5 已落实实例维度：无实例入口使用 `{channel}:{user_id}`，指定实例使用
+`{channel}:{user_id}:agent:{agent_id}`，历史与摘要按 `conversation_id` 隔离。
+**Acceptance（当前交付范围）**：
+- [x] 会话表含 `tenant_id` / `agent_id`，IM 专属 Bot 按实例写入并隔离会话
+- [x] 同用户跨实例会话分离；全局 Bot 入口 `agent_id=None`，不指向默认员工
+- [ ] 后置：多租户身份及会话、审批、审计、MCP、缓存全链路隔离
+- [ ] 后置：长期记忆按实例隔离；当前 `UserMemory` 加载以用户为范围，同用户跨实例共享，不能把会话隔离等同于记忆隔离
+**Verify**：`tests/unit/test_conversation_tenant.py` + `tests/unit/test_multi_bot_channels.py`（单组织实例会话隔离，不代表多租户验收）。
 **Dependencies**：None（DB 迁移，遵循"高风险改动先确认"）。**Files**：`governance/models.py`、`db.py`。**Scope**：L。
 
-#### T1.6 工具结果统一脱敏平台化（缝隙 #5）
-**Description**：当前脱敏依赖单个工具声明 redactor，MCP 靠 capability meta 自行鉴权。平台化：字段分级 +
-行级过滤 + 输出大小限制，**默认拒绝未声明的数据类型**。
-**Acceptance**：
-- [x] 统一 redactor 策略层，未声明数据类型的工具返回默认被裁剪
-- [x] 输出大小限制生效（防上下文撑爆）
+#### T1.6 工具结果统一后处理（缝隙 #5）——管道已落地，字段/行级策略后置
+**Description**：网关和审批执行共用 `sanitize_tool_result()`：先执行工具可选 redactor，
+再转为字符串并将原始内容限制到 4000 字符（超限另附截断提示）。未声明 redactor 的结果只受长度限制。
+**Acceptance（当前交付范围）**：
+- [x] 网关与审批执行共用后处理，已声明 redactor 的工具先脱敏
+- [x] 所有工具结果受长度限制
+- [ ] 后置：基于输出 schema 的字段分级、行级过滤及未声明类型默认拒绝；截断不等于敏感字段脱敏
 **Verify**：`make test-unit` + MCP 工具集成测试。
 **Dependencies**：None。**Files**：`tools/redactor.py`（新）、`tools/base.py`、`tools/gateway.py`。**Scope**：M。
 
@@ -172,7 +174,7 @@ runner 按会话绑定模型调用。
 **Verify**：`make ci-local` 全绿（见 `tests/unit/test_context_budget.py`、`test_prompt_injection_boundary.py`）。
 **Files**：`agent/context_budget.py`、`agent/session_store.py`、`agent/runner.py`、`governance/models.py`。**Scope**：M。
 
-**阶段 1 出口门**：`make ci-local` 全绿 + 六条缝隙全部闭合（`docs/gaps.md` 逐条勾掉）+ 策略模拟器可演示。
+**阶段 1 当前范围出口门**：单组织部署下已交付的治理链路通过 `make ci-local`，策略模拟器可演示。T1.1/T1.5/T1.6 的后置边界见 `doc/gaps.md`，不计作完整 ABAC、多租户或字段/行级治理已完成。
 
 ---
 
@@ -263,12 +265,12 @@ python -m evals.run --compare evals/snapshots/old.json evals/snapshots/new.json
 - [x] 三条流程在 **IM 单聊**与 `api/dataplane` REST 两路端到端走通（含工具调用 + 审批 + 推送）——
   自动化锁定：`tests/integration/test_t32_e2e_rest.py`（12 例）+ `test_t32_e2e_im.py`（6 例，
   mock LLM 脚本 + 真实 demo 连接器内存通道 + fake 渠道推送捕获），`make ci-local` 全绿；
-  真机企微人工演示待用户参与（`evals/demo_t3.2.md` 动线就绪；RAG 引用待文档就绪后补，不阻塞）
+  真机企微人工演示待用户参与（`doc/guides/demo-t3.2.md` 动线就绪；RAG 引用待文档就绪后补，不阻塞）
 - [x] 复用 T2.2 权限用例视角对参考场景配置做安全回归（越权召回=0——临时 KB 验证召回前 ACL
   过滤对参考角色 scope/level 生效、工具越权幻觉调用被拦、审批前不执行 + REST 渠道不误推）
 **Dependencies**：T3.1。**Files**：`tests/integration/test_t32_e2e_rest.py`、`test_t32_e2e_im.py`、
 `scripts/seed_reference.py`（IMBinding 同步）、`tools/gateway.py`（可选参数 schema 修复）、
-`evals/demo_t3.2.md`、`docs/specs/t3.2-platform-flows.md`。**Scope**：L。
+`doc/guides/demo-t3.2.md`、`doc/specs/t3.2-platform-flows.md`。**Scope**：L。
 
 #### T3.3 一条高风险 HITL 审批链 —— ✅ 已完成（2026-08-21，ADR-0011）
 **Description**：停机/参数修改等操作必须人审，全程可追溯；批准时可按档位授权
@@ -353,7 +355,7 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 `frontend/src/views/{Dashboard,Knowledge,KnowledgeBases}.vue`。**Scope**：M。
 
 #### T3.4 使用效果看板（后置，待 T3.2 与真实使用数据）
-**Description**：延迟 / 成本 / 人工接管率 / 失败率 / 重复执行率（T2.5 五维）。**本 worktree 不做**——待 T3.2 平台流程跑通且有真实使用数据后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。
+**Description**：延迟 / 成本 / 人工接管率 / 失败率 / 重复执行率（T2.5 五维）。**当前后置**——待 T3.2 平台流程跑通且有真实使用数据后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。
 **Acceptance**：
 - [ ] 基线 vs 使用后数据对比（需真实或模拟业务数据）
 - [ ] 复用 T2.5 指标
@@ -389,4 +391,4 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 - 本文是**执行主方向**，取代默认的"继续 M7+ / S3-S4 堆能力"。
 - 里程碑历史沿革见 `product-design.md` §6；架构红线（`architecture.md`）不变，仍是硬约束。
 - 任务执行时仍遵守 `AGENTS.md`（codegraph 先探索、worktree、中文 commit、CHANGELOG 强制）。
-- 本文的登记状态见 `docs/decisions/README.md` §2 / §5；六条缝隙明细见 `docs/gaps.md`（阶段 0 产出）。
+- 本文的登记状态见 `doc/decisions/README.md` §2 / §5；六条缝隙明细见 `doc/gaps.md`（阶段 0 产出）。

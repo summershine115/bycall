@@ -30,7 +30,7 @@ def create_vector_store(config: VectorStoreConfig, dimension: int | None = None)
     if backend in ("pgvector", "qdrant"):
         raise NotImplementedError(
             f"backend={backend!r} 计划在迁移阶段（M5）实现；当前 M0 仅支持 zvec。"
-            " 触发迁移条件时见 docs/decisions/0001-vectorstore-abstraction.md。"
+            " 触发迁移条件时见 doc/decisions/0001-vectorstore-abstraction.md。"
         )
     raise ValueError(f"不支持的 vector store backend: {backend!r}")
 

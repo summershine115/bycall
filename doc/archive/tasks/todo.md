@@ -1,6 +1,8 @@
 # S1 任务执行 · 任务清单 ✅
 
-> 关联：`tasks/plan.md`、`docs/specs/agent-framework-upgrade.md` §3/§8
+> 状态：历史实施记录（归档，2026-10-13）。原任务勾选与设计描述保留历史，不代表当前待办；当前执行范围以 [执行计划](../../execution-plan.md) 为准。
+
+> 关联：`doc/archive/tasks/plan.md`、`doc/specs/agent-framework-upgrade.md` §3/§8
 > 状态：**已完成**（S1a 6/6 + S1b 6/6，全量 CI 绿）
 
 ## S1a 执行核心（已完成）

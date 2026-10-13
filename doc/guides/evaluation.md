@@ -1,6 +1,6 @@
 # 评测集（阶段 2 · T2.1–T2.4）
 
-本目录是 execution-plan 约定的评测入口；引擎与内置用例在 `src/bycall/evals/`。
+本指南说明评测入口。所有命令在仓库根目录执行；CLI 在 `evals/`，引擎与内置用例在 `src/bycall/evals/`。
 
 ## 常用命令
 

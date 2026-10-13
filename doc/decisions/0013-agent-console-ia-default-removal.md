@@ -12,7 +12,7 @@
   `knowledge_scope_tags` 覆盖项原样 dump（留空=沿用角色，展示的不是生效结果），详情 435 行单页 6 段
   顺序堆叠、无分段导航，「改可见性要滚到底」且看不到任何"对某角色实际生效什么"。
 - **关联**：ADR-0012（多 Bot 渠道与旧 IA）、ADR-0005（ABAC/能力集）、`architecture.md` 红线 #1/#2、
-  `docs/execution-plan.md` T3.5 / T3.6、§4 冻结清单（前端打磨）
+  `doc/execution-plan.md` T3.5 / T3.6、§4 冻结清单（前端打磨）
 
 ## 背景
 

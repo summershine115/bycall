@@ -4,7 +4,7 @@
 zvec 实现在 ``zvec_store.py``，工厂在 ``factory.py``。
 
 迁移到 pgvector/Qdrant 时：新增一个实现类，在 ``factory.py`` 注册即可，
-业务代码无需改动。详见 ``docs/decisions/0001-vectorstore-abstraction.md``。
+业务代码无需改动。详见 ``doc/decisions/0001-vectorstore-abstraction.md``。
 """
 
 from bycall.vector_store.base import VectorStore

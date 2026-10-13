@@ -55,7 +55,7 @@ def _estimate_tokens(text: str) -> int:
 def _build_session_key(channel: str, user_id: int, agent_id: int | None) -> str:
     """构造确定性 session_key（含 agent_id 时隔离到实例粒度）。
 
-    - ``agent_id is None`` → ``f"{channel}:{user_id}"``（默认实例/历史兼容）
+    - ``agent_id is None`` → ``f"{channel}:{user_id}"``（无实例入口/历史兼容）
     - ``agent_id=int`` → ``f"{channel}:{user_id}:agent:{agent_id}"``（实例级隔离，红线 #2）
     """
     if agent_id is None:
@@ -68,7 +68,7 @@ def get_or_create_conversation(
 ) -> Conversation:
     """按 session_key 查/建会话（支持 per-Agent 隔离）。
 
-    - 默认（``agent_id is None``）：``{channel}:{user_id}`` → 全局默认实例，兼容历史。
+    - 默认（``agent_id is None``）：``{channel}:{user_id}`` → 全局渠道入口（无实例归属），兼容历史。
     - 指定实例：``{channel}:{user_id}:agent:{agent_id}`` → 每个实例×用户×渠道 独立会话
       （红线 #2 完整键 ``(agent_id, channel, tenant_id, user_id)`` 的实例维度落地）。
     永不过期：一个 ``(agent_id, channel, user_id)`` 永远对应一条 Conversation。
@@ -201,8 +201,8 @@ def load_agent_memory(
     """取 agent 自动记录的用户长期记忆（source=agent，status=active），注入 user 角色。
 
     信任定位：agent 记忆由 LLM 从对话中提炼，是不可信内容（红线 #7），召回时降权进
-    user 角色硬隔离，绝不进 system——与 summary/RAG 同级防御。Phase 2 才落地 LLM 提取
-    写入路径；本阶段提供加载 + 预算裁剪机制，保证 Phase 2 接入时分层立即生效。
+    user 角色硬隔离，绝不进 system——与 summary/RAG 同级防御。S2 Phase 2 已落地 LLM 提取
+    写入路径；这里提供加载 + 预算裁剪机制，按用户范围召回，不提供实例级记忆隔离。
 
     预算（独立小额度）：条数 + 字符双上限。agent 记忆按 id 顺序取（提取阶段已做高置信
     过滤，这里不做二次相关性排序，保持简单）。superseded 不注入。

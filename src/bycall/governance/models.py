@@ -154,7 +154,7 @@ class SystemPrompt(SQLModel, table=True):
     """系统提示词版本。admin 管理，激活版本下发给数据面。
 
     用户消息永远只进 user message，物理上拼不到 system 之上。
-    M1 全公司统一一套（is_active 的那条）；架构预留按角色分发（M2/M3）。
+    M1 全公司统一一套（is_active 的那条）；已支持角色绑定与实例覆盖（governance/capability.py）。
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -817,10 +817,10 @@ class Conversation(SQLModel, table=True):
     user_id: int = Field(index=True)  # User.id
     channel: str = Field(index=True)  # "api" / "wecom" / "feishu"
     # 租户/Agent 隔离键（红线 #2 完整键：agent_id, channel, tenant_id, user_id）。
-    # ADR-0004 单组织部署优先 → 运行时恒 tenant_id="default"、agent_id=None；列为多租户/多 Agent 预留。
+    # ADR-0004 单组织部署优先 → 运行时 tenant_id="default"；agent_id 由专属 Bot/实例入口写入，多租户隔离后置。
     tenant_id: str = Field(default="default", index=True)
     agent_id: int | None = Field(default=None, index=True)
-    session_key: str = Field(unique=True, index=True)  # 确定性: f"{channel}:{user_id}"
+    session_key: str = Field(unique=True, index=True)  # 确定性：渠道/用户，可追加 :agent:{agent_id}
     model_id: int | None = Field(default=None)  # per-session 模型（空→全局激活）
     summary: str = ""  # 压缩摘要（增量更新，非从头重写）
     message_count: int = 0  # 消息总数
@@ -928,9 +928,9 @@ class UserMemory(SQLModel, table=True):
 
     信任定位（ADR-0006「受治理认知」）：记忆属认知平面。当前为 admin 手写录入——与
     SystemPrompt/SKILL 同属可信配置层，注入 system message（软隔离，享 system 权重但标注为
-    非指令）。M3 起 agent 可自主提炼记忆草稿，但须经发布门（admin 审，复用 ApprovalRequest）
-    才成已发布资产；**agent 生成的记忆召回时降权进 user 角色**（红线 #7 硬隔离），admin 手写
-    记忆仍进 system。详见 ADR-0006 与 docs/tencent-agent-memory-benchmark.md。
+    非指令）。agent 可保守提炼用户私有记忆，召回时降权进 user 角色（红线 #7 硬隔离），
+    admin 手写记忆仍进 system。当前记忆按用户加载，同用户跨实例共享；团队/组织资产发布
+    为后置设计。详见 ADR-0007 与 doc/tencent-agent-memory-benchmark.md。
 
     S2 记忆层 Phase 1（本扩展）：按 ``source`` 区分谁写的（admin / agent），按 ``status``
     管控生命周期（``active`` 注入 / ``superseded`` 作废不注入），``confidence`` 记录置信度。

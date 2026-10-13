@@ -18,7 +18,7 @@ M3 工具治理（见 ADR-0002）：
 - ``conversation_id`` 传入时启用多轮：加载历史 + summary → 拼 messages → 存新消息 → 压缩。
 - ``conversation_id`` 为 None 时退化为单轮（兼容 M1 行为）。
 
-参考：docs/product-design.md 四支柱、src/bycall/api/dataplane.py 原始实现。
+参考：doc/product-design.md 四支柱、src/bycall/api/dataplane.py 原始实现。
 """
 
 from __future__ import annotations

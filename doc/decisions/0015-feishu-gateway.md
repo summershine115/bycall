@@ -8,7 +8,7 @@
   第二常见选择。
 - **关联**：[ADR-0012](0012-multi-bot-channels.md)（多 Bot 渠道）、
   [ADR-0004](0004-single-tenant-priority.md)（单组织私有部署）、`architecture.md` 红线 #2
-  （Session 隔离）、`docs/execution-plan.md` T3.5。
+  （Session 隔离）、`doc/execution-plan.md` T3.5。
 
 ## 背景
 

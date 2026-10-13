@@ -4,19 +4,19 @@
 
 ## 0. 先读文档（强制）
 
-**动手写任何设计或代码之前，先读 `docs/`：**
+**动手写任何设计或代码之前，先读 `doc/`（统一入口 `doc/README.md`）：**
 
-- `docs/product-design.md` — 产品形态、治理架构、信任模型、里程碑路线图（§6）、待确认假设（§7）。**决定"做什么、为什么这么做"。**
-- `docs/architecture.md` — 分层架构、架构红线（不可违背）、核心数据流、后端可切换设计。**决定"怎么搭、边界在哪"。**
-- `docs/decisions/` — ADR（架构决策记录），**决策登记册（唯一入口）是 `docs/decisions/README.md`**：ADR 索引、待拍板清单、新决策流程。新决策先写 ADR 并登记，待拍板项集中在登记册 §3，正文只留指针。
-- `docs/execution-plan.md` — **当前执行主方向**：先收口六条治理缝隙 + M5 → 评测/发布门 → 参考场景与真实使用验证，冻结 S3/S4。所有新任务对齐其阶段与任务编号（T0.x–T3.x）；未列入冻结清单的新能力不得动工。
+- `doc/product-design.md` — 产品形态、治理架构、信任模型、历史里程碑路线图（§6）、决策指针（§7）。**决定"做什么、为什么这么做"。**
+- `doc/architecture.md` — 分层架构、架构红线（不可违背）、核心数据流、后端可切换设计。**决定"怎么搭、边界在哪"。**
+- `doc/decisions/` — ADR（架构决策记录），**决策登记册（唯一入口）是 `doc/decisions/README.md`**：ADR 索引、待拍板清单、新决策流程。新决策先写 ADR 并登记，待拍板项集中在登记册 §3，正文只留指针。
+- `doc/execution-plan.md` — **当前执行主方向**：先收口六条治理缝隙 + M5 → 评测/发布门 → 参考场景与真实使用验证，冻结 S3/S4。所有新任务对齐其阶段与任务编号（T0.x–T3.x）；未列入冻结清单的新能力不得动工。
 
-新增功能/改架构时，**先确认与文档是否一致**；若文档已落后于代码，先更新文档再改代码。路线图以 `docs/execution-plan.md` 为**当前主方向**（取代默认的 M7+/S3-S4 堆能力），按阶段推进、出口门不达标即停在当前阶段；里程碑历史沿革见 product-design.md §6。
-所有决策（含待拍板项）以 `docs/decisions/README.md` 登记册为准，不再散落于正文文档。
+新增功能/改架构时，**先确认与文档是否一致**；若文档已落后于代码，先更新文档再改代码。路线图以 `doc/execution-plan.md` 为**当前主方向**（取代默认的 M7+/S3-S4 堆能力），按阶段推进、出口门不达标即停在当前阶段；里程碑历史沿革见 product-design.md §6。
+所有决策（含待拍板项）以 `doc/decisions/README.md` 登记册为准，不再散落于正文文档。
 
 ## 1. 这是什么项目
 
-企业级数字员工 Agent —— 常驻企微/飞书等 IM，员工通过 IM 协作，但人格（提示词）/能力（工具）/知识（RAG）**由组织管理员管控**，LLM 无法越权。路线 B（分层混搭自研）：LangGraph + LangBot IM + zvec + PostgreSQL + MCP 网关。
+企业级数字员工 Agent —— 常驻企微/飞书等 IM，员工通过 IM 协作，但人格（提示词）/能力（工具）/知识（RAG）**由组织管理员管控**，LLM 无法越权。路线 B（分层混搭自研）：LangGraph + 企微/飞书渠道适配层 + zvec + PostgreSQL + MCP 网关。
 
 核心原则（贯穿全文）：**策略绝不能活在提示词层。** LLM 只能"请求"，中间件/网关/检索层"判定"是否放行。
 
@@ -57,7 +57,7 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 - **控制面/数据面共用 `run_agent`**（`agent/runner.py`）——治理脊柱的单一真相源，差异只在回复方式。
 - **LLM 是执行单元**：提示词、工具、知识在被 LLM 看到**之前**就已被治理脊柱过滤。
 
-包职责速查：`governance/`（身份/权限/模型实体）、`admin/`（控制面 API+schemas）、`agent/`（runner 治理链路 + im_handler）、`gateway/`（IM 渠道抽象 + 企微）、`rag/`（检索+拼prompt）、`llm/`（模型抽象）、`vector_store/`（向量库抽象+zvec）、`api/`（FastAPI 路由）。
+包职责速查：`governance/`（身份/权限/模型实体）、`admin/`（控制面 API+schemas）、`agent/`（runner 治理链路 + im_handler）、`gateway/`（IM 渠道抽象 + 企微/飞书）、`rag/`（检索+拼prompt）、`llm/`（模型抽象）、`vector_store/`（向量库抽象+zvec）、`api/`（FastAPI 路由）。
 
 ## 4. 编码约定
 
@@ -71,7 +71,7 @@ make docker-up        # 起 postgres + redis（zvec 嵌入式无独立服务）
 ## 5. 关键现状（避免误判）
 
 - **当前已启用基础多轮会话**：`run_agent` 按 `conversation_id` 加载历史、摘要和管理员维护的用户记忆。企微群聊在群成员共同授权模型落地前一律拒绝，避免私聊/群聊串历史和群内越权披露。
-- **模型全局激活唯一**：`Model.is_active` 同类型只能一个；`get_chat_model(session)` 全系统共用。per-session 模型（`Conversation.model_id` 可空外键）是 M3 预留。
+- **模型全局激活唯一**：`Model.is_active` 同类型只能一个；`get_chat_model(session)` 提供全局 fallback，会话入口使用 `get_chat_model_for_conversation`。模型选择已按会话绑定 → 实例绑定 → 灰度候选 → 全局激活落地（`llm/resolver.py`）。
 - **IM 渠道单例 + 热重载**：`gateway/manager.py` 的 `ChannelManager` 单例；admin 改凭证后 `reload()` 只重启那一个渠道，HTTP 服务不动。
 
 ## 6. 提交规范

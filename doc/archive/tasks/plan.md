@@ -1,6 +1,8 @@
 # Implementation Plan：S1a 执行核心（Agent 框架升级第 1 切片）
 
-> 关联：`docs/specs/agent-framework-upgrade.md` §3/§8（S1a）、ADR-0006
+> 状态：历史实施记录（归档，2026-10-13）。原任务勾选与设计描述保留历史，不代表当前待办；当前执行范围以 [执行计划](../../execution-plan.md) 为准。
+
+> 关联：`doc/specs/agent-framework-upgrade.md` §3/§8（S1a）、ADR-0006
 > 范围：仅 S1a 执行核心。S1b（触发与可视化）/ S2 / S3 / S4 见 spec §8，各自独立 plan。
 
 ## Overview

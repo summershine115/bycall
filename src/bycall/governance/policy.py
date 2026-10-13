@@ -12,7 +12,7 @@ capability 产出「谁能做什么」，policy 产出「该能力对应哪些�
 - admin 或通配 ``'*'`` → 空过滤（全可见）。
 
 dept/sensitivity 预留：zvec schema 已建字段，但 User 尚无 dept 属性，
-待数据模型补齐后在 ``build_acl_filters`` 追加 ``dept`` 条件（见 docs/gaps.md #1 剩余项）。
+待数据模型补齐后在 ``build_acl_filters`` 追加 ``dept`` 条件（见 doc/gaps.md #1 剩余项）。
 
 设计约束：本模块不访问 DB（与 capability 的计算分离），只做纯函数式过滤条件构造；
 输入由调用方从 CapabilitySet 裁剪成 PolicySubject 传入。

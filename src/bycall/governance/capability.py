@@ -101,7 +101,7 @@ class CapabilitySet:
     - ``context_budget_overrides``：从 ``RoleConfig.context_budget`` 透传的预算覆盖 dict。
       runner 经 ``resolve_budget`` 合并进默认 ``ContextBudget``——历史/记忆/RAG 预算按角色可调。
       admin 内置角色为空（用全局默认）。
-    - ``agent_id`` / ``agent_name``：本次会话归属的数字员工实例（为空=默认实例/历史兼容）。
+    - ``agent_id`` / ``agent_name``：本次会话归属的数字员工实例（为空=无实例入口/历史兼容）。
     """
 
     user_id: int | None
@@ -260,7 +260,7 @@ def compute_capability_set(
 ) -> CapabilitySet:
     """从用户记录计算当前能力集（带 ``(user.id, agent_id)`` 级缓存）。
 
-    ``agent`` 可为 ``Agent`` 实体、``agent_id`` 或 ``None``（默认实例/历史兼容）。
+    ``agent`` 可为 ``Agent`` 实体、``agent_id`` 或 ``None``（无实例入口/历史兼容）。
     指定实例时，能力集在角色基线之上做 **收紧式** 合并（角色是天花板，实例只能收窄
     或叠加技能，不能突破角色边界——红线 #1/#5 的实例形态）。
     缓存语义同前，但 key 扩展为 ``(user.id, agent_id)``，避免实例间串权。

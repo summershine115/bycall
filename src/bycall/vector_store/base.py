@@ -1,6 +1,6 @@
 """VectorStore 后端无关抽象接口。
 
-设计目标（见 ``docs/decisions/0001-vectorstore-abstraction.md``）：
+设计目标（见 ``doc/decisions/0001-vectorstore-abstraction.md``）：
 1. 对齐迁移目标 —— 方法签名与 Qdrant/pgvector 概念对齐，换后端不改业务代码。
 2. 权限预过滤一等公民 —— ``search(filters=...)`` 支持结构化 ACL 条件（M2 真正用）。
 3. 混合检索 —— 单次 ``search`` 可同时给 vector + full_text + filters。

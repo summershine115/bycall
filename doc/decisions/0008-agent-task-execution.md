@@ -4,7 +4,7 @@
 - **日期**：2026-08-06
 - **背景**：把单次对话工具回路升级为可恢复的多步任务执行核心
 - **关联**：ADR-0006（任务系统增量路线）、ADR-0002（LangGraph 工具回路）、
-  `docs/specs/agent-framework-upgrade.md` §3/§8、`tasks/plan.md`
+  `doc/specs/agent-framework-upgrade.md` §3/§8、`doc/archive/tasks/plan.md`
 
 ## 背景
 

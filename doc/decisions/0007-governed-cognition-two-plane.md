@@ -4,7 +4,7 @@
 - **日期**：2026-08-06
 - **背景**：从"agent 不可学习"到"受治理的、会成长的团队协作者"
 - **关联**：`product-design.md` §0/§2.4/§6/§8、`architecture.md` 红线 #4/#7、ADR-0006、
-  `docs/tencent-agent-memory-benchmark.md`、`docs/qm-benchmark.md`
+  `doc/tencent-agent-memory-benchmark.md`、`doc/qm-benchmark.md`
 
 ## 背景
 
@@ -118,4 +118,4 @@ agent 不学习，记忆全靠 admin 手填。
   L0/summary 基座）、`src/bycall/governance/models.py`（`UserMemory`/`ApprovalRequest`）
 - 发布门复用：`src/bycall/tools/approval.py`（HITL 模式）
 - 治理链路：`src/bycall/agent/runner.py`（`run_agent`）、`src/bycall/agent/runtime_context.py`
-- 基准：`docs/tencent-agent-memory-benchmark.md`（TAM）、`docs/qm-benchmark.md`（QM 同构治理）
+- 基准：`doc/tencent-agent-memory-benchmark.md`（TAM）、`doc/qm-benchmark.md`（QM 同构治理）

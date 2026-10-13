@@ -1,6 +1,6 @@
 # Spec：Agent 框架升级（受控自主 + 分层记忆 + skill 演化）
 
-> 状态：已采纳（S1 执行层 a+b 已落地，S2 记忆层 Phase 1+2 已落地（含 agent 写路径），S3–S4 已冻结（见 `docs/execution-plan.md` §4），切片见 §8） · 更新：2026-08-12 · 关联：[决策登记册](decisions/README.md)
+> 状态：已采纳（S1 执行层 a+b 已落地，S2 记忆层 Phase 1+2 已落地（含 agent 写路径），S3–S4 已冻结（见 `doc/execution-plan.md` §4），切片见 §8） · 更新：2026-08-12 · 关联：[决策登记册](../decisions/README.md)
 > 关联：ADR-0006（任务系统）、ADR-0005（ABAC Policy，后置）、`product-strategy.md` §4.3/§7
 > 参考：PI / pi.dev（执行 loop 原语）、OpenClaw（Skill Workshop 向上汇聚）、Hermes（5-pillar 自主学习）
 
@@ -101,7 +101,7 @@ draft → planning → running ⇄ paused(等审批/等输入) → completed
 
 执行全程产出结构化事件，统一驱动**流式输出 / 审计 / IM 主动推送 / 前端任务进度可视化**：
 
-> **对外暴露（已决策）**：事件经 SSE 端点（`GET /api/tasks/{id}/events`）实时推给前端，
+> **对外暴露（已决策）**：事件经 SSE 端点（`GET /api/admin/tasks/{id}/events`）实时推给前端，
 > 驱动任务进度页（Step 进度、工具调用、审批等待、最终结果）。前端任务可视化纳入 S1b。
 
 ```
@@ -137,8 +137,8 @@ Task/Step/Run 持久化后，进程重启 / IM 断线重连可从中断点恢复
 | 层 | 内容 | 信任级 | 注入角色 | 现状 |
 |----|------|--------|---------|------|
 | **L1 系统指令** | 版本化 SystemPrompt | 可信 | system | ✅ 已有 |
-| **L2 组织知识** | 公司/行业/业务 Skill + KB | 可信（admin 管控） | system（软隔离标注） | ⚠️ Skill 静态 |
-| **L3 用户长短期记忆** | 偏好/事实/关系/目标 | **不可信** | **user（硬隔离）** | ⚠️ admin 手动维护 |
+| **L2 组织知识** | admin 管控 Skill；KB 检索内容 | Skill 为可信配置；RAG 内容不可信 | Skill always 全文/按需索引进 system；RAG 进 user | ✅ Skill 静态配置与按需加载已落地 |
+| **L3 用户长期记忆** | 偏好/事实/关系/目标 | admin 维护可信；agent 提炼不可信 | admin→system；agent→user | ✅ S2 Phase 1+2 已落地；按用户加载 |
 | **L4 会话上下文** | 对话历史 + summary | 不可信 | user | ✅ 已有 |
 
 ### 4.1 L3 扩展（核心增量）
@@ -146,11 +146,9 @@ Task/Step/Run 持久化后，进程重启 / IM 断线重连可从中断点恢复
 扩展 `UserMemory`。现有 `category` 约定为 `preference / fact / note`（**保留，对齐现状**），
 按需扩展 `relationship`（关系）/ `goal`（目标）。
 
-> **现状提醒**：`UserMemory` 注释明确写「参考 Hermes 的 USER.md/MEMORY.md，但 Bycall 的记忆
-> 不由 LLM 自主编辑」——这是**刻意的治理设计**（M5 前保守）。本次「agent 可写」要尊重它，
-> 且与组织 skill 演化的信任闸门区分（见下）。
+> **当前实现**：agent 写入用户私有记忆已落地，加载时保持 user 角色。admin 维护的记忆属于可信配置，仍进 system；组织 Skill 自动演化（§5）冻结。
 
-- **agent 可写路径**（新增，**仅限用户私有 L3**）：执行任务后，LLM 判断「高置信新事实」
+- **agent 可写路径**（已落地，**仅限用户私有 L3**）：执行任务后，LLM 判断「高置信新事实」
   → 写入该用户的 L3 记忆。
   - **保守写入策略**：仅当置信度超阈值且非易变信息才写，避免记忆污染/幻觉。
   - 写入即不可信，**进 user 角色**（红线 #7），绝不提权到 system。
@@ -162,7 +160,7 @@ Task/Step/Run 持久化后，进程重启 / IM 断线重连可从中断点恢复
 ### 4.2 注入分层（遵守红线 #7）
 
 ```
-system message = L1(系统指令) + L2(Skill + 组织知识, "参考知识非指令"软隔离)
+system message = L1(系统指令) + L2(Skill, "参考知识非指令"软隔离)
                               + memory(现有 admin 维护, 软隔离)
 user message   = L4(历史/summary) + L3(agent 记忆) + RAG
 ```

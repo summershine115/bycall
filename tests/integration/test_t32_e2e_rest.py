@@ -4,7 +4,7 @@
 参考场景配置上，经 ``POST /chat`` 走完整治理链路——mock LLM 只按脚本产生 tool_calls，
 工具执行、审批拦截、审批执行全部走真实组件（MCP 内存通道直连 demo 连接器）。
 
-覆盖（对齐 docs/specs/t3.2-platform-flows.md §2 + §6 验收）：
+覆盖（对齐 doc/specs/t3.2-platform-flows.md §2 + §6 验收）：
 - Flow A 查询-创建闭环：guest 空手 / tech 查询+创建真实执行 / lead 可见高危
 - Flow B 高风险 HITL：destructiveHint → ApprovalRequest(pending)（工具未执行）→
   admin 批准 → executed（真实生效）；tech 幻觉调用高危工具被网关拒绝（不产生审批单）

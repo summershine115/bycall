@@ -6,7 +6,7 @@
   pending 请求，高频可信操作（如值班期内的工单回写）会淹没管理员，管理员被迫
   批量放行反而稀释了人审价值；同时「授权后免审」缺少组织可控的档位与撤销路径。
 - **关联**：ADR-0002（graph 无状态 + session_store 管会话）、execution-plan T3.3、
-  `docs/architecture.md` 红线 #5（破坏性操作走人审）、M4 Slice C 审批门
+  `doc/architecture.md` 红线 #5（破坏性操作走人审）、M4 Slice C 审批门
 
 ## 决策
 
