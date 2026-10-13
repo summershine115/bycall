@@ -392,3 +392,12 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 - 里程碑历史沿革见 `product-design.md` §6；架构红线（`architecture.md`）不变，仍是硬约束。
 - 任务执行时仍遵守 `AGENTS.md`（codegraph 先探索、worktree、中文 commit、CHANGELOG 强制）。
 - 本文的登记状态见 `doc/decisions/README.md` §2 / §5；六条缝隙明细见 `doc/gaps.md`（阶段 0 产出）。
+## RAG 缺陷修复批次（2026-10-13）
+
+属于 T1.1 / T1.9 / T2.1 / T3.2 的既有链路修复，见 [ADR-0016](decisions/0016-rag-publication-and-evidence.md)。
+
+- [x] 批次 1：generation 发布门、ACL 与失败索引一致性、统计。
+- [ ] 批次 2：child 召回、父块精确读取、ACL 与来源保留、严格 filter。
+- [ ] 批次 3：统一候选重排、多轮改写、检索状态与实际证据引用、回归评测。
+
+批次 1 验证：943 个测试、四类评测与权限安全评测通过（`make ci-local`）。

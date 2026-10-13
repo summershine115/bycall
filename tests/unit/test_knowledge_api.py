@@ -594,7 +594,7 @@ def test_delete_document_keeps_metadata_when_vector_delete_fails(client: TestCli
     assert client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").status_code == 200
 
 
-def test_source_change_rolls_back_when_vector_delete_fails(client: TestClient, monkeypatch):
+def test_source_change_rolls_back_when_embedding_fails(client: TestClient, monkeypatch):
     """ACL 更新失败时 DB source 必须回滚到旧授权状态（同步路径保持即时回滚）。"""
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
@@ -602,11 +602,9 @@ def test_source_change_rolls_back_when_vector_delete_fails(client: TestClient, m
     doc_id = created.json()["document_id"]
     _wait_for_ingest(client, kb_id, doc_id)
 
-    import bycall.admin.api as admin_api
-
     monkeypatch.setattr(
-        admin_api,
-        "_delete_chunks_for_doc",
+        resolver,
+        "resolve_embed_model",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("zvec unavailable")),
     )
     response = client.put(
@@ -929,3 +927,109 @@ def test_batch_reindex_unknown_doc_returns_404(client: TestClient):
         json={"document_ids": [d1, 9999]},
     )
     assert resp.status_code == 404
+
+
+def _managed_hits(kb_id, tags, level=0):
+    from bycall.db import session_scope
+    from bycall.governance.models import KnowledgeBase
+    from bycall.rag.retrieve import retrieve_multi_kb
+
+    with session_scope() as session:
+        kb = session.get(KnowledgeBase, kb_id)
+        return retrieve_multi_kb(
+            session,
+            get_settings().vector_store,
+            [(kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id)],
+            "内容",
+            tags,
+            level=level,
+        )
+
+
+def test_acl_failure_never_publishes_partial_permissive_vectors(client, monkeypatch):
+    """降密失败即使写入了部分低密级向量，也只能检索旧代。"""
+    from bycall.vector_store.models import InsertResult
+    from bycall.vector_store.zvec_store import ZvecStore
+
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    created = _create_doc(client, kb_id, source="public", content="机密内容。" * 250)
+    doc_id = created.json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
+    assert (
+        client.put(
+            f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}", json={"level": 3}
+        ).status_code
+        == 200
+    )
+    before = {r.id for r in _managed_hits(kb_id, ["public"], level=3)}
+    assert before
+    original = ZvecStore.upsert
+
+    def partial_write(self, chunks):
+        original(self, chunks[:1])
+        return [InsertResult(id=c.id, ok=False, message="模拟后续写入失败") for c in chunks]
+
+    monkeypatch.setattr(ZvecStore, "upsert", partial_write)
+    response = client.put(
+        f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}", json={"level": 0}
+    )
+    assert response.status_code == 503
+    doc = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}").json()
+    assert doc["level"] == 3 and doc["status"] == "completed"
+    assert not _managed_hits(kb_id, ["public"], level=0)
+    assert {r.id for r in _managed_hits(kb_id, ["public"], level=3)} == before
+
+
+def test_unpublished_generation_survives_cleanup_failure_without_visibility(client, monkeypatch):
+    """模拟中断后的未发布向量；清理故障不影响新代 ACL 与可见性。"""
+    from bycall.db import session_scope
+    from bycall.governance.models import Document, KnowledgeBase
+    from bycall.rag.ingest import IngestPipeline
+    from bycall.rag.publication import stage_generation
+    from bycall.vector_store.factory import create_vector_store
+    from bycall.vector_store.zvec_store import ZvecStore
+
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    doc_id = _create_doc(client, kb_id, source="public").json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
+    with session_scope() as session:
+        doc = session.get(Document, doc_id)
+        kb = session.get(KnowledgeBase, kb_id)
+        abandoned = stage_generation(session, doc)
+        store = create_vector_store(get_settings().vector_store, dimension=DIM)
+        try:
+            pipeline = IngestPipeline(
+                store,
+                resolver.resolve_embed_model(session, None),
+                collection_name=kb.collection_name,
+            )
+            assert pipeline.ingest_text("中断留下的内容", source="public", doc_id=abandoned).success
+        finally:
+            store.close()
+    assert all(not r.id.startswith(abandoned) for r in _managed_hits(kb_id, ["public"]))
+    monkeypatch.setattr(
+        ZvecStore, "delete_by_filter", MagicMock(side_effect=RuntimeError("清理故障"))
+    )
+    assert (
+        client.put(
+            f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}", json={"source": "hr"}
+        ).status_code
+        == 200
+    )
+    assert not _managed_hits(kb_id, ["public"])
+    assert _managed_hits(kb_id, ["hr"])
+
+
+def test_reindex_statistics_do_not_accumulate_characters(client):
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    doc_id = _create_doc(client, kb_id).json()["document_id"]
+    _wait_for_ingest(client, kb_id, doc_id)
+    before = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
+    client.post(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/reindex")
+    _wait_for_ingest(client, kb_id, doc_id)
+    after = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
+    assert after["total_chars"] == before["total_chars"]
+    assert after["chunk_count"] == before["chunk_count"]

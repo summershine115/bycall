@@ -35,6 +35,7 @@ def retrieve_context(
     topk: int = 5,
     level: int = 0,
     is_admin: bool = False,
+    document_ids: list[str] | None = None,
 ) -> list[SearchResult]:
     """按角色能力集预过滤检索（混合检索：向量 + FTS）。
 
@@ -58,6 +59,10 @@ def retrieve_context(
         PolicySubject(is_admin=is_admin, knowledge_scope_tags=knowledge_scope_tags, level=level)
     )
 
+    if document_ids is not None:
+        if not document_ids:
+            return []
+        filters.append(FilterCondition(field="doc_id", op="in", values=document_ids))
     try:
         results = store.search(
             SearchRequest(
@@ -117,8 +122,15 @@ def retrieve_multi_kb(
     # N 个同模型 KB 从 N 次 embed 降为 1 次；resolve_embed_model 的 DB 查+构造也一并去重）。
     query_vector_cache: dict[int, list[float] | None] = {}
     per_kb_results: list[list[SearchResult]] = []
+    from bycall.rag.publication import visible_generations
+
     for _kb_id, collection_name, dimension, embedding_model_id in kb_specs:
         try:
+            document_ids = visible_generations(
+                session, _kb_id, knowledge_scope_tags, level, is_admin
+            )
+            if not document_ids:
+                continue
             if embedding_model_id not in query_vector_cache:
                 query_vector_cache[embedding_model_id] = _embed_query(
                     session, embedding_model_id, question, dimension
@@ -137,6 +149,7 @@ def retrieve_multi_kb(
                     topk=topk,
                     level=level,
                     is_admin=is_admin,
+                    document_ids=document_ids,
                 )
                 per_kb_results.append(hits)
             finally:

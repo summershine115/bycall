@@ -77,3 +77,8 @@
 路由规则（`parse_document`）：引擎不支持该类型 → 自动退回 `builtin`（小众格式不强制走所选引擎）；显式选中的引擎不可用（依赖未装 / 远程未配置）→ 报错而非静默回退。配置走 `BYCALL_PARSE_*`，上传端点支持 `engine` 参数按文档覆盖，`GET /api/admin/parse-engines` 列出引擎及可用性。
 
 **解析异步化**（参考 WeKnora）：上传只做廉价同步校验（扩展名 / 引擎可用性 / 大小），**解析与入库都在后台线程池并行**——多文件并发上传互不阻塞（慢引擎如 mineru 不会卡住其他文件）。解析阶段计入入库进度（`/progress` 的 `stage=parsing`），解析失败/空内容落 `status=failed`（不再立即 4xx），仅「引擎不可用」这类配置错误在请求线程即时 4xx。详见 `doc/decisions/0003-parse-engine-abstraction.md`。
+
+### RAG 索引发布门
+
+向量写入成功不等于已发布；数据面召回前按 SQL 当前文档 ACL 与有效索引代白名单过滤。
+部分失败和中断索引不可见，ACL 更新失败恢复旧代。实现与边界见 [ADR-0016](decisions/0016-rag-publication-and-evidence.md)。

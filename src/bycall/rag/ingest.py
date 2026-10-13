@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -131,7 +132,7 @@ class IngestPipeline:
                     got = self._embed_model.embed([texts[i] for i in need_idx])
                     if len(got) != len(need_idx):
                         errors.append(f"embedding 数量不匹配: batch={len(need_idx)} got={len(got)}")
-                        got = [[0.0] * self._embed_model.dimension for _ in need_idx]
+                        got = []
                     for i, vec in zip(need_idx, got, strict=False):
                         batch_vecs[i] = vec
                 except Exception as e:
@@ -142,6 +143,15 @@ class IngestPipeline:
             # 本批结束推进进度（无论成功/失败，已"处理"这么多）。
             processed += len(texts)
             _fire_progress(on_progress, stage="embedding", processed=processed)
+
+        if any(
+            vec
+            and (len(vec) != self._embed_model.dimension or not all(math.isfinite(v) for v in vec))
+            for vec in vectors
+        ):
+            errors.append("embedding 维度不匹配或包含非有限数值")
+        if errors:
+            return IngestResult(success=False, chunk_count=0, errors=errors)
 
         # 4. 组装 Chunk：source/doc_id/chunk_type/parent_id/chunk_index 进 fields。
         chunks: list[Chunk] = []
@@ -203,6 +213,7 @@ class IngestPipeline:
         level: int = 0,
         config: ChunkingConfig | None = None,
         on_progress: Callable[..., None] | None = None,
+        title: str = "",
     ) -> IngestResult:
         """便利方法：单段文本入库（自动生成 doc_id）。
 
@@ -211,7 +222,7 @@ class IngestPipeline:
         if not doc_id:
             doc_id = f"txt_{uuid.uuid4().hex[:12]}"
         return self.ingest_documents(
-            [Document(doc_id=doc_id, text=text, source=source, level=level)],
+            [Document(doc_id=doc_id, text=text, source=source, level=level, title=title)],
             config=config,
             on_progress=on_progress,
         )

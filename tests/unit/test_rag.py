@@ -429,6 +429,7 @@ class TestRetrieveMultiKbEmbedDedup:
             patch.object(retrieve, "_embed_query", mock_embed_query),
             patch.object(vsf, "create_vector_store", MagicMock(return_value=mock_store)),
             patch.object(retrieve, "_resolve_parent_chunks", lambda *a, **k: []),
+            patch("bycall.rag.publication.visible_generations", return_value=["published"]),
         ):
             retrieve_multi_kb(MagicMock(), MagicMock(), kb_specs, "q", ["*"])
         assert calls["n"] == 1  # 去重：3 个同模型 KB 只 embed 1 次
@@ -455,6 +456,40 @@ class TestRetrieveMultiKbEmbedDedup:
             patch.object(retrieve, "_embed_query", mock_embed_query),
             patch.object(vsf, "create_vector_store", MagicMock(return_value=mock_store)),
             patch.object(retrieve, "_resolve_parent_chunks", lambda *a, **k: []),
+            patch("bycall.rag.publication.visible_generations", return_value=["published"]),
         ):
             retrieve_multi_kb(MagicMock(), MagicMock(), kb_specs, "q", ["*"])
         assert calls["n"] == 3  # 不同模型各 embed 一次（不误去重）
+
+
+@pytest.mark.parametrize("failure", ["batch", "count", "dimension", "nan"])
+def test_embedding_failure_writes_nothing(rag_env, failure):
+    """完整向量校验在写入前完成，失败不能留下前一批成功的块。"""
+    store = create_vector_store(get_settings().vector_store)
+    model = make_mock_embed_model()
+    original = model.embed.side_effect
+    calls = 0
+
+    def embed(texts):
+        nonlocal calls
+        calls += 1
+        if failure == "batch" and calls > 1:
+            raise RuntimeError("第二批失败")
+        if failure == "count":
+            return []
+        if failure == "dimension":
+            return [[1.0] for _ in texts]
+        if failure == "nan":
+            return [[float("nan")] * DIM for _ in texts]
+        return original(texts)
+
+    model.embed.side_effect = embed
+    pipeline = IngestPipeline(store, model)
+    try:
+        outcome = pipeline.ingest_documents(
+            [Document(doc_id=f"d{i}", text="秘密内容", source="public") for i in range(70)]
+        )
+        assert not outcome.success
+        assert not retrieve_context(store, "秘密", ["*"], query_vector=[1.0] * DIM)
+    finally:
+        store.close()
