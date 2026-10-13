@@ -23,7 +23,7 @@
 | ADR-0014 | 控制台导航精简合并——19 项入口 → 8 项（Hub tab 容器 + 顶栏设置入口） | ✅ 已采纳 | 2026-09-23 | `0014-console-nav-consolidation.md` |
 | ADR-0015 | 飞书渠道接入——自研长连接协议层（对齐官方 lark-oapi 1.7.3）+ 卡片伪流式 | ✅ 已采纳 | 2026-09-23 | `0015-feishu-gateway.md` |
 
-| ADR-0016 | RAG 索引发布、父子块与证据链修复 | ✅ 已采纳（批次 1） | 2026-10-13 | [0016](0016-rag-publication-and-evidence.md) |
+| ADR-0016 | RAG 索引发布、父子块与证据链修复 | ✅ 已采纳（批次 1–2） | 2026-10-13 | [0016](0016-rag-publication-and-evidence.md) |
 
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 

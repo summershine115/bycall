@@ -397,7 +397,9 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 属于 T1.1 / T1.9 / T2.1 / T3.2 的既有链路修复，见 [ADR-0016](decisions/0016-rag-publication-and-evidence.md)。
 
 - [x] 批次 1：generation 发布门、ACL 与失败索引一致性、统计。
-- [ ] 批次 2：child 召回、父块精确读取、ACL 与来源保留、严格 filter。
+- [x] 批次 2：child 召回、父块精确读取、ACL 与来源保留、严格 filter。
 - [ ] 批次 3：统一候选重排、多轮改写、检索状态与实际证据引用、回归评测。
 
 批次 1 验证：943 个测试、四类评测与权限安全评测通过（`make ci-local`）。
+
+批次 2 验证：951 个测试、四类评测与权限安全评测通过（`make ci-local`）。

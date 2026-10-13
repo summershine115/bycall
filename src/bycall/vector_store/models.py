@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -108,6 +109,20 @@ class FilterCondition:
     op: Literal["match", "in", "lte", "gte", "lt", "gt"]
     value: str | int | float | bool | None = None  # op=="match"/范围比较时用
     values: list[str] | None = None  # op == "in" 时用
+
+    def validate(self) -> None:
+        """未知条件必须拒绝，不能静默丢掉授权限制。"""
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.field):
+            raise ValueError(f"非法过滤字段: {self.field!r}")
+        if self.op not in {"match", "in", "lte", "gte", "lt", "gt"}:
+            raise ValueError(f"不支持的过滤操作符: {self.op!r}")
+        if self.op == "in" and not self.values:
+            raise ValueError("in 过滤集合不能为空")
+        if self.op != "in" and self.value is None:
+            raise ValueError("过滤值不能为空")
+
+    def __post_init__(self) -> None:
+        self.validate()
 
     def matches(self, candidate: object) -> bool:
         """Python 侧本地过滤（测试/降级用，生产走后端 filter）。"""

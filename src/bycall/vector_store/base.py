@@ -58,6 +58,15 @@ class VectorStore(ABC):
         后端不支持时 raise NotImplementedError，调用方回退到 query+delete。
         """
 
+    def get(
+        self,
+        ids: list[str],
+        filters: list[FilterCondition] | None = None,
+        output_fields: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """精确读取 ID；正文返回前执行 filters，后端未实现时拒绝扩展。"""
+        raise NotImplementedError("后端未实现带授权检查的精确读取")
+
     @abstractmethod
     def search(self, query: SearchRequest) -> list[SearchResult]:
         """混合检索。vector / full_text / filters 任意组合；多路时后端自动 rerank。"""

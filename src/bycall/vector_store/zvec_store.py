@@ -23,6 +23,7 @@ import gc
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import zvec
 from zvec import (
@@ -242,6 +243,39 @@ class ZvecStore(VectorStore):
         raw = col.query(**kwargs)
         return [self._to_result(d) for d in raw]
 
+    def get(
+        self,
+        ids: list[str],
+        filters: list[FilterCondition] | None = None,
+        output_fields: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """zvec fetch 无 filter：先只读授权字段，通过后才按精确 ID 取正文。"""
+        if not ids:
+            return []
+        conditions = filters or []
+        self._build_filter(conditions)
+        col = self._require_open()
+        allowed = list(dict.fromkeys(ids))
+        if conditions:
+            metadata = col.fetch(
+                allowed,
+                output_fields=list({c.field for c in conditions}),
+                include_vector=False,
+            )
+            allowed = [
+                id_
+                for id_ in allowed
+                if id_ in metadata
+                and all(
+                    c.matches(SimpleNamespace(**dict(metadata[id_].fields or {})))
+                    for c in conditions
+                )
+            ]
+        if not allowed:
+            return []
+        docs = col.fetch(allowed, output_fields=output_fields, include_vector=False)
+        return [self._to_result(docs[id_]) for id_ in allowed if id_ in docs]
+
     # ---------- 内部：路径 / schema ----------
 
     def _collection_path(self, name: str) -> Path:
@@ -375,6 +409,7 @@ class ZvecStore(VectorStore):
         """
         parts: list[str] = []
         for cond in filters:
+            cond.validate()
             if cond.op == "match":
                 val = _quote_value(cond.value)
                 parts.append(f"{cond.field} = {val}")

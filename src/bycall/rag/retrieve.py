@@ -63,6 +63,7 @@ def retrieve_context(
         if not document_ids:
             return []
         filters.append(FilterCondition(field="doc_id", op="in", values=document_ids))
+    filters.append(FilterCondition(field="chunk_type", op="match", value="child"))
     try:
         results = store.search(
             SearchRequest(
@@ -70,7 +71,16 @@ def retrieve_context(
                 full_text=question,
                 filters=filters,
                 topk=topk,
-                output_fields=["text", "source"],
+                output_fields=[
+                    "text",
+                    "source",
+                    "title",
+                    "doc_id",
+                    "chunk_type",
+                    "parent_id",
+                    "chunk_index",
+                    "level",
+                ],
             )
         )
     except Exception as e:
@@ -151,6 +161,17 @@ def retrieve_multi_kb(
                     is_admin=is_admin,
                     document_ids=document_ids,
                 )
+                for hit in hits:
+                    hit.fields["kb_id"] = _kb_id
+                    hit.fields["collection"] = collection_name
+                hits = _resolve_parent_chunks(
+                    hits,
+                    store,
+                    knowledge_scope_tags,
+                    level,
+                    is_admin,
+                    document_ids,
+                )
                 per_kb_results.append(hits)
             finally:
                 store.close()
@@ -158,10 +179,6 @@ def retrieve_multi_kb(
             logger.warning("检索 KB collection %s 失败 (dim=%s): %s", collection_name, dimension, e)
 
     results = _rrf_fuse(per_kb_results, k=_RRF_K, topk=topk)
-
-    # 解析父块：子块命中 → 带上父块完整内容（M2 父子块召回）。
-    # 在 rerank 之前做：给 rerank 模型更完整的父块上下文。
-    results = _resolve_parent_chunks(results, session, config, kb_specs)
 
     return results
 
@@ -275,60 +292,41 @@ REWRITE_PROMPT = """你是一位查询改写助手。根据对话历史，把用
 
 def _resolve_parent_chunks(
     results: list[SearchResult],
-    session: Session,
-    config: VectorStoreConfig,
-    kb_specs: list[tuple[int, str, int, int]],
+    store: VectorStore,
+    knowledge_scope_tags: list[str],
+    level: int = 0,
+    is_admin: bool = False,
+    document_ids: list[str] | None = None,
 ) -> list[SearchResult]:
-    """解析父子块：子块命中 → 用 parent_id 查父块完整内容替换子块 text。
-
-    参考 WeKnora PluginMerge.resolveParentChunks：
-    检索匹配的是子块（小粒度），通过 parent_id 找到父块（大粒度上下文），
-    用父块内容替换子块位置，让 LLM 看到完整上下文。
-    """
-    from bycall.vector_store.factory import create_vector_store
-
-    parent_ids: set[str] = set()
-    for r in results:
-        pid = r.fields.get("parent_id")
-        if pid and isinstance(pid, str) and pid:
-            parent_ids.add(pid)
-
-    if not parent_ids:
+    """只在命中 KB 内精确读父块，正文读取继承 ACL 与有效代过滤。"""
+    parent_ids = list(
+        dict.fromkeys(r.fields["parent_id"] for r in results if r.fields.get("parent_id"))
+    )
+    if not parent_ids or document_ids == []:
         return results
-
-    # 收集所有父块的 SearchRequest — 用 id 精确查询
-    parent_map: dict[str, str] = {}  # parent_id → full_text
-    # 为每个 KB collection 建查询（父块可能在多个 collection）
-    for _kb_id, collection_name, dimension, _embedding_model_id in kb_specs:
-        store = create_vector_store(config, dimension=dimension)
-        try:
-            store.open(collection_name)
-            for pid in list(parent_ids):
-                try:
-                    # 用 id 精确查父块（用 FTS 搜 id 或直接 get）
-                    hits = store.search(
-                        SearchRequest(
-                            full_text=pid,
-                            filters=[FilterCondition(field="chunk_type", op="eq", value="parent")],
-                            topk=1,
-                            output_fields=["text", "chunk_type"],
-                        )
-                    )
-                    for hit in hits:
-                        if hit.fields.get("chunk_type") == "parent":
-                            parent_map[pid] = hit.text
-                            parent_ids.discard(pid)
-                except Exception:
-                    continue
-        finally:
-            store.close()
-
-    # 替换子块 text 为父块内容
+    filters = build_acl_filters(
+        PolicySubject(
+            is_admin=is_admin,
+            knowledge_scope_tags=knowledge_scope_tags,
+            level=level,
+        )
+    )
+    filters.append(FilterCondition(field="chunk_type", op="match", value="parent"))
+    # 只允许命中文档的同一代父块，防止伪造 parent_id 指向另一文档。
+    hit_docs = list({str(r.fields["doc_id"]) for r in results if r.fields.get("doc_id")})
+    if document_ids is not None:
+        hit_docs = [id_ for id_ in hit_docs if id_ in document_ids]
+    if not hit_docs:
+        return results
+    filters.append(FilterCondition(field="doc_id", op="in", values=hit_docs))
+    parents = {p.id: p for p in store.get(parent_ids, filters=filters)}
     for r in results:
-        pid = r.fields.get("parent_id")
-        if pid and isinstance(pid, str) and pid in parent_map:
-            r.text = parent_map[pid]
-
+        parent = parents.get(r.fields.get("parent_id"))
+        if parent is None or parent.fields.get("doc_id") != r.fields.get("doc_id"):
+            continue
+        r.fields["matched_child_id"] = r.id
+        r.fields["evidence_id"] = parent.id
+        r.text = parent.text
     return results
 
 
@@ -380,20 +378,21 @@ def _rrf_fuse(
     if not per_kb_results:
         return []
 
-    rrf_scores: dict[str, float] = {}
-    best: dict[str, SearchResult] = {}
+    rrf_scores: dict[tuple, float] = {}
+    best: dict[tuple, SearchResult] = {}
 
     for hits in per_kb_results:
         for rank, result in enumerate(hits, start=1):
-            rrf_scores[result.id] = rrf_scores.get(result.id, 0.0) + 1.0 / (k + rank)
+            key = (result.fields.get("kb_id"), result.id)
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k + rank)
             # 首次出现时记录该 doc 的内容；后续命中只累加分。
-            best.setdefault(result.id, result)
+            best.setdefault(key, result)
 
     # 按 RRF 分降序，取 topk。返回的 SearchResult 用 RRF 分覆盖原 score。
     ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:topk]
     return [
         SearchResult(
-            id=doc_id,
+            id=best[doc_id].id,
             score=score,
             text=best[doc_id].text,
             fields=best[doc_id].fields,

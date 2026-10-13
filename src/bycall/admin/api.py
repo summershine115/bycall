@@ -3413,9 +3413,24 @@ def list_kb_chunks(
     store = create_vector_store(get_settings().vector_store, dimension=kb.dimension)
     try:
         store.open(kb.collection_name)
-        filters = []
+        from bycall.rag.publication import visible_generations
+
+        allowed = visible_generations(session, kb_id, ["*"], 0, True)
         if doc_id:
-            filters.append(FilterCondition(field="doc_id", op="=", value=doc_id))
+            matching = [
+                d
+                for d in session.exec(Document.select_by_kb(kb_id)).all()
+                if f"doc_{d.id}" == doc_id
+            ]
+            if matching:
+                from bycall.rag.publication import read_manifest
+
+                doc_id = read_manifest(session, matching[0].id)["active"]
+        if not allowed:
+            return KBChunkListResult(kb_id=kb_id, doc_id=doc_id, total=0, items=[])
+        filters = [FilterCondition(field="doc_id", op="in", values=allowed)]
+        if doc_id:
+            filters.append(FilterCondition(field="doc_id", op="match", value=doc_id))
         dummy_vec = [0.0] * kb.dimension
         req = SearchRequest(
             vector=dummy_vec,
@@ -3505,8 +3520,11 @@ def list_document_chunks(
     _admin: None = Depends(_require_admin),
 ) -> KBChunkListResult:
     """列出指定文档的所有切块。"""
-    _get_document_or_404(session, doc_id)
+    doc = _get_document_or_404(session, doc_id)
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不属于该知识库")
     from bycall.config import get_settings
+    from bycall.rag.publication import read_manifest
     from bycall.vector_store.factory import create_vector_store
     from bycall.vector_store.models import FilterCondition, SearchRequest
 
@@ -3515,10 +3533,10 @@ def list_document_chunks(
     try:
         store.open(kb.collection_name)
         dummy_vec = [0.0] * kb.dimension
-        doc_id_str = f"doc_{doc_id}"
+        doc_id_str = read_manifest(session, doc_id)["active"]
         req = SearchRequest(
             vector=dummy_vec,
-            filters=[FilterCondition(field="doc_id", op="=", value=doc_id_str)],
+            filters=[FilterCondition(field="doc_id", op="match", value=doc_id_str)],
             topk=limit,
             output_fields=[
                 "text",

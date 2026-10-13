@@ -493,3 +493,91 @@ def test_embedding_failure_writes_nothing(rag_env, failure):
         assert not retrieve_context(store, "秘密", ["*"], query_vector=[1.0] * DIM)
     finally:
         store.close()
+
+
+def test_parent_expansion_exact_acl_and_same_document(rag_env):
+    """伪造父 ID、高密级父块、相同 ID 的其他库不能越过授权读取正文。"""
+    from bycall.rag.retrieve import _resolve_parent_chunks
+    from bycall.vector_store.models import ACLMetadata, Chunk
+
+    store = create_vector_store(get_settings().vector_store)
+    store.open("knowledge")
+    try:
+        chunks = [
+            Chunk(
+                id="safe_parent",
+                text="完整上下文",
+                vector=[0.0] * DIM,
+                fields={"source": "public", "doc_id": "good", "chunk_type": "parent"},
+                acl=ACLMetadata(tenant_id="default", level=0),
+            ),
+            Chunk(
+                id="secret_parent",
+                text="高密级正文",
+                vector=[0.0] * DIM,
+                fields={"source": "public", "doc_id": "good", "chunk_type": "parent"},
+                acl=ACLMetadata(tenant_id="default", level=3),
+            ),
+            Chunk(
+                id="other_parent",
+                text="另一文档",
+                vector=[0.0] * DIM,
+                fields={"source": "public", "doc_id": "other", "chunk_type": "parent"},
+                acl=ACLMetadata(tenant_id="default", level=0),
+            ),
+        ]
+        store.upsert(chunks)
+        store.flush()
+        hits = [
+            SearchResult(
+                id=f"child{i}",
+                text="子块",
+                score=1.0,
+                fields={"doc_id": "good", "source": "public", "parent_id": pid, "kb_id": 1},
+            )
+            for i, pid in enumerate(["safe_parent", "secret_parent", "other_parent", "missing"])
+        ]
+        resolved = _resolve_parent_chunks(hits, store, ["public"], document_ids=["good"])
+        assert [r.text for r in resolved] == ["完整上下文", "子块", "子块", "子块"]
+        assert resolved[0].fields["evidence_id"] == "safe_parent"
+        assert resolved[0].fields["matched_child_id"] == "child0"
+        # 授权判定阶段不读取正文；后续正文 fetch 仅含 safe_parent。
+        original = store._collection.fetch
+        store._collection.fetch = MagicMock(wraps=original)
+        parents = store.get(
+            ["safe_parent", "secret_parent"],
+            filters=[
+                __import__(
+                    "bycall.vector_store.models", fromlist=["FilterCondition"]
+                ).FilterCondition(field="level", op="lte", value=0)
+            ],
+        )
+        assert [p.id for p in parents] == ["safe_parent"]
+        calls = store._collection.fetch.call_args_list
+        assert calls[0].kwargs["output_fields"] == ["level"]
+        assert calls[1].args[0] == ["safe_parent"]
+    finally:
+        store.close()
+
+
+def test_parent_placeholders_never_enter_recall(rag_env):
+    store, pipeline = _make_store_and_pipeline(rag_env)
+    try:
+        outcome = pipeline.ingest_text(
+            "报价流程。" * 400,
+            source="public",
+            doc_id="pc",
+            config=ChunkingConfig(enable_parent_child=True, parent_size=500, child_size=100),
+        )
+        assert outcome.success
+        hits = retrieve_context(store, "报价", ["public"], query_vector=[1.0] * DIM, topk=20)
+        assert hits and all(r.fields["chunk_type"] == "child" for r in hits)
+        assert all(r.fields["parent_id"] for r in hits)
+    finally:
+        store.close()
+
+
+def test_fusion_keeps_same_chunk_id_in_distinct_kbs():
+    a = SearchResult(id="same", text="A", score=1.0, fields={"kb_id": 1})
+    b = SearchResult(id="same", text="B", score=1.0, fields={"kb_id": 2})
+    assert {r.text for r in _rrf_fuse([[a], [b]])} == {"A", "B"}

@@ -1033,3 +1033,31 @@ def test_reindex_statistics_do_not_accumulate_characters(client):
     after = client.get(f"/api/admin/knowledge-bases/{kb_id}").json()
     assert after["total_chars"] == before["total_chars"]
     assert after["chunk_count"] == before["chunk_count"]
+
+
+def test_parent_child_runtime_returns_expanded_evidence(client):
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    assert (
+        client.put(
+            f"/api/admin/knowledge-bases/{kb_id}",
+            json={"enable_parent_child": True, "parent_chunk_size": 600, "child_chunk_size": 128},
+        ).status_code
+        == 200
+    )
+    doc_id = _create_doc(client, kb_id, source="public", content="报价流程内容。" * 150).json()[
+        "document_id"
+    ]
+    _wait_for_ingest(client, kb_id, doc_id)
+    hits = _managed_hits(kb_id, ["public"])
+    assert hits and all(r.fields["kb_id"] == kb_id for r in hits)
+    assert all(r.fields.get("evidence_id") == r.fields["parent_id"] for r in hits)
+    assert any(len(r.text) > 100 for r in hits)
+    response = client.get(f"/api/admin/knowledge-bases/{kb_id}/documents/{doc_id}/chunks")
+    assert response.status_code == 200
+    assert response.json()["total"] > 0
+    other = _create_kb(client, mid, name="另一个库")
+    assert (
+        client.get(f"/api/admin/knowledge-bases/{other}/documents/{doc_id}/chunks").status_code
+        == 404
+    )

@@ -324,3 +324,21 @@ def test_search_requires_vector_or_fts(tmp_zvec_dir):
     with pytest.raises(ValueError):
         store.search(SearchRequest(topk=3))
     store.close()
+
+
+@pytest.mark.parametrize("op", ["eq", "=", "unknown"])
+def test_unknown_filter_operator_fails_closed(op):
+    from bycall.vector_store.models import FilterCondition
+
+    with pytest.raises(ValueError, match="操作符"):
+        FilterCondition(field="source", op=op, value="public")
+
+
+def test_mutated_filter_operator_is_revalidated():
+    from bycall.vector_store.models import FilterCondition
+    from bycall.vector_store.zvec_store import ZvecStore
+
+    condition = FilterCondition(field="source", op="match", value="public")
+    condition.op = "eq"
+    with pytest.raises(ValueError):
+        ZvecStore._build_filter([condition])
