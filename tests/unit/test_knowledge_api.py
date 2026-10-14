@@ -992,7 +992,9 @@ def test_unpublished_generation_survives_cleanup_failure_without_visibility(clie
 
     mid = _create_embedding_model(client)
     kb_id = _create_kb(client, mid)
-    doc_id = _create_doc(client, kb_id, source="public").json()["document_id"]
+    doc_id = _create_doc(client, kb_id, source="public", content="报价流程内容").json()[
+        "document_id"
+    ]
     _wait_for_ingest(client, kb_id, doc_id)
     with session_scope() as session:
         doc = session.get(Document, doc_id)
@@ -1061,3 +1063,98 @@ def test_parent_child_runtime_returns_expanded_evidence(client):
         client.get(f"/api/admin/knowledge-bases/{other}/documents/{doc_id}/chunks").status_code
         == 404
     )
+
+
+def test_managed_multi_kb_rerank_reaches_deeper_relevant_candidates(client, monkeypatch):
+    """实际 zvec 多库召回后，统一重排能保留相关库超过首条的候选。"""
+    from bycall.db import session_scope
+    from bycall.governance.models import KnowledgeBase
+    from bycall.llm.base import RankResult
+    from bycall.rag.retrieve import retrieve_multi_kb
+
+    mid = _create_embedding_model(client)
+    specs = []
+    for k in range(3):
+        kb_id = _create_kb(client, mid, name=f"质量库{k}")
+        for i in range(6 if k == 0 else 1):
+            content = f"报价流程步骤{i}需要审批" if k == 0 else "菜单里有午餐套餐"
+            doc_id = _create_doc(
+                client, kb_id, title=f"条目{k}-{i}", source="public", content=content
+            ).json()["document_id"]
+            _wait_for_ingest(client, kb_id, doc_id)
+        with session_scope() as session:
+            kb = session.get(KnowledgeBase, kb_id)
+            specs.append((kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id))
+    model = MagicMock()
+    seen = []
+
+    def rerank(query, documents, top_n=None):
+        seen.extend(documents)
+        return [
+            RankResult(index=i, score=0.95 if "报价" in text else 0.01)
+            for i, text in enumerate(documents)
+        ]
+
+    model.rerank.side_effect = rerank
+    monkeypatch.setattr(resolver, "get_rerank_model", lambda *a, **kw: (None, model))
+    with session_scope() as session:
+        outcome = retrieve_multi_kb(
+            session,
+            get_settings().vector_store,
+            specs,
+            "报价流程",
+            ["public"],
+            topk=5,
+            candidate_topk=20,
+        )
+    assert outcome.status == "ok" and len(outcome) == 5
+    assert len(seen) == 8 and all("报价" in r.text for r in outcome)
+
+
+def test_query_rewrite_precedes_managed_retrieval_and_citations_match_context(client, monkeypatch):
+    """共享 runner 用同会话历史改写检索，原问题仍进入回答；引用只匹配最终片段。"""
+    import json
+
+    from langchain_core.messages import AIMessage
+
+    from bycall.agent import runner
+    from bycall.agent.graph import GraphResult
+    from bycall.agent.session_store import get_or_create_conversation, save_message
+    from bycall.db import session_scope
+    from bycall.governance.models import User
+
+    mid = _create_embedding_model(client)
+    kb_id = _create_kb(client, mid)
+    doc_id = _create_doc(client, kb_id, source="public", content="报价流程需要审批。" * 180).json()[
+        "document_id"
+    ]
+    _wait_for_ingest(client, kb_id, doc_id)
+    llm = MagicMock()
+    llm.invoke.return_value = AIMessage(content="报价流程是否需要审批")
+    captured = []
+
+    def answer_loop(**kwargs):
+        captured.extend(kwargs["messages"])
+        return GraphResult(answer="需要审批 [E1]", tool_calls_made=[])
+
+    monkeypatch.setattr(runner, "run_tool_loop", answer_loop)
+    with session_scope() as session:
+        user = session.exec(User.select_by_name("admin")).one()
+        conv = get_or_create_conversation(session, user.id, "api")
+        save_message(session, conv.id, "user", "介绍一下报价流程")
+        save_message(session, conv.id, "assistant", "这是报价流程")
+        result = runner.run_agent(
+            session=session, user=user, question="它需要审批吗", llm=llm, conversation_id=conv.id
+        )
+    assert llm.invoke.call_count == 1
+    trace = json.loads(result.context_trace)
+    assert trace["retrieval"]["query"] == "报价流程是否需要审批"
+    assert trace["retrieval"]["rewrite"] == "rewritten"
+    assert captured[-1].content == "它需要审批吗"
+    assert result.citations
+    knowledge = "\n".join(m.content for m in captured if "knowledge_context" in m.content)
+    for citation in result.citations:
+        assert citation["snippet"] in knowledge
+        assert citation["reference"] in knowledge
+        assert citation["doc_id"] and citation["kb_id"] == kb_id
+    assert trace["rag_chunks"] == len(result.citations)

@@ -1,16 +1,16 @@
-"""RAG 检索：按用户能力集（knowledge_scope_tags）预过滤检索 + 拼上下文。
+"""RAG 检索：授权候选 → 同一候选集重排 → 结构化状态与证据。
 
-检索策略（架构红线 #1：权限预过滤 + 混合检索）：
-- vector + full_text 同时给出 → zvec 内部自动挂 RrfReRanker 融合两路（KB 内融合）。
-- 跨 KB 合并用 Reciprocal Rank Fusion（按排名融合，不按原始 score），解决不同
-  collection / 不同维度下 score 量纲不可比的问题。
-- 每个 KB 用各自绑定的 embedding 模型把 query 向量化（per-KB dim），embed 失败则
-  该 KB 降级为纯 FTS。
+RRF 只融合同一 KB 内向量/FTS 两路；跨 KB 优先使用已配置 reranker。
+未配置或调用失败时使用统一候选集上的关键词排序并明确降级。
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import re
+from collections import Counter
+from itertools import zip_longest
 
 from sqlmodel import Session
 
@@ -21,6 +21,30 @@ from bycall.vector_store.base import VectorStore
 from bycall.vector_store.models import FilterCondition, SearchRequest, SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+class RetrievalOutcome(list):
+    """兼容既有列表消费者，同时保留无命中、故障和降级的区别。"""
+
+    def __init__(self, hits=(), *, status="not_requested", issues=None, candidates=0):
+        super().__init__(hits)
+        self.status = status
+        self.issues = issues or []
+        self.candidates = candidates
+        self.query = ""
+        self.rewrite_status = "not_requested"
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "has_evidence": bool(self),
+            "issues": self.issues,
+            "candidates": self.candidates,
+            "returned": len(self),
+            "query": self.query,
+            "rewrite": self.rewrite_status,
+        }
+
 
 # RRF 常数：业界标准值（Cormack et al. 2009）。k 越大，头部排名区分度越平缓。
 _RRF_K = 60
@@ -36,6 +60,7 @@ def retrieve_context(
     level: int = 0,
     is_admin: bool = False,
     document_ids: list[str] | None = None,
+    raise_errors: bool = False,
 ) -> list[SearchResult]:
     """按角色能力集预过滤检索（混合检索：向量 + FTS）。
 
@@ -84,6 +109,8 @@ def retrieve_context(
             )
         )
     except Exception as e:
+        if raise_errors:
+            raise
         logger.warning(
             "RAG 检索失败 (collection=%s, tags=%s): %s", collection_name, knowledge_scope_tags, e
         )
@@ -100,44 +127,29 @@ def retrieve_multi_kb(
     topk: int = 5,
     level: int = 0,
     is_admin: bool = False,
-) -> list[SearchResult]:
-    """跨多个 KB collection 检索，per-KB 混合检索后用 RRF 融合取 topk。
-
-    每个 KB：按 ``embedding_model_id`` resolve embed model → embed question 得该 KB 维度
-    的 query 向量 → open 该 KB 的 collection → 向量 + FTS 混合检索（zvec 内部 RRF 融合）
-    → 收集每个 KB 的 topk 候选 → 跨 KB 用 RRF 按排名融合 → 取最终 topk。
-
-    embed 失败（模型不存在 / 调用异常）→ 该 KB 降级为纯 FTS（记 warning，不中断）。
-
-    为什么用 RRF 而非 score 直排：不同 KB 的 collection 语料规模、词频分布、向量维度
-    都可能不同，原始 score 量纲不可比。RRF 只看排名 ``1/(k+rank)``，天然抹平量纲差异，
-    是跨打分体系融合的业界标准做法。
-
-    Args:
-        session: DB session（按 embedding_model_id 查 Model → resolve embed model）
-        config: VectorStoreConfig（读 data_dir / backend）
-        kb_specs: [(kb_id, collection_name, dimension, embedding_model_id), ...]
-        question: 用户问题
-        knowledge_scope_tags: 角色的知识域标签（ACL 预过滤）
-        topk: 最终合并后返回的条数
-
-    返回 RRF 融合后的 SearchResult 列表（score 字段被替换为 RRF 融合分）。
-    """
+    candidate_topk: int = 20,
+    candidate_max_total: int = 80,
+    min_rerank_score: float = 0.0,
+) -> RetrievalOutcome:
+    """每库扩大候选池后统一重排；故障和降级不可伪装成无命中。"""
+    from bycall.llm.resolver import get_rerank_model
+    from bycall.rag.publication import visible_generations
     from bycall.vector_store.factory import create_vector_store
 
     if not knowledge_scope_tags or not kb_specs:
-        return []
-
-    # 按 embedding_model_id 缓存 query 向量：同模型的多个 KB 共享一次 embed（API 调用最贵，
-    # N 个同模型 KB 从 N 次 embed 降为 1 次；resolve_embed_model 的 DB 查+构造也一并去重）。
-    query_vector_cache: dict[int, list[float] | None] = {}
-    per_kb_results: list[list[SearchResult]] = []
-    from bycall.rag.publication import visible_generations
-
-    for _kb_id, collection_name, dimension, embedding_model_id in kb_specs:
+        return RetrievalOutcome()
+    topk = max(1, min(topk, 50))
+    candidate_topk = max(topk, min(candidate_topk, 50))
+    candidate_max_total = max(topk, min(candidate_max_total, 200))
+    query_vector_cache = {}
+    per_kb_results = []
+    issues = []
+    attempted, failed = 0, 0
+    for kb_id, collection_name, dimension, embedding_model_id in kb_specs:
+        attempted += 1
         try:
             document_ids = visible_generations(
-                session, _kb_id, knowledge_scope_tags, level, is_admin
+                session, kb_id, knowledge_scope_tags, level, is_admin
             )
             if not document_ids:
                 continue
@@ -146,41 +158,125 @@ def retrieve_multi_kb(
                     session, embedding_model_id, question, dimension
                 )
             query_vector = query_vector_cache[embedding_model_id]
-
+            if query_vector is None:
+                issues.append({"kb_id": kb_id, "stage": "embedding", "code": "fts_fallback"})
             store = create_vector_store(config, dimension=dimension)
-            store.open(collection_name)
             try:
+                store.open(collection_name)
                 hits = retrieve_context(
                     store=store,
                     question=question,
                     query_vector=query_vector,
                     knowledge_scope_tags=knowledge_scope_tags,
                     collection_name=collection_name,
-                    topk=topk,
+                    topk=candidate_topk,
                     level=level,
                     is_admin=is_admin,
                     document_ids=document_ids,
+                    raise_errors=True,
                 )
                 for hit in hits:
-                    hit.fields["kb_id"] = _kb_id
+                    hit.fields["kb_id"] = kb_id
                     hit.fields["collection"] = collection_name
-                hits = _resolve_parent_chunks(
-                    hits,
-                    store,
-                    knowledge_scope_tags,
-                    level,
-                    is_admin,
-                    document_ids,
-                )
+                    hit.fields["score_kind"] = "rank"
+                try:
+                    hits = _resolve_parent_chunks(
+                        hits,
+                        store,
+                        knowledge_scope_tags,
+                        level,
+                        is_admin,
+                        document_ids,
+                    )
+                except Exception:
+                    logger.exception("父块读取失败，保留授权子块: kb=%s", kb_id)
+                    issues.append({"kb_id": kb_id, "stage": "parent", "code": "child_fallback"})
                 per_kb_results.append(hits)
             finally:
                 store.close()
-        except Exception as e:
-            logger.warning("检索 KB collection %s 失败 (dim=%s): %s", collection_name, dimension, e)
+        except Exception:
+            failed += 1
+            logger.exception("检索知识库失败: kb=%s", kb_id)
+            issues.append({"kb_id": kb_id, "stage": "search", "code": "unavailable"})
 
-    results = _rrf_fuse(per_kb_results, k=_RRF_K, topk=topk)
+    candidates = _pool_candidates(per_kb_results, candidate_max_total)
+    ranked = []
+    if candidates:
+        try:
+            configured = get_rerank_model(session, timeout=10.0)
+            if configured is None:
+                raise LookupError("未配置 reranker")
+            ranked = rerank_results(configured[1], question, candidates, raise_errors=True)
+            ranked = [r for r in ranked if r.score > 0 and r.score >= min_rerank_score][:topk]
+        except Exception as exc:
+            logger.warning("统一重排降级为关键词排序: %s", exc)
+            issues.append({"stage": "rerank", "code": "lexical_fallback"})
+            ranked = _lexical_rank(question, candidates)[:topk]
+    outcome = RetrievalOutcome(
+        ranked,
+        status=(
+            "error"
+            if attempted and failed == attempted
+            else "degraded"
+            if issues
+            else "ok"
+            if ranked
+            else "no_hit"
+        ),
+        issues=issues,
+        candidates=len(candidates),
+    )
+    outcome.query = question
+    return outcome
 
-    return results
+
+def _pool_candidates(per_kb_results: list[list[SearchResult]], limit: int) -> list[SearchResult]:
+    """有界轮转收集各库候选，父块去重先于统一评分，避免某库先耗尽预算。"""
+    seen = set()
+    out = []
+    for row in zip_longest(*per_kb_results):
+        for hit in row:
+            if hit is None:
+                continue
+            key = (hit.fields.get("kb_id"), hit.fields.get("evidence_id") or hit.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(hit)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _tokens(text: str) -> list[str]:
+    """降级检索使用确定性分词：英文词与中文相邻双字，不假装语义模型。"""
+    out = re.findall(r"[a-z0-9_]+", text.lower())
+    for part in re.findall(r"[\u4e00-\u9fff]+", text):
+        out.extend([part] if len(part) == 1 else [part[i : i + 2] for i in range(len(part) - 1)])
+    return out
+
+
+def _lexical_rank(query: str, results: list[SearchResult]) -> list[SearchResult]:
+    """在同一候选语料上计算 BM25；无关键词交集的候选不作为证据。"""
+    terms = set(_tokens(query))
+    docs = [Counter(_tokens(r.text)) for r in results]
+    lengths = [sum(d.values()) for d in docs]
+    avg_length = sum(lengths) / max(1, len(docs)) or 1.0
+    out = []
+    for result, doc, length in zip(results, docs, lengths, strict=True):
+        score = 0.0
+        for term in terms:
+            freq = doc[term]
+            if not freq:
+                continue
+            df = sum(term in d for d in docs)
+            idf = math.log(1 + (len(docs) - df + 0.5) / (df + 0.5))
+            score += idf * freq * 2.2 / (freq + 1.2 * (0.25 + 0.75 * length / avg_length))
+        if score > 0:
+            result.score = score
+            result.fields["score_kind"] = "lexical"
+            out.append(result)
+    return sorted(out, key=lambda r: r.score, reverse=True)
 
 
 def rerank_results(
@@ -188,6 +284,7 @@ def rerank_results(
     query: str,
     results: list[SearchResult],
     top_n: int | None = None,
+    raise_errors: bool = False,
 ) -> list[SearchResult]:
     """用 rerank 模型对搜索结果做精排（参考 WeKnora PluginRerank）。
 
@@ -205,10 +302,25 @@ def rerank_results(
     if top_n is None:
         top_n = len(results)
 
-    documents = [r.text for r in results]
+    documents = [r.text[:2000] for r in results]
     try:
         ranked: list[RankResult] = rerank_model.rerank(query, documents, top_n=top_n)
+        indices = [r.index for r in ranked]
+        if (
+            len(ranked) != min(top_n, len(results))
+            or len(set(indices)) != len(indices)
+            or any(
+                not isinstance(rr.index, int)
+                or not 0 <= rr.index < len(results)
+                or not math.isfinite(rr.score)
+                or not 0 <= rr.score <= 1
+                for rr in ranked
+            )
+        ):
+            raise ValueError("重排结果数量、索引或分数非法")
     except Exception as e:
+        if raise_errors:
+            raise
         logger.warning("Rerank 调用失败，回退原排序: %s", e)
         return results[:top_n]
 
@@ -217,8 +329,9 @@ def rerank_results(
         if 0 <= rr.index < len(results):
             r = results[rr.index]
             r.score = rr.score
+            r.fields["score_kind"] = "rerank"
             out.append(r)
-    return out
+    return sorted(out, key=lambda r: r.score, reverse=True)
 
 
 def rewrite_query(
@@ -265,7 +378,7 @@ def rewrite_query(
             ]
         )
         rewritten = str(resp.content).strip()
-        if rewritten and len(rewritten) >= 2:
+        if isinstance(resp.content, str) and 2 <= len(rewritten) <= 512:
             logger.debug("Query rewritten: %s → %s", question[:50], rewritten[:100])
             return rewritten
     except Exception as e:
@@ -348,7 +461,11 @@ def _embed_query(
     try:
         embed_model = resolve_embed_model(session, entity)
         vectors = embed_model.embed([question])
-        if not vectors:
+        if (
+            len(vectors) != 1
+            or len(vectors[0]) != dimension
+            or not all(math.isfinite(v) for v in vectors[0])
+        ):
             return None
         return vectors[0]
     except Exception as e:

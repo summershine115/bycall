@@ -70,6 +70,8 @@ class ChatResponse(BaseModel):
     tool_calls: list[dict] = Field(default_factory=list)
     citations: list[dict] = Field(default_factory=list)
     context_trace: str = ""
+    retrieval_status: str = "not_requested"
+    retrieval_diagnostics: list[dict] = Field(default_factory=list)
 
 
 class ChatMessageOut(BaseModel):
@@ -212,6 +214,8 @@ def _to_response(result, conv_id: int | None) -> ChatResponse:
         tool_calls=result.tool_calls,
         citations=result.citations,
         context_trace=result.context_trace,
+        retrieval_status=getattr(result, "retrieval_status", "not_requested"),
+        retrieval_diagnostics=getattr(result, "retrieval_diagnostics", []),
     )
 
 

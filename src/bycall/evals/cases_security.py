@@ -114,6 +114,9 @@ def _sec_retrieval_kb_level_acl(ctx) -> None:
         topk=5,
         level=0,
         is_admin=False,
+        candidate_topk=20,
+        candidate_max_total=80,
+        min_rerank_score=0.0,
     ):
         captured.append(list(kb_specs))
         return []

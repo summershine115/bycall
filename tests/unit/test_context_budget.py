@@ -24,7 +24,10 @@ from bycall.agent.context_budget import (
 def _hit(score: float, text: str, source: str = "kb") -> SimpleNamespace:
     """构造一个类 SearchResult 的测试对象（id/score/text/fields）。"""
     return SimpleNamespace(
-        id=f"id-{score}-{text[:4]}", score=score, text=text, fields={"source": source}
+        id=f"id-{score}-{text[:4]}",
+        score=score,
+        text=text,
+        fields={"source": source, "score_kind": "rerank"},
     )
 
 
@@ -120,16 +123,18 @@ class TestBudgetAndFormatRag:
         retrieved = [_hit(1.0, "a" * 600), _hit(0.9, "b" * 600)]
         budget = ContextBudget(rag_context_max_chars=1000)
         _, report = budget_and_format_rag(retrieved, budget)
-        assert report.rag_kept_chunks == 1
-        assert report.rag_over_budget_dropped == 1
+        assert report.rag_kept_chunks == 2
+        assert report.rag_truncated_chunks == 1
+        assert report.rag_chars <= 1000
 
-    def test_first_chunk_always_kept_even_over_budget(self):
+    def test_first_chunk_is_truncated_to_total_budget(self):
         # 单条即超总预算 → 仍保留首条（避免全空，保可用性）
         retrieved = [_hit(1.0, "a" * 5000)]
         budget = ContextBudget(rag_context_max_chars=100)
         ctx, report = budget_and_format_rag(retrieved, budget)
         assert report.rag_kept_chunks == 1
-        assert ctx  # 非空
+        assert ctx and len(ctx) <= 100
+        assert report.rag_truncated_chunks == 1
 
     def test_report_records_min_kept_score(self):
         retrieved = [_hit(1.0, "a"), _hit(0.3, "b")]
@@ -143,8 +148,9 @@ class TestBudgetAndFormatRag:
         large = ContextBudget(rag_context_max_chars=5000)
         _, r_small = budget_and_format_rag(retrieved, small)
         _, r_large = budget_and_format_rag(retrieved, large)
-        assert r_small.rag_kept_chunks == 1
-        assert r_large.rag_kept_chunks == 2
+        assert r_small.rag_truncated_chunks == 1
+        assert r_large.rag_truncated_chunks == 0
+        assert r_large.rag_chars > r_small.rag_chars
 
 
 class TestPoisoningScan:

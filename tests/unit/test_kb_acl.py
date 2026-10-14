@@ -68,6 +68,7 @@ def test_retrieve_filters_kbs_by_visible_ids(db_session, monkeypatch):
         topk=5,
         level=0,
         is_admin=False,
+        **kwargs,
     ):
         captured.append(list(kb_specs))
         return []

@@ -3505,7 +3505,14 @@ def search_kb(
         )
         for r in results
     ]
-    return KBSearchResult(kb_id=kb_id, question=payload.question, results=items, total=len(items))
+    return KBSearchResult(
+        kb_id=kb_id,
+        question=payload.question,
+        results=items,
+        total=len(items),
+        retrieval_status=results.status,
+        diagnostics=results.issues,
+    )
 
 
 @router.get(

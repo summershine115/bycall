@@ -750,6 +750,8 @@ class KBSearchResult(BaseModel):
     question: str
     results: list[KBSearchResultItem]
     total: int
+    retrieval_status: str = "not_requested"
+    diagnostics: list[dict] = Field(default_factory=list)
 
 
 # ============ Batch 批量操作 ============

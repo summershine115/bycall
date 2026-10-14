@@ -61,7 +61,7 @@ from bycall.observability.metrics import (
     TURN_FAILURES,
     TURNS_TOTAL,
 )
-from bycall.rag.retrieve import build_rag_messages
+from bycall.rag.retrieve import RetrievalOutcome, build_rag_messages, rewrite_query
 from bycall.tools.gateway import filter_tools, to_langchain_tools
 from bycall.tools.registry import get_tool
 
@@ -132,6 +132,8 @@ class AgentResult:
     tool_calls: list[dict]  # 本次触发的工具调用记录（name, args），审计透明化
     citations: list[dict] = field(default_factory=list)  # M6：RAG 引用元数据（来源卡片用）
     context_trace: str = ""  # 本轮上下文快照 JSON（system/RAG/记忆/摘要），排障用
+    retrieval_status: str = "not_requested"
+    retrieval_diagnostics: list[dict] = field(default_factory=list)
 
 
 def _observe_turn(decision: str, start: float) -> None:
@@ -214,6 +216,7 @@ def _run_agent_impl(
         )
     # 1-4. 治理前置管线（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌）。
     decision, payload = _prepare_turn(
+        llm=llm,
         session=session,
         user=user,
         question=question,
@@ -294,6 +297,7 @@ def _result(
     citations: list[dict] | None = None,
     context_trace: str = "",
 ) -> AgentResult:
+    retrieval = json.loads(context_trace or "{}").get("retrieval", {})
     return AgentResult(
         answer=answer,
         decision=decision,
@@ -304,6 +308,8 @@ def _result(
         tool_calls=tool_calls or [],
         citations=citations or [],
         context_trace=context_trace,
+        retrieval_status=retrieval.get("status", "not_requested"),
+        retrieval_diagnostics=retrieval.get("issues", []),
     )
 
 
@@ -389,6 +395,31 @@ def _prepare_agent_messages(
     # RAG 预算化（缺陷 1）：per-chunk 截断 + 跨 KB 去重 + 低相关过滤 + 相关性标注 +
     # 投毒软降级。多轮/单轮两路共用同一预算化产物（消除旧的"裸拼接抄两份"缝隙）。
     rag_context, rag_report = budget_and_format_rag(retrieved, budget)
+    retrieval = (
+        retrieved.to_dict()
+        if isinstance(retrieved, RetrievalOutcome)
+        else {
+            "status": "ok" if retrieved else "no_hit",
+            "has_evidence": bool(retrieved),
+            "issues": [],
+        }
+    )
+    if retrieval["status"] in ("degraded", "error"):
+        notice = (
+            "知识检索暂不可用。" if retrieval["status"] == "error" else "知识检索已降级或部分失败。"
+        )
+        rag_context = (
+            notice
+            + "现有资料可能不完整；回答应说明此限制，无证据时不可声称有知识库依据。\n"
+            + rag_context
+        )
+    elif not rag_report.evidence:
+        rag_context = "没有可用的知识证据；不要编造知识库结论或引用，可说明资料不足。"
+    else:
+        rag_context = (
+            "引用资料时使用对应 [E编号]；来源列表表示提供的证据，不代表逐句事实核验。\n"
+            + rag_context
+        )
     if conversation_id is not None:
         raw_messages = build_conversation_messages(
             system_prompt=cap.system_prompt,
@@ -414,13 +445,18 @@ def _prepare_agent_messages(
         )
     context_trace = build_context_trace(
         raw_messages=raw_messages,
-        retrieved=retrieved,
+        retrieved=rag_report.evidence,
         user_memories=user_memories,
         agent_memories=agent_memories,
         summary=summary,
         history=history,
         rag_report=rag_report,
     )
+    trace = json.loads(context_trace or "{}")
+    trace["retrieval"] = retrieval
+    trace["rag_candidates"] = len(retrieved)
+    trace["rag_evidence"] = _build_citations(rag_report.evidence)
+    context_trace = json.dumps(trace, ensure_ascii=False)
     return allowed_tool_specs, langchain_tools, _to_langchain_messages(raw_messages), context_trace
 
 
@@ -448,13 +484,13 @@ def _retrieve_across_kbs(
     """跨用户可见的全部 KB collection 检索（参考 WeKnora per-KB collection）。
 
     查全部 KB → 每个 KB 用各自绑定的 embedding 模型 embed query → 该 KB 的 collection
-    内做向量+FTS 混合检索（ACL 预过滤由统一 policy 产出）→ 跨 KB 用 RRF 融合取 topk。
+    内做向量+FTS 混合检索（ACL 预过滤由统一 policy 产出）→ 跨 KB 扩大候选池后统一重排（未配置/失败时关键词降级）。
 
     知识域为空（无权限）→ 不检索（默认隔离）。
     admin（tags=['*']）→ 搜全部 KB（source 不预过滤）。
     """
     if not cap.knowledge_scope_tags:
-        return []
+        return RetrievalOutcome()
 
     from bycall.config import get_settings
     from bycall.observability.metrics import RAG_RETRIEVAL_DURATION, RAG_RETRIEVED_CHUNKS
@@ -467,7 +503,7 @@ def _retrieve_across_kbs(
         visible_ids = set(cap.visible_kb_ids)
         kbs = [kb for kb in kbs if kb.id in visible_ids]
     if not kbs:
-        return []
+        return RetrievalOutcome()
 
     kb_specs = [(kb.id, kb.collection_name, kb.dimension, kb.embedding_model_id) for kb in kbs]
 
@@ -479,6 +515,9 @@ def _retrieve_across_kbs(
         question=question,
         knowledge_scope_tags=cap.knowledge_scope_tags,
         topk=budget.rag_topk,
+        candidate_topk=budget.rag_candidate_topk,
+        candidate_max_total=budget.rag_candidate_max_total,
+        min_rerank_score=budget.rag_min_rerank_score,
         level=cap.level,
         is_admin=cap.is_admin,
     )
@@ -491,10 +530,9 @@ def _retrieve_across_kbs(
 def _build_citations(retrieved: list) -> list[dict]:
     """从检索结果构造引用元数据（M6 来源卡片用）。
 
-    每条暴露 title/source/url/snippet，最终卡片形状（去重/截断/跳过无标题）由
-    ``im_handler._build_msg_item`` 裁剪——runner 只做机械映射，不丢任何来源。
-    ``SearchResult.fields`` 实际回显字段由向量库 output_fields 决定（至少含 source），
-    这里一律用 ``.get`` 容错缺失。
+    调用方必须传入预算化后实际注入的 evidence；snippet 与最终截断文本一致。
+    稳定 chunk/doc/KB ID 和本轮 E 编号支持追溯，来源列表不代表逐句事实核验。
+    最终卡片由 ``im_handler._build_msg_item`` 裁剪，缺失字段按空值兼容。
     """
     out: list[dict] = []
     for r in retrieved:
@@ -505,6 +543,11 @@ def _build_citations(retrieved: list) -> list[dict]:
                 "source": str(fields.get("source") or ""),
                 "url": str(fields.get("url") or ""),
                 "snippet": str(getattr(r, "text", "") or ""),
+                "reference": str(fields.get("reference") or ""),
+                "chunk_id": str(fields.get("evidence_id") or getattr(r, "id", "")),
+                "matched_chunk_id": str(getattr(r, "id", "")),
+                "doc_id": str(fields.get("doc_id") or ""),
+                "kb_id": fields.get("kb_id"),
             }
         )
     return out
@@ -532,6 +575,7 @@ def _prepare_turn(
     conversation_id: int | None,
     im_user_id: str,
     agent_id: int | None = None,
+    llm: BaseChatModel | None = None,
 ) -> tuple[str, AgentResult | _PreparedTurn]:
     """步骤 1-4：能力集 → RAG 预过滤 → 工具过滤 → 运行时上下文 + 消息 + 能力/审批令牌。
 
@@ -586,7 +630,25 @@ def _prepare_turn(
 
     # 2. RAG 检索（ACL 预过滤）。
     with _tracer.start_as_current_span("rag.retrieve") as _span:
-        retrieved = _retrieve_across_kbs(session, question, cap)
+        search_question = question
+        history = []
+        has_kbs = bool(session.exec(KnowledgeBase.select_all()).first())
+        if llm is not None and conversation_id is not None and has_kbs and cap.knowledge_scope_tags:
+            history = load_message_history(
+                session, conversation_id, budget=resolve_budget(cap.context_budget_overrides)
+            )
+            if history:
+                search_question = rewrite_query(llm, question, history_messages=history)
+        retrieved = _retrieve_across_kbs(session, search_question, cap)
+        if isinstance(retrieved, RetrievalOutcome):
+            retrieved.query = search_question
+            retrieved.rewrite_status = (
+                "rewritten"
+                if search_question != question
+                else "original_or_fallback"
+                if history
+                else "not_requested"
+            )
         _span.set_attribute("bycall.retrieved", len(retrieved))
         _span.set_attribute("bycall.has_scope", bool(cap.knowledge_scope_tags))
 
@@ -638,6 +700,21 @@ def _prepare_turn(
     )
 
 
+def _retrieval_notice(retrieved: list) -> str:
+    """由运行时披露检索故障，不依赖模型自觉承认资料缺失。"""
+    if not isinstance(retrieved, RetrievalOutcome):
+        return ""
+    if retrieved.status == "error":
+        return "\n\n知识检索暂不可用，本次回答没有知识库证据。"
+    if retrieved.status == "degraded":
+        if not retrieved:
+            return "\n\n知识检索已降级，本次未取得可用的知识库证据。"
+        if any(i.get("stage") == "search" for i in retrieved.issues):
+            return "\n\n部分知识库检索失败，参考资料可能不完整。"
+        return "\n\n本次知识检索使用降级结果，参考资料可能不完整。"
+    return ""
+
+
 def _finalize_turn(
     *,
     session: Session,
@@ -652,6 +729,7 @@ def _finalize_turn(
     conversation_id: int | None,
 ) -> AgentResult:
     """步骤 6-7：会话持久化 + 审计落库 + 构造结果（两路共用，防行为漂移——缝隙 #6）。"""
+    answer += _retrieval_notice(retrieved)
     # 6. 会话持久化：存 user + assistant 消息 + 压缩检查。
     if conversation_id is not None:
         save_message(session, conversation_id, "user", question)
@@ -684,7 +762,7 @@ def _finalize_turn(
         retrieved=len(retrieved),
         user=user,
         tool_calls=graph_result.tool_calls_made,
-        citations=_build_citations(retrieved),
+        citations=json.loads(context_trace or "{}").get("rag_evidence", []),
         context_trace=context_trace,
     )
 
@@ -749,6 +827,7 @@ async def _run_agent_stream_impl(
 
     # 1-4. 治理前置管线（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌）。
     decision, payload = _prepare_turn(
+        llm=llm,
         session=session,
         user=user,
         question=question,
@@ -849,6 +928,9 @@ async def _run_agent_stream_impl(
         context_trace=context_trace,
         conversation_id=conversation_id,
     )
+    notice = _retrieval_notice(retrieved)
+    if notice:
+        yield notice, False, None
     yield "", True, result
 
 

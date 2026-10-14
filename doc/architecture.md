@@ -82,3 +82,6 @@
 
 向量写入成功不等于已发布；数据面召回前按 SQL 当前文档 ACL 与有效索引代白名单过滤。
 部分失败和中断索引不可见，ACL 更新失败恢复旧代。实现与边界见 [ADR-0016](decisions/0016-rag-publication-and-evidence.md)。
+
+RAG 统一候选重排、多轮改写、检索状态与实际证据引用已接入共享 runner；
+分数语义、降级模式及部署验证要求见 [RAG 指南](guides/rag.md)。

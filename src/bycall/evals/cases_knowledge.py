@@ -1,10 +1,11 @@
 """知识质量评测用例（T2.1 第一类）。
 
-当前离线样例覆盖 RAG 注入预算化（T1.9）的四项关键质量属性：
+离线样例覆盖 RAG 注入预算化（T1.9）与真实向量召回发布链路：
 - 单块截断：超长 chunk 不整块进 LLM 上下文；
 - 跨 KB 去重：近似重复内容只保留一条；
 - 投毒软降级：疑似提示注入内容被标注 + 留痕；
-- 引用元数据：检索命中带来源，供 citation / 审计追溯。
+- 引用元数据：实际注入的证据带来源与截断片段；
+- 真实 zvec：已知答案、多库竞争、无答案与未发布代隔离。
 真实模型评分（LLM-as-judge）留到接入真实模型后扩展——框架已支持，只需新增用例。
 """
 
@@ -62,18 +63,24 @@ def _knowledge_poisoning_downgrade(_ctx) -> None:
 
 
 def _knowledge_citations(_ctx) -> None:
-    """检索命中必须带来源元数据，支撑「引用覆盖率」与审计追溯。"""
-    citations = _build_citations(
-        [
-            _result("报价流程", 0.9),
-            SearchResult(id="2", score=0.5, text="退款规则", fields={}),
-        ]
-    )
+    """引用只包含实际注入的截断证据，丢弃和重复候选不可附来源。"""
+    from bycall.agent.context_budget import ContextBudget
 
-    assert_true(len(citations) == 2, "引用条数与命中数不一致", citations=citations)
+    candidates = [
+        _result("报价流程" * 100, 0.9),
+        _result("报价流程" * 100, 0.8, doc_id="duplicate"),
+        _result("退款规则", 0.7, doc_id="dropped"),
+    ]
+    context, report = budget_and_format_rag(
+        candidates, ContextBudget(rag_topk=1, rag_chunk_max_chars=80, rag_context_max_chars=100)
+    )
+    citations = _build_citations(report.evidence)
+    assert_true(len(citations) == 1, "引用包含未注入片段", citations=citations)
     assert_true(citations[0]["source"] == "sales", "来源字段丢失", citation=citations[0])
-    assert_true(citations[0]["snippet"] == "报价流程", "摘要字段丢失", citation=citations[0])
-    assert_true(citations[1]["source"] == "", "缺失字段应容错为空串", citation=citations[1])
+    assert_true(citations[0]["snippet"] in context, "引用不匹配注入文本", citation=citations[0])
+    assert_true(citations[0]["snippet"] != candidates[0].text, "引用未应用截断")
+    assert_true(citations[0]["reference"] == "E1", "证据编号丢失")
+    assert_true(citations[0]["chunk_id"] == "doc_1", "证据 ID 丢失")
 
 
 CASES = [
@@ -105,8 +112,78 @@ CASES = [
         id="knowledge_citations",
         name="检索引用元数据",
         category="knowledge_quality",
-        description="每条命中带来源/摘要，支撑引用覆盖率统计",
+        description="引用仅含实际注入片段、来源与稳定证据 ID",
         run=_knowledge_citations,
         change_types=("retrieval",),
     ),
 ]
+
+
+def _knowledge_recall_and_publication(ctx) -> None:
+    """离线真实 zvec：已知相关项、多库无关竞争、无答案与未发布向量隔离。"""
+    from unittest.mock import patch
+
+    from bycall.config import VectorStoreConfig
+    from bycall.evals.harness import eval_session, zero_embed_model
+    from bycall.governance.models import Document, KnowledgeBase
+    from bycall.rag.ingest import IngestPipeline
+    from bycall.rag.publication import activate_generation, stage_generation
+    from bycall.rag.retrieve import retrieve_multi_kb
+    from bycall.vector_store.zvec_store import ZvecStore
+
+    config = VectorStoreConfig(data_dir=str(ctx.tmp_dir / "quality"), dimension=8)
+    embed = zero_embed_model()
+    with eval_session() as session:
+        specs = []
+        for k in range(2):
+            kb = KnowledgeBase(
+                name=f"eval{k}", embedding_model_id=1, dimension=8, collection_name=f"quality_{k}"
+            )
+            session.add(kb)
+            session.commit()
+            specs.append((kb.id, kb.collection_name, 8, 1))
+            doc = Document(
+                knowledge_base_id=kb.id, title="样本", source="public", status="completed"
+            )
+            session.add(doc)
+            session.commit()
+            generation = stage_generation(session, doc)
+            store = ZvecStore(config.data_dir, 8)
+            try:
+                pipeline = IngestPipeline(store, embed, kb.collection_name)
+                content = "报价流程需要审批后签约。" if k == 0 else "午餐菜单提供面条。"
+                assert_true(pipeline.ingest_text(content, "public", generation).success, "入库失败")
+                activate_generation(session, doc.id, generation)
+                session.commit()
+                abandoned = stage_generation(session, doc)
+                assert_true(
+                    pipeline.ingest_text("报价流程不需要审批。", "public", abandoned).success,
+                    "模拟未发布入库失败",
+                )
+            finally:
+                store.close()
+        with (
+            patch("bycall.rag.retrieve._embed_query", return_value=[1.0] * 8),
+            patch("bycall.llm.resolver.get_rerank_model", return_value=None),
+        ):
+            hits = retrieve_multi_kb(session, config, specs, "报价流程", ["public"])
+            assert_true(
+                len(hits) == 1 and "需要审批后签约" in hits[0].text,
+                "相关答案丢失或未发布向量污染",
+                hits=[h.text for h in hits],
+            )
+            absent = retrieve_multi_kb(session, config, specs, "维修保养", ["public"])
+            assert_true(not absent, "无答案查询却注入无关资料")
+            assert_true(absent.status == "degraded", "关键词降级状态未披露")
+
+
+CASES.append(
+    EvalCase(
+        id="knowledge_recall_publication",
+        name="真实召回与发布门",
+        category="knowledge_quality",
+        description="已知答案、多库竞争、无答案和失败代隔离",
+        run=_knowledge_recall_and_publication,
+        change_types=("retrieval",),
+    )
+)
