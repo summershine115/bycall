@@ -16,6 +16,7 @@
 ## 指南
 
 - [RAG 运行与验证](guides/rag.md)：索引发布、权限、降级排序、故障状态与引用边界。
+- [性能复核与验证](guides/performance.md)：对话链路修复、调度上限、语义边界与回归方法。
 - [评测与回放](guides/evaluation.md)：本地验证、快照、配置对比和发布门。
 - [参考连接器](guides/reference-connectors.md)：示例 MCP 连接器接入和角色治理。
 - [T3.2 真机演示](guides/demo-t3.2.md)：三条平台流程的人工演示动线。

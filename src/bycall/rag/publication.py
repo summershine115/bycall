@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 
-from sqlmodel import Session
+from sqlalchemy import String, cast
+from sqlmodel import Session, select
 
 from bycall.governance.models import Document, SystemSetting
 
@@ -48,14 +49,20 @@ def visible_generations(
     session: Session, kb_id: int, tags: list[str], level: int, is_admin: bool
 ) -> list[str]:
     """当前 SQL ACL 先筛文档，再以 generation 白名单预过滤向量查询。"""
-    docs = session.exec(Document.select_by_kb(kb_id)).all()
+    # 仅取 ID 与发布记录；关联键已有唯一索引，避免逐文档查询和读取正文。
+    stmt = (
+        select(Document.id, SystemSetting.value)
+        .outerjoin(SystemSetting, SystemSetting.key == INDEX_PREFIX + cast(Document.id, String))
+        .where(Document.knowledge_base_id == kb_id, Document.status == "completed")
+        .order_by(Document.id.desc())
+    )
+    if not is_admin:
+        stmt = stmt.where(Document.level <= level)
+        if "*" not in tags:
+            stmt = stmt.where(Document.source.in_(tags))
     allowed = []
-    for doc in docs:
-        if doc.status != "completed":
-            continue
-        if not is_admin and (doc.level > level or ("*" not in tags and doc.source not in tags)):
-            continue
-        active = read_manifest(session, doc.id).get("active")
+    for doc_id, value in session.exec(stmt):
+        active = json.loads(value).get("active") if value is not None else f"doc_{doc_id}"
         if active:
             allowed.append(active)
     return allowed

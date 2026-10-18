@@ -160,9 +160,7 @@ class TestPushApprovalResult:
         from bycall.governance.models import IMBinding
 
         with session_scope() as session:
-            session.add(
-                IMBinding(user_id=user_id, channel="feishu", im_user_id="on_feishu_uid")
-            )
+            session.add(IMBinding(user_id=user_id, channel="feishu", im_user_id="on_feishu_uid"))
 
         push_approval_result(
             _req(user_id=user_id, channel="feishu", im_user_id="on_feishu_uid"), "ok"

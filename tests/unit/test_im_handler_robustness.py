@@ -154,7 +154,13 @@ def test_success_path_history_and_lease_released(db: Session, user_id: int):
         session.commit()
         yield "基于知识库的回答。", True, _answered_result()
 
-    _drive(_text_msg("公司介绍"), sender, fake_run_agent_stream, user_id)
+    def on_compaction(conv_id):
+        with session_scope() as session:
+            assert current_holder(session, conv_id) is None
+
+    with patch("bycall.agent.runner.schedule_compaction", side_effect=on_compaction) as schedule:
+        _drive(_text_msg("公司介绍"), sender, fake_run_agent_stream, user_id)
+        schedule.assert_called_once_with(_find_conv_id(user_id))
 
     conv_id = _find_conv_id(user_id)
     assert conv_id is not None

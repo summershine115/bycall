@@ -302,3 +302,56 @@ async def test_stream_iteration_limit_yields_degradation():
     assert "上限" in final.answer
     # 触限前的工具调用仍记入审计。
     assert len(final.tool_calls_made) >= 1
+
+
+@pytest.mark.asyncio
+async def test_sync_tool_does_not_block_loop_and_receives_governance_context():
+    """同步工具经标准 ainvoke 执行器运行，同时保留能力与审批 ContextVar。"""
+    import asyncio
+    import threading
+
+    from bycall.governance.capability import CapabilitySet
+    from bycall.mcp.context import (
+        get_current_capability,
+        reset_current_capability,
+        set_current_capability,
+    )
+    from bycall.tools.approval import (
+        ApprovalContext,
+        get_approval_context,
+        reset_approval_context,
+        set_approval_context,
+    )
+
+    entered, release = threading.Event(), threading.Event()
+    main_thread = threading.get_ident()
+    cap = CapabilitySet(user_id=1, user_name="alice", role="member")
+    approval = ApprovalContext(user_id=1, user_name="alice", conversation_id=2, channel="api")
+    observed = []
+
+    def slow_tool() -> str:
+        observed.append((threading.get_ident(), get_current_capability(), get_approval_context()))
+        entered.set()
+        assert release.wait(3)
+        return "done"
+
+    tool = StructuredTool.from_function(name="slow", description="慢工具", func=slow_tool)
+    model, _ = _make_stream_mock_llm([[_tc_chunk("slow")], _text_chunks("answer")])
+    cap_token = set_current_capability(cap)
+    approval_token = set_approval_context(approval)
+    stream = await run_tool_loop_stream(chat_model=model, tools=[tool], messages=[])
+    task = asyncio.create_task(_collect(stream))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        assert not task.done()
+        assert observed == [(observed[0][0], cap, approval)]
+        assert observed[0][0] != main_thread
+        release.set()
+        _, final = await asyncio.wait_for(task, 3)
+        assert final.answer == "answer"
+        assert final.tool_calls_made[0]["result"] == "done"
+    finally:
+        release.set()
+        await task
+        reset_approval_context(approval_token)
+        reset_current_capability(cap_token)

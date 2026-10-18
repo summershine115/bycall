@@ -27,7 +27,7 @@
    - **DB 落地**：`Conversation(user_id, channel, tenant_id, agent_id, model_id?)` + `Message(conversation_id, role, content)`，会话键为 `{channel}:{user_id}` 或 `{channel}:{user_id}:agent:{agent_id}`，同用户跨实例会话分离。`tenant_id` 不参与运行时会话键；ADR-0004 单组织部署下运行时恒 `tenant_id="default"`；`agent_id` 由 per-Agent Bot 路由写入、全局默认 Bot 下为 `None`（ADR-0012），完整多租户隔离待排期。
    - **并发与幂等（已落地，会话状态层，借鉴 QM 见 `doc/qm-benchmark.md` §6）**：会话条目 append 必须持 DB 租约（`session_leases` 单行 UPSERT 原子获取 + token 释放，turn/compaction 分 holder），同会话并发消息不得竞争历史读写；IM 消息以渠道消息 ID 为幂等键去重（事件重发只执行一次）；失败时 user 消息 back-fill + system 失败条目，历史永不断裂。
    - **per-session 模型**：`Conversation.model_id` 可空外键，运行时优先级为会话绑定 → 实例绑定 → 灰度候选 → 全局激活模型；无效绑定继续 fallback。
-3. **执行与检索分离**：LangGraph 负责工具回路，RAG 为同步热路径；任务通过 `Task/Step/Run` 持久化，不宣称 LangGraph Checkpointer 已启用。
+3. **执行与检索分离**：LangGraph 负责工具回路，RAG 为同步管线（流式入口在线程独占 Session 内准备）；任务通过 `Task/Step/Run` 持久化，不宣称 LangGraph Checkpointer 已启用。
 4. **分层记忆**：工作/情景/语义/治理四层，**agent memory ≠ RAG**。
    - **受治理认知设计目标（ADR-0007，团队发布链路未完整落地）**：记忆分两平面——策略平面（谁能用、何时用、能力上限）严苛不变；认知平面（agent 提炼 L0→L3、Skill 蒸馏）开放但受治理：默认 private，过发布门（admin 审，复用 `ApprovalRequest`）才成团队/组织资产；召回结果降权进 user 角色（红线 #7）；认知产物永不改写策略。
    - **当前实现**：`Message` 保存历史，`Conversation.summary` 保存摘要，`UserMemory` 保存用户长期记忆。admin 维护的记忆带条数/字符预算与关键词排序，agent 记忆带独立预算并进 user 角色；两者均以用户为加载范围。团队发布资产与 BM25+向量+RRF 记忆召回为设计目标，不能视作已落地。机制参考见 `doc/tencent-agent-memory-benchmark.md`。
@@ -85,3 +85,13 @@
 
 RAG 统一候选重排、多轮改写、检索状态与实际证据引用已接入共享 runner；
 分数语义、降级模式及部署验证要求见 [RAG 指南](guides/rag.md)。
+
+### 对话性能与后台维护
+
+同步与流式共用治理前置和持久化逻辑；流式前置在线程池中使用独立 Session，
+能力与审批 ContextVar 由执行工具的 Task 安装。主模型等待前释放入口读取事务。
+工具流式执行使用 LangChain `ainvoke`；回答历史和审计先提交，记忆提取与压缩再进入
+有界的进程内维护队列。后台维护为尽力执行，不提供任务持久化；满载不阻断主回答。
+压缩实际获取 DB 租约，模型等待前释放连接；只有有效租约与未变化的摘要指针允许提交，
+失败不推进指针。IM 在本轮租约释放后调度压缩。
+检索仍按 KB 串行，不缓存共享 zvec 句柄。实现、上限和验证边界见[性能指南](guides/performance.md)。

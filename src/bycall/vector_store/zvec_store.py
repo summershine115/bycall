@@ -9,8 +9,8 @@
   3. 多路查询（vector + fts 同时给）必须指定 ``reranker`` → search 里自动挂
      ``zvec.RrfReRanker()``（倒数排名融合，不依赖外部模型）。
   4. 打开已存在的库用 ``zvec.open(path)``（不是 create_and_open）→ ``open()`` 探测。
-  5. Collection 无 ``close()`` 方法 → ``close()`` 用 ``del`` + ``gc.collect()``
-     释放写锁（多进程并发读场景的关键，见 PoC step6）。
+  5. Collection 无 ``close()`` 方法 → 清除最后一个引用释放句柄和写锁；
+     回归测试验证关闭后可跨进程重开，不在检索热路径执行全堆 GC。
   6. 多进程并发读必须 ``CollectionOption(read_only=1)`` → 配置项 ``read_only`` 暴露。
 
 并发模型（HANDOVER §3.2）：本场景 <50 并发、查为主偶尔写，单进程 + 多线程读即可，
@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import gc
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -74,6 +73,7 @@ class ZvecStore(VectorStore):
         self._read_only = read_only
         self._collection: zvec.Collection | None = None
         self._name: str | None = None
+        self._dirty = False
         self._schema_field_names: set[str] = (
             set()
         )  # collection schema 已有字段名（用于写入时过滤未知字段）
@@ -88,6 +88,7 @@ class ZvecStore(VectorStore):
         self._data_dir.mkdir(parents=True, exist_ok=True)
         zvec_schema = self._build_schema(schema)
         self._collection = zvec.create_and_open(path=str(path), schema=zvec_schema)
+        self._dirty = True
         self._name = schema.name
         self._schema_field_names = {f.name for f in self._collection.schema.fields}
         logger.info("created zvec collection %s @ %s", schema.name, path)
@@ -123,24 +124,19 @@ class ZvecStore(VectorStore):
             )
 
     def close(self) -> None:
-        """zvec Collection 无 close()，靠 GC 释放写锁（PoC step6）。
-
-        主动 ``del`` + ``gc.collect()`` 确保写锁及时释放，便于多进程后续只读打开。
-        只读模式跳过 flush（只读 collection 不允许 Flush）。
-        """
+        """有写入时先 flush，再释放句柄；纯检索不触发刷盘或全堆 GC。"""
         if self._collection is not None:
-            if not self._read_only:
+            if self._dirty and not self._read_only:
                 try:
                     self._collection.flush()
                 except Exception as e:
                     logger.warning("close 时 flush 失败（忽略，继续释放）: %s", e)
-            del self._collection
             self._collection = None
-            gc.collect()
-            logger.info("closed zvec collection %s (via gc)", self._name)
+            self._dirty = False
+            logger.debug("closed zvec collection %s", self._name)
 
     def destroy(self, name: str) -> None:
-        """永久删除 collection（zvec Collection.destroy() + GC）。
+        """永久删除 collection，再释放临时句柄。
 
         删 KB 时用。先 close 当前打开的（如果是同一个），再 destroy。
         zvec 的 destroy 会删掉磁盘上的 collection 目录。
@@ -158,7 +154,7 @@ class ZvecStore(VectorStore):
         option = CollectionOption(read_only=0)
         col = zvec.open(path=str(path), option=option)
         col.destroy()
-        gc.collect()
+        del col
         logger.info("destroyed zvec collection %s @ %s", name, path)
 
     def describe(self, name: str) -> dict:
@@ -181,7 +177,6 @@ class ZvecStore(VectorStore):
                 "doc_count": getattr(stats, "doc_count", 0),
             }
             del col
-            gc.collect()
             return info
         except Exception as e:
             logger.warning("describe collection %s 失败: %s", name, e)
@@ -196,6 +191,7 @@ class ZvecStore(VectorStore):
         return self._write(docs, mode="upsert")
 
     def delete(self, ids: list[str]) -> None:
+        self._dirty = True
         self._require_open().delete(ids)
 
     def delete_by_filter(self, conditions: list[FilterCondition]) -> int:
@@ -207,11 +203,13 @@ class ZvecStore(VectorStore):
         filter_str = self._build_filter(conditions)
         if not filter_str:
             return 0
+        self._dirty = True
         self._require_open().delete_by_filter(filter_str)
         return 0  # zvec delete_by_filter 不返回删除条数
 
     def flush(self) -> None:
         self._require_open().flush()
+        self._dirty = False
 
     # ---------- 检索 ----------
 
@@ -344,6 +342,7 @@ class ZvecStore(VectorStore):
 
     def _write(self, docs: list[Chunk], mode: str) -> list[InsertResult]:
         col = self._require_open()
+        self._dirty = True
         results: list[InsertResult] = []
         op = getattr(col, mode)  # insert 或 upsert
         for batch in self._batched(docs, _ZVEC_BATCH_LIMIT):
