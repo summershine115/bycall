@@ -22,7 +22,7 @@
 - 前端生产构建：通过。构建依赖有第三方 PURE 注释提示，不影响构建。
 - 草稿回归：3 项通过，覆盖数组隔离、分区独立保存/null 清空及嵌套 Vue Proxy 数组。
 - 新增后端集成回归：审批/授权分页、过滤与旧接口兼容；文档发布门五种状态；会话过滤先于任务 limit。
-- 完整 `make ci-local`：970 项测试、35 条综合评测、21 条安全评测通过（集成最新 main 后另行记录最终结果）。
+- 完整 `make ci-local`：集成最新 main 后，989 项测试、35 条综合评测、21 条安全评测全部通过；集成前为 970 项测试。
 - `git diff --check`：通过。
 
 验证环境未复制主目录 .env；测试通过环境变量提供仅用于测试的足够长度密钥。首次运行因工作目录缺少 .env 导致两个生产配置校验测试失败，补齐测试环境后完整门通过，未改弱配置校验。
@@ -33,6 +33,7 @@
 
 已实测：
 
+- 暂停隔离后端后保存失败，错误提示可见，输入和未保存标记保留；离开确认选择继续编辑后仍保留草稿。
 - 模型草稿未保存时切到基础信息并保存，模型草稿仍保留；放弃修改回到继承值。
 - 模型选择保存后接口回读 `model_id=1`；知识域数组 public、可见角色数组 ux-review 保存后重新加载正常。
 - 自定义范围未选择项目时提示错误；嵌套响应式数组加载错误在复查中发现并修复，加入回归测试。
@@ -40,7 +41,7 @@
 - 策略预览选择复查用户后显示实际权限、检查时间和绑定说明。
 - 审批确认展示完整参数；批准不存在的本地测试工具后显示明确失败原因；详情可跳转任务，任务可跳转来源会话，会话消息可查看审批失败回执。
 
-截图是本机复查证据，未随代码提交；保存在 Codex 当前会话的 visualizations 目录（agent-desktop.png、agent-mobile.png、agent-preview-dark.png、approval-confirmation.png）。
+截图是本机复查证据，未随代码提交；保存在 Codex 当前会话的 visualizations 目录（agent-desktop.png、agent-mobile.png、agent-preview-dark.png、approval-confirmation.png、knowledge-publication.png、dashboard-review.png、save-failure-draft.png）。
 
 ## 启动与边界
 
