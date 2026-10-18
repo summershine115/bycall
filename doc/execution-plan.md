@@ -354,6 +354,17 @@ Dashboard KPI 修复，对话测试页补数字员工选择器（真实使用必
 `frontend/src/router.js`、`frontend/src/views/Layout.vue`、`frontend/src/components/PageHeader.vue`、
 `frontend/src/views/{Dashboard,Knowledge,KnowledgeBases}.vue`。**Scope**：M。
 
+#### T3.8 控制台可信配置与任务闭环（2026-10-18，已完成）
+
+用户明确要求实施前端优化并启动项目，范围按 [ADR-0017](decisions/0017-console-trust-and-task-flow.md)。对齐 T3.2 真实验证、T3.3 审批及 T3.6/T3.7 现有控制台。
+
+- [x] A：分区提交、深复制基线、放弃修改、离开保护及局部错误。
+- [x] B：显式继承、生效预览范围与时效、配置检查、审批摘要/分页、连接和索引发布状态。
+- [x] C：首页待办、真实记录关联、筛选上下文、窄屏/焦点/中文输入法。
+- [x] 验证：前端构建与回归、make ci-local、启动服务、浏览器视觉与静态复查。
+
+验收记录见 [控制台复查](guides/console-ux-review.md)。本次恢复仅覆盖上述可用性审查，其他冻结项不变。
+
 #### T3.4 使用效果看板（后置，待 T3.2 与真实使用数据）
 **Description**：延迟 / 成本 / 人工接管率 / 失败率 / 重复执行率（T2.5 五维）。**当前后置**——待 T3.2 平台流程跑通且有真实使用数据后，再基于 T2.5 五维指标做基线 vs 使用后对比（复用 `observability/metrics`，不另造埋点）。
 **Acceptance**：

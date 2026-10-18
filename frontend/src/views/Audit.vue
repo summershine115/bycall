@@ -138,9 +138,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useRoute } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -152,7 +153,9 @@ const users = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const userFilter = ref('')
+const route = useRoute()
+const userFilter = ref(route.query.user_id ? Number(route.query.user_id) : '')
+watch(() => route.query.user_id, (value) => { userFilter.value = value ? Number(value) : ''; resetAndLoad() })
 const decisionFilter = ref('')
 const keyword = ref('')
 

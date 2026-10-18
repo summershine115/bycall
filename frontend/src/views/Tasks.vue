@@ -37,15 +37,17 @@
     <el-tabs v-model="activeTab" class="tasks-tabs">
       <!-- ==================== 任务列表 ==================== -->
       <el-tab-pane label="任务列表" name="tasks">
+        <InlineError :message="taskError" :busy="tasksLoading" @retry="loadTasks" />
+        <el-alert v-if="route.query.conversation_id || route.query.task_id" title="正在查看关联任务；列表最多展示最近 200 条，指定任务按 ID 查询。" type="info" :closable="false"><el-button text @click="router.replace({ name: 'runtime', query: { tab: 'tasks' } })">查看全部任务</el-button></el-alert>
         <ContentLoader v-if="tasksLoading" :rows="6" />
         <div v-else class="bc-panel">
           <EmptyState
-            v-if="!tasks.length"
+            v-if="!visibleTasks.length && !taskError"
             icon="List"
             title="暂无任务"
             description="员工在对话中输入「启动任务：目标」、或调度/事件触发后，任务会出现在这里。"
           />
-          <el-table v-else :data="tasks">
+          <el-table v-else :data="visibleTasks">
             <el-table-column prop="id" label="ID" width="70" align="center" />
             <el-table-column label="用户" width="110">
               <template #default="{ row }">
@@ -107,6 +109,7 @@
               {{ c.label }} <span class="n">{{ c.count }}</span>
             </button>
           </div>
+          <InlineError :message="scheduleError" @retry="loadSchedules" />
           <ContentLoader v-if="schedulesLoading" :rows="4" />
           <EmptyState
             v-else-if="!schedules.length"
@@ -166,6 +169,10 @@
     <!-- ==================== 任务进度对话框（SSE 实时） ==================== -->
     <el-dialog v-model="progressVisible" title="任务进度" width="760px" destroy-on-close>
       <template v-if="progressTask">
+        <div class="bc-toolbar">
+          <el-button @click="router.push({ name: 'approvals', query: { task_id: progressTask.id } })">关联审批</el-button>
+          <el-button v-if="progressTask.conversation_id" @click="router.push({ name: 'runtime', query: { tab: 'conversations', conversation_id: progressTask.conversation_id } })">来源会话</el-button>
+        </div>
         <div class="task-head">
           <div class="task-goal">{{ progressTask.goal }}</div>
           <div class="task-meta">
@@ -293,11 +300,20 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useRoute, useRouter } from 'vue-router'
+import InlineError from '../components/InlineError.vue'
+import { errorMessage } from '../utils/errors'
 import { formatTime as fmtTime } from '../utils/format'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
+const route = useRoute()
+const router = useRouter()
+const taskError = ref('')
+const scheduleError = ref('')
+watch(() => route.query.tab, () => { progressVisible.value = false })
+watch(() => [route.query.task_id, route.query.conversation_id], () => loadTasks())
 const activeTab = ref('tasks')
 
 // ==================== KPI（真实数据派生） ====================
@@ -347,12 +363,18 @@ const scheduleChips = computed(() => [
 // ==================== 任务列表 ====================
 const tasks = ref([])
 const tasksLoading = ref(false)
+const visibleTasks = computed(() => tasks.value.filter((task) => (!route.query.conversation_id || task.conversation_id === Number(route.query.conversation_id)) && (!route.query.task_id || task.id === Number(route.query.task_id))))
 
 async function loadTasks() {
   tasksLoading.value = true
+  taskError.value = ''
   try {
-    tasks.value = await admin.listTasks({ limit: 200 })
-  } finally {
+    tasks.value = await admin.listTasks({ limit: 200, conversation_id: route.query.conversation_id })
+    if (route.query.task_id && !tasks.value.some((task) => task.id === Number(route.query.task_id))) {
+      const result = await admin.getTask(Number(route.query.task_id))
+      tasks.value.push(result.task)
+    }
+  } catch (error) { taskError.value = errorMessage(error, '任务加载失败') } finally {
     tasksLoading.value = false
   }
 }
@@ -492,7 +514,7 @@ function connectEvents(taskId) {
     // 断线时浏览器自动重连；对话框关闭由下方 watch 显式 close。
     sseConnected.value = false
   }
-  eventSource.onmessage = (msg) => {
+  eventSource.onmessage = (_msg) => {
     // 事件即"有变化"的信号：重拉详情拿权威状态（任务执行低频，开销可忽略）。
     refreshProgressDetail().catch(() => {})
   }
@@ -522,9 +544,10 @@ function userName(uid) {
 
 async function loadSchedules() {
   schedulesLoading.value = true
+  scheduleError.value = ''
   try {
     schedules.value = await admin.listTaskSchedules()
-  } finally {
+  } catch (error) { scheduleError.value = errorMessage(error, '调度加载失败') } finally {
     schedulesLoading.value = false
   }
 }

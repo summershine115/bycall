@@ -162,3 +162,64 @@ class TestReject:
         client.post(f"/api/admin/approvals/{rid}/reject", json={})
         resp = client.post(f"/api/admin/approvals/{rid}/reject", json={})
         assert resp.status_code == 409
+
+
+class TestApprovalPages:
+    def test_pages_are_complete_stable_and_filter_before_pagination(self, client):
+        """跨页不重复，筛选计数一致；关联字段随列表返回。"""
+        _seed_tool_and_approval()
+        from bycall.governance.models import ApprovalRequest, User
+
+        with session_scope() as session:
+            user = session.exec(User.select_by_name("alice")).first()
+            for index in range(24):
+                session.add(
+                    ApprovalRequest(
+                        user_id=user.id,
+                        user_name="alice",
+                        tool_name="danger_delete",
+                        tool_args_json="{}",
+                        status="pending" if index < 20 else "rejected",
+                    )
+                )
+        first = client.get("/api/admin/approval-pages", params={"page_size": 10}).json()
+        second = client.get("/api/admin/approval-pages", params={"page_size": 10, "page": 2}).json()
+        third = client.get("/api/admin/approval-pages", params={"page_size": 10, "page": 3}).json()
+        assert first["total"] == second["total"] == third["total"] == 25
+        ids = [item["id"] for result in (first, second, third) for item in result["items"]]
+        assert len(ids) == len(set(ids)) == 25
+        assert "task_id" in first["items"][0]
+        rejected = client.get(
+            "/api/admin/approval-pages", params={"status": "rejected", "page_size": 2}
+        ).json()
+        assert rejected["total"] == 4
+        assert len(rejected["items"]) == 2
+        assert all(item["status"] == "rejected" for item in rejected["items"])
+        empty = client.get("/api/admin/approval-pages", params={"task_id": 999}).json()
+        assert empty["total"] == 0
+        assert client.get("/api/admin/approval-pages?page=0").status_code == 422
+        assert client.get("/api/admin/approval-pages?page_size=101").status_code == 422
+        # 旧接口仍返回数组。
+        assert isinstance(client.get("/api/admin/approvals").json(), list)
+
+    def test_grants_use_independent_pagination(self, client):
+        _seed_tool_and_approval()
+        from bycall.governance.models import ApprovalGrant, User
+
+        with session_scope() as session:
+            user = session.exec(User.select_by_name("alice")).first()
+            for index in range(13):
+                session.add(
+                    ApprovalGrant(
+                        user_id=user.id,
+                        user_name="alice",
+                        tool_name=f"tool_{index}",
+                        scope="always",
+                        status="active",
+                    )
+                )
+        first = client.get("/api/admin/approval-grant-pages?page_size=10").json()
+        second = client.get("/api/admin/approval-grant-pages?page_size=10&page=2").json()
+        assert first["total"] == second["total"] == 13
+        assert len(first["items"]) == 10
+        assert len(second["items"]) == 3

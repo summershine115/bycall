@@ -182,6 +182,7 @@ const reloadingKey = ref('')
 function channelLabel(ch) { return { wecom: '企微', feishu: '飞书' }[ch] || ch || '' }
 const form = reactive({})
 const masks = reactive({})
+const imSnapshot = reactive({})
 const imEnable = ref(false)
 const connections = ref([])
 const agents = ref([])

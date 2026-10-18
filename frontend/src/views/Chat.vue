@@ -241,7 +241,7 @@
             resize="none"
             placeholder="输入问题，Enter 发送，Shift+Enter 换行"
             :disabled="loading"
-            @keydown.enter.exact.prevent="onAsk"
+            @keydown.enter.exact="onComposerEnter"
           />
           <el-button
             type="primary"
@@ -364,6 +364,12 @@ function onAgentChange(val) {
   selectedAgentId.value = val
   // 切实例 = 换对话对象：开新对话（会话按实例隔离，沿用旧会话会被后端 400 拒绝）
   onNewConversation()
+}
+
+function onComposerEnter(event) {
+  if (event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  onAsk()
 }
 
 async function onAsk() {

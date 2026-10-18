@@ -4,6 +4,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { admin } from '../api'
+import { errorMessage } from '../utils/errors'
 import { formatTime } from '../utils/format'
 
 export function useKnowledge() {
@@ -11,6 +12,9 @@ export function useKnowledge() {
   const router = useRouter()
 
   const loading = ref(true)
+  const loadError = ref('')
+  const pollError = ref('')
+  const docsLoadedAt = ref('')
   const saving = ref(false)
   const editing = ref(false)
   const reindexing = ref(null)
@@ -171,6 +175,8 @@ export function useKnowledge() {
     if (idx === -1) return
     const row = { ...documents.value[idx] }
     row.status = p.status
+    // 处理期间立即撤去可检索标记；终态由列表接口重新读取发布门。
+    row.is_retrievable = false
     if (typeof p.chunk_count === 'number') row.chunk_count = p.chunk_count
     if (p.status === 'failed' && p.error_message) row.error_message = p.error_message
     documents.value = [...documents.value.slice(0, idx), row, ...documents.value.slice(idx + 1)]
@@ -181,7 +187,9 @@ export function useKnowledge() {
     let active = []
     try {
       active = await admin.listActiveIngests()
+      pollError.value = ''
     } catch {
+      pollError.value = '进度刷新失败，显示的是上次状态；系统将自动重试'
       return // 网络抖动：本轮跳过，下轮再试
     }
     const activeById = new Map(active.map((p) => [p.document_id, p]))
@@ -268,6 +276,9 @@ export function useKnowledge() {
     () => route.query.kb_id,
     (val) => {
       if (val && Number(val) !== kbId.value) {
+        stopPolling()
+        documents.value = []
+        docsLoadedAt.value = ''
         kbId.value = Number(val)
         loadDocuments()
       }
@@ -287,10 +298,13 @@ export function useKnowledge() {
 
   async function loadAll() {
     loading.value = true
+    loadError.value = ''
     try {
       await loadKbs()
       await loadDocuments()
       await loadSources()
+    } catch (error) {
+      loadError.value = errorMessage(error, '知识库加载失败，请重试')
     } finally {
       loading.value = false
     }
@@ -301,18 +315,18 @@ export function useKnowledge() {
   let docReqSeq = 0
 
   async function loadDocuments() {
-    if (!kbId.value) {
-      documents.value = []
-      return
-    }
     const seq = ++docReqSeq
-    const docs = await admin.listDocuments(kbId.value, filterSource.value || undefined)
-    if (seq !== docReqSeq) return
-    documents.value = docs
-    // 页面加载/切换途中若有 processing 文档：种子进度并保活轮询
-    const processing = docs.filter((d) => d.status === 'processing')
-    if (processing.length) {
-      await Promise.all(processing.map((d) => seedProgress(d.id)))
+    loadError.value = ''
+    if (!kbId.value) { documents.value = []; return }
+    try {
+      const docs = await admin.listDocuments(kbId.value, filterSource.value || undefined)
+      if (seq !== docReqSeq) return
+      documents.value = docs
+      docsLoadedAt.value = new Date().toLocaleTimeString('zh-CN')
+      const processing = docs.filter((d) => d.status === 'processing')
+      if (processing.length) await Promise.all(processing.map((d) => seedProgress(d.id)))
+    } catch (error) {
+      if (seq === docReqSeq) loadError.value = errorMessage(error, '文档加载失败，已有内容可能过期')
     }
   }
 
@@ -323,7 +337,9 @@ export function useKnowledge() {
   function onKbChange(val) {
     // 切换 KB：停掉旧轮询（避免跨 KB 误刷新），同步路由 query，重新加载文档
     stopPolling()
-    router.replace({ query: { kb_id: val } })
+    router.replace({ query: { ...route.query, tab: 'docs', kb_id: val } })
+    documents.value = []
+    docsLoadedAt.value = ''
     filterSource.value = ''
     loadDocuments()
   }
@@ -609,6 +625,7 @@ export function useKnowledge() {
 
   return {
     // 基础
+    loadError, pollError, docsLoadedAt, loadAll,
     loading, saving, editing, reindexing,
     kbs, kbId, documents, sources, filterSource, dialogVisible, form, currentKb,
     // 上传

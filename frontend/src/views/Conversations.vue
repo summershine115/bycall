@@ -4,6 +4,8 @@
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </PageHeader>
 
+    <InlineError :message="loadError" :busy="loading" @retry="load" />
+    <el-alert v-if="route.query.conversation_id" title="当前仅查看关联会话" type="info" :closable="false"><el-button text @click="router.replace({ name: 'runtime', query: { tab: 'conversations' } })">查看全部会话</el-button></el-alert>
     <ContentLoader v-if="loading" :rows="5" />
 
     <template v-else>
@@ -49,7 +51,7 @@
 
       <div class="bc-panel">
         <EmptyState
-          v-if="!filtered.length"
+          v-if="!filtered.length && !loadError"
           icon="ChatLineRound"
           :title="conversations.length ? '暂无匹配的会话' : '暂无会话'"
           :description="
@@ -114,6 +116,12 @@
 
     <!-- 消息历史对话框 -->
     <el-dialog v-model="msgDialogVisible" :title="`会话消息历史 · ${currentConv ? shortKey(currentConv.session_key) : ''}`" width="720px">
+      <div v-if="currentConv" class="bc-toolbar">
+        <el-button @click="router.push({ name: 'approvals', query: { conversation_id: currentConv.id } })">关联审批</el-button>
+        <el-button @click="router.push({ name: 'runtime', query: { tab: 'tasks', conversation_id: currentConv.id } })">关联任务</el-button>
+        <el-button @click="router.push({ name: 'supervision', query: { tab: 'audit', user_id: currentConv.user_id } })">该用户审计记录</el-button>
+      </div>
+      <InlineError :message="msgError" @retry="onViewMessages(currentConv)" />
       <div v-loading="msgLoading" class="msg-list">
         <div v-for="msg in messages" :key="msg.id" class="msg-item">
           <div class="msg-item__header">
@@ -123,29 +131,37 @@
           </div>
           <div class="msg-item__content">{{ msg.content }}</div>
         </div>
-        <EmptyState v-if="!messages.length && !msgLoading" icon="ChatDotRound" title="暂无消息" />
+        <EmptyState v-if="!messages.length && !msgLoading && !msgError" icon="ChatDotRound" title="暂无消息" />
       </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useRoute, useRouter } from 'vue-router'
+import InlineError from '../components/InlineError.vue'
+import { errorMessage } from '../utils/errors'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 /* ---------------- 状态 ---------------- */
+const route = useRoute()
+watch(() => route.query.tab, () => { msgDialogVisible.value = false })
+const router = useRouter()
+const loadError = ref('')
+const msgError = ref('')
 const loading = ref(true)
 const conversations = ref([])
 const users = ref([])
-const range = ref(1) // 天数：1 / 7 / 30
-const channelFilter = ref('all')
-const statusFilter = ref('all')
-const keyword = ref('')
+const range = ref(Number(route.query.days) || 1) // 天数：1 / 7 / 30
+const channelFilter = ref(route.query.channel || 'all')
+const statusFilter = ref(route.query.state || 'all')
+const keyword = ref(route.query.q || '')
 
 const msgDialogVisible = ref(false)
 const msgLoading = ref(false)
@@ -203,6 +219,7 @@ const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   const todayStart = startOfDay(new Date()).getTime()
   return conversations.value.filter((c) => {
+    if (route.query.conversation_id) return c.id === Number(route.query.conversation_id)
     // 时间分段：N 天窗口（今天 = 当日 00:00 起）
     const t = c.last_message_at ? new Date(c.last_message_at).getTime() : 0
     const from = range.value === 1 ? todayStart : Date.now() - range.value * 86400000
@@ -228,25 +245,38 @@ function clearFilter() {
 /* ---------------- 数据加载 ---------------- */
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
-    const safe = (p, fallback) => p.catch(() => fallback)
-    const [convList, userList] = await Promise.all([safe(admin.listConversations(), []), safe(admin.listUsers(), [])])
+    const [convList, userList] = await Promise.all([admin.listConversations(), admin.listUsers()])
     conversations.value = convList
     users.value = userList
-  } finally {
-    loading.value = false
-  }
+  } catch (error) { loadError.value = errorMessage(error, '会话列表加载失败，已有记录可能过期') }
+  finally { loading.value = false }
 }
+watch(() => [route.query.days, route.query.channel, route.query.state, route.query.q], () => {
+  range.value = Number(route.query.days) || 1
+  channelFilter.value = route.query.channel || 'all'
+  statusFilter.value = route.query.state || 'all'
+  keyword.value = route.query.q || ''
+})
+watch([range, channelFilter, statusFilter, keyword], () => {
+  router.replace({ query: { ...route.query, days: range.value, channel: channelFilter.value, state: statusFilter.value, q: keyword.value || undefined } })
+})
 
 /* ---------------- 操作（保留原有确认流） ---------------- */
+let messageSeq = 0
 async function onViewMessages(row) {
+  const seq = ++messageSeq
   currentConv.value = row
   msgDialogVisible.value = true
   msgLoading.value = true
+  messages.value = []
+  msgError.value = ''
   try {
-    messages.value = await admin.listMessages(row.id)
-  } finally {
-    msgLoading.value = false
+    const result = await admin.listMessages(row.id)
+    if (seq === messageSeq) messages.value = result
+  } catch (error) { if (seq === messageSeq) msgError.value = errorMessage(error, '消息加载失败') } finally {
+    if (seq === messageSeq) msgLoading.value = false
   }
 }
 

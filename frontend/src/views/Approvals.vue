@@ -7,6 +7,7 @@
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </PageHeader>
 
+    <el-alert v-if="route.query.conversation_id || route.query.task_id" title="正在查看关联记录的审批" type="info" :closable="false"><el-button text @click="router.replace({ name: 'approvals' })">查看全部审批</el-button></el-alert>
     <ContentLoader v-if="loading" :rows="6" />
 
     <div v-else class="row-2-1">
@@ -14,7 +15,7 @@
       <div class="bc-panel appr-card">
         <div class="card-head">
           <span class="card-head__title">待办与历史</span>
-          <span class="mono card-head__hint">共 {{ approvals.length }} 条</span>
+          <span class="mono card-head__hint">共 {{ total }} 条</span>
         </div>
 
         <div class="filterbar">
@@ -23,21 +24,22 @@
             :key="st.value"
             type="button"
             :class="['fchip', { 'is-on': statusFilter === st.value }]"
-            @click="statusFilter = st.value"
+            @click="filterStatus(st.value)"
           >
-            {{ st.label }} <span class="n">{{ statusCount(st.value) }}</span>
+            {{ st.label }}
           </button>
         </div>
 
+        <InlineError :message="approvalError" :busy="approvalLoading" @retry="loadApprovals" />
         <EmptyState
-          v-if="!filtered.length"
+          v-if="!filtered.length && !approvalError"
           icon="DocumentChecked"
           :title="statusFilter ? '该状态下暂无审批请求' : '暂无审批请求'"
           description="数字员工调用敏感工具时会产生审批请求，在此批准或拒绝后才会真正执行。"
         />
 
-        <template v-else>
-          <div class="table-scroll">
+        <template v-if="filtered.length">
+          <div class="table-scroll" v-loading="approvalLoading">
             <el-table :data="filtered">
               <el-table-column label="ID" width="84">
                 <template #default="{ row }">
@@ -94,23 +96,25 @@
             <span class="mono table-foot__num">{{ filtered.length }} 条记录</span>
           </div>
         </template>
+        <el-pagination class="bc-pagination" :current-page="page" :page-size="20" :total="total" layout="prev, pager, next, total" @current-change="changePage" />
       </div>
 
       <!-- ============ 右：授权管理（三档台账，紧凑列表 + 即时撤销） ============ -->
       <div class="bc-panel appr-card">
         <div class="card-head">
           <span class="card-head__title">授权管理</span>
-          <span class="mono card-head__hint">{{ activeGrants.length }} 项生效中</span>
+          <span class="mono card-head__hint">本页 {{ activeGrants.length }} 项生效中</span>
         </div>
 
+        <InlineError :message="grantError" :busy="grantLoading" @retry="loadGrants" />
         <EmptyState
-          v-if="!grants.length"
+          v-if="!grants.length && !grantError"
           icon="Key"
           title="暂无审批授权"
           description="批准审批时选择「本会话免审」或「永久免审」会在此登记，可随时撤销以恢复人审。"
         />
 
-        <div v-else class="grant-list">
+        <div v-if="grants.length" class="grant-list" v-loading="grantLoading">
           <div
             v-for="g in grants"
             :key="g.id"
@@ -148,6 +152,7 @@
         <div v-if="grants.length" class="table-foot">
           <span>撤销后立即恢复人工审批</span>
         </div>
+        <el-pagination class="bc-pagination" v-model:current-page="grantPage" :page-size="10" :total="grantTotal" layout="prev, next, total" @current-change="loadGrants" />
       </div>
     </div>
 
@@ -155,13 +160,21 @@
     <el-dialog
       v-model="reviewVisible"
       :title="reviewAction === 'approve' ? '批准审批' : '拒绝审批'"
-      width="520px"
+      width="min(640px, 94vw)"
+      :close-on-click-modal="!reviewing" :close-on-press-escape="!reviewing" :show-close="!reviewing"
     >
+      <InlineError :message="reviewError" :retryable="false" />
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="申请人">{{ reviewRow?.user_name || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="渠道 / 会话">{{ reviewRow?.channel || '—' }} / {{ reviewRow?.conversation_id ?? '无会话' }}</el-descriptions-item>
+        <el-descriptions-item v-if="reviewRow?.task_id" label="关联任务">#{{ reviewRow.task_id }}</el-descriptions-item>
+        <el-descriptions-item label="执行参数"><pre class="json-block">{{ formatJson(reviewRow?.tool_args || {}) }}</pre></el-descriptions-item>
+      </el-descriptions>
       <div class="review-target">
         <span class="bc-muted bc-text-sm">目标工具：</span>
         <span class="mono bc-text-sm bc-strong">{{ reviewRow?.tool_name }}</span>
       </div>
-      <el-form label-position="top" style="margin-top: var(--bc-space-3)">
+      <el-form :disabled="reviewing" label-position="top" style="margin-top: var(--bc-space-3)">
         <el-form-item v-if="reviewAction === 'approve'" label="授权档位">
           <el-radio-group v-model="reviewGrantScope">
             <el-radio value="once">仅本次</el-radio>
@@ -182,13 +195,13 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="reviewVisible = false">取消</el-button>
+        <el-button :disabled="reviewing" @click="reviewVisible = false">取消</el-button>
         <el-button
           :type="reviewAction === 'approve' ? 'primary' : 'danger'"
           :loading="reviewing"
           @click="onReview"
         >
-          {{ reviewAction === 'approve' ? '确认批准' : '确认拒绝' }}
+          {{ reviewAction === 'reject' ? '确认拒绝' : reviewGrantScope === 'once' ? '批准并执行本次操作' : reviewGrantScope === 'session' ? '批准并授予本会话免审' : '批准并授予永久免审' }}
         </el-button>
       </template>
     </el-dialog>
@@ -198,6 +211,10 @@
       <el-descriptions v-if="detailRow" :column="1" border>
         <el-descriptions-item label="ID">#A-{{ detailRow.id }}</el-descriptions-item>
         <el-descriptions-item label="用户">{{ detailRow.user_name || '—' }}</el-descriptions-item>
+        <el-descriptions-item v-if="detailRow.conversation_id || detailRow.task_id" label="关联记录">
+          <el-button v-if="detailRow.conversation_id" link @click="router.push({ name: 'runtime', query: { tab: 'conversations', conversation_id: detailRow.conversation_id } })">会话 #{{ detailRow.conversation_id }}</el-button>
+          <el-button v-if="detailRow.task_id" link @click="router.push({ name: 'runtime', query: { tab: 'tasks', task_id: detailRow.task_id } })">任务 #{{ detailRow.task_id }}</el-button>
+        </el-descriptions-item>
         <el-descriptions-item label="渠道">{{ detailRow.channel || '—' }}</el-descriptions-item>
         <el-descriptions-item label="工具">
           <span class="mono">{{ detailRow.tool_name }}</span>
@@ -223,18 +240,34 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import { useRoute, useRouter } from 'vue-router'
+import InlineError from '../components/InlineError.vue'
+import { errorMessage } from '../utils/errors'
 import { formatTime as fmtTime } from '../utils/format'
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
 
+const route = useRoute()
+const router = useRouter()
+const page = ref(Number(route.query.page) || 1)
+const grantPage = ref(1)
+const total = ref(0)
+const grantTotal = ref(0)
+const approvalError = ref('')
+const grantError = ref('')
+const approvalLoading = ref(false)
+const grantLoading = ref(false)
+const reviewError = ref('')
+let approvalSeq = 0
+let grantSeq = 0
 const approvals = ref([])
 const loading = ref(false)
-const statusFilter = ref('') // '' = 全部（前端 chips 即时过滤）
+const statusFilter = ref(route.query.status || '') // '' = 全部（前端 chips 即时过滤）
 
 // 授权管理（三档台账）
 const grants = ref([])
@@ -259,8 +292,8 @@ const STATUS = [
   { value: 'failed', label: '失败' },
 ]
 
-const statusCount = (v) => (v ? approvals.value.filter((a) => a.status === v).length : approvals.value.length)
-const filtered = computed(() => (statusFilter.value ? approvals.value.filter((a) => a.status === statusFilter.value) : approvals.value))
+
+const filtered = computed(() => approvals.value)
 const activeGrants = computed(() => grants.value.filter((g) => g.status === 'active'))
 
 async function load() {
@@ -272,15 +305,44 @@ async function load() {
   }
 }
 
+function writeQuery() {
+  router.replace({ query: { ...route.query, page: page.value, status: statusFilter.value || undefined } })
+}
 async function loadApprovals() {
-  // 后端 limit 默认 100 会静默截断，显式拉大
-  approvals.value = await admin.listApprovals('', { limit: 500 })
+  const seq = ++approvalSeq
+  approvalLoading.value = true
+  approvalError.value = ''
+  try {
+    const result = await admin.pageApprovals({ page: page.value, page_size: 20, status: statusFilter.value || undefined, conversation_id: route.query.conversation_id, task_id: route.query.task_id })
+    if (seq !== approvalSeq) return
+    approvals.value = result.items
+    total.value = result.total
+    if (!result.items.length && page.value > 1 && result.total <= (page.value - 1) * 20) {
+      page.value = Math.max(1, Math.ceil(result.total / 20))
+      writeQuery()
+    }
+  } catch (error) { if (seq === approvalSeq) approvalError.value = errorMessage(error, '审批列表加载失败，已有记录可能过期') }
+  finally { if (seq === approvalSeq) approvalLoading.value = false }
 }
-
 async function loadGrants() {
-  grants.value = await admin.listApprovalGrants({ limit: 500 })
+  const seq = ++grantSeq
+  grantLoading.value = true
+  grantError.value = ''
+  try {
+    const result = await admin.pageApprovalGrants({ page: grantPage.value, page_size: 10 })
+    if (seq !== grantSeq) return
+    grants.value = result.items
+    grantTotal.value = result.total
+  } catch (error) { if (seq === grantSeq) grantError.value = errorMessage(error, '授权台账加载失败，已有记录可能过期') }
+  finally { if (seq === grantSeq) grantLoading.value = false }
 }
-
+function filterStatus(value) { statusFilter.value = value; page.value = 1; writeQuery() }
+function changePage(value) { page.value = value; writeQuery() }
+watch(() => [route.query.page, route.query.status, route.query.conversation_id, route.query.task_id], () => {
+  page.value = Number(route.query.page) || 1
+  statusFilter.value = route.query.status || ''
+  loadApprovals()
+})
 onMounted(load)
 
 // —— 状态展示映射：pending=待审批 ... failed=失败 ——
@@ -313,6 +375,7 @@ function openReview(row, action) {
   reviewAction.value = action
   reviewNote.value = ''
   reviewGrantScope.value = 'once'
+  reviewError.value = ''
   reviewVisible.value = true
 }
 
@@ -328,9 +391,15 @@ const grantHint = computed(() => {
 })
 
 async function onReview() {
+  if (reviewing.value) return
   reviewing.value = true
+  reviewError.value = ''
   try {
     const row = reviewRow.value
+    if (reviewAction.value === 'approve' && reviewGrantScope.value === 'always') {
+      const confirmed = await ElMessageBox.confirm(`将允许 ${row.user_name} 在所有会话中调用 ${row.tool_name} 时免审，不限于本次参数，仍受权限矩阵约束。可在授权管理撤销。`, '确认永久授权', { type: 'warning', confirmButtonText: '确认范围并授权', cancelButtonText: '返回检查' }).then(() => true).catch(() => false)
+      if (!confirmed) return
+    }
     if (reviewAction.value === 'approve') {
       const result = await admin.approveApproval(row.id, reviewNote.value, reviewGrantScope.value)
       if (result.status === 'failed') {
@@ -345,7 +414,13 @@ async function onReview() {
       ElMessage.success('已拒绝')
     }
     reviewVisible.value = false
+    if (reviewAction.value === 'approve') {
+      try { detailRow.value = await admin.getApproval(row.id); detailVisible.value = true }
+      catch { ElMessage.warning('审批已提交，执行详情暂时无法获取；请在列表中刷新查看') }
+    }
     await load()
+  } catch (error) {
+    reviewError.value = errorMessage(error, '操作失败，请检查审批最新状态后重试')
   } finally {
     reviewing.value = false
   }

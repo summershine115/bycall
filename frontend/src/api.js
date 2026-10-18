@@ -3,6 +3,7 @@
 
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { errorMessage } from './utils/errors'
 
 const http = axios.create({
   baseURL: '/',
@@ -15,16 +16,13 @@ http.interceptors.response.use(
   (resp) => resp,
   (error) => {
     const status = error.response?.status
-    const detail = error.response?.data?.detail || error.message
     if (status === 401) {
       // 未登录 → 跳登录页（避免在登录页自身跳转造成循环）
       if (!window.location.hash.includes('/login')) {
         window.location.hash = '#/login'
       }
     } else if (status >= 400) {
-      const method = (error.config?.method || 'get').toUpperCase()
-      const url = error.config?.url || ''
-      ElMessage.error(`请求失败 (${status}) ${method} ${url}: ${detail}`)
+      ElMessage.error(errorMessage(error, '请求失败，请重试'))
     }
     return Promise.reject(error)
   },
@@ -202,6 +200,8 @@ export const admin = {
   reloadMcpServer: (id) => http.post(`/api/admin/mcp-servers/${id}/reload`).then((r) => r.data),
   testMcpServer: (id) => http.post(`/api/admin/mcp-servers/${id}/test`).then((r) => r.data),
   listTools: () => http.get('/api/admin/tools').then((r) => r.data),
+  pageApprovals: (params) => http.get('/api/admin/approval-pages', { params }).then((r) => r.data),
+  pageApprovalGrants: (params) => http.get('/api/admin/approval-grant-pages', { params }).then((r) => r.data),
   // HITL 审批队列（M4）：敏感工具调用需人工批准后执行
   listApprovals: (status, params = {}) =>
     http

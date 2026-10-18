@@ -589,6 +589,7 @@ class DocumentOut(BaseModel):
     file_name: str
     file_type: str
     embedding_model_id: int | None = None
+    is_retrievable: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -977,6 +978,24 @@ class ApprovalGrantOut(BaseModel):
     revoked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ApprovalPage(BaseModel):
+    """分页审批；计数基于同一组筛选条件。"""
+
+    items: list[ApprovalOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class ApprovalGrantPage(BaseModel):
+    """分页授权台账。"""
+
+    items: list[ApprovalGrantOut]
+    total: int
+    page: int
+    page_size: int
 
 
 # ============ Skill 导入导出 ============

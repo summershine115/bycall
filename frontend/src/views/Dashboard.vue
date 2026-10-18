@@ -1,35 +1,44 @@
 <template>
   <div class="bc-page">
-    <PageHeader title="仪表盘" :description="`平台治理与运行概览 · 更新于 ${loadedAt}`">
+    <PageHeader title="仪表盘" :description="`平台治理与运行概览 · 刷新于 ${loadedAt}`">
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </PageHeader>
 
+    <InlineError v-if="loadErrors.length" :message="loadErrors.join('、') + '刷新失败；已有数字为上次成功结果，首次加载失败显示未知。'" :busy="loading" @retry="load" />
     <ContentLoader v-if="loading" :cards="4" />
 
     <template v-else>
+      <div class="bc-panel bc-panel--padded attention-panel">
+        <strong>待处理事项</strong><p class="bc-muted bc-text-sm">从这里处理审批、连接和入库异常</p>
+        <div class="attention-grid">
+          <button @click="router.push({ name: 'approvals', query: { status: 'pending' } })"><span>待审批</span><strong>{{ pendingTotal ?? '—' }}</strong><span>查看审批 →</span></button>
+          <button @click="router.push({ name: 'agents', query: { tab: 'channels' } })"><span>未连接渠道</span><strong>{{ resourceLoaded.channels ? unhealthyChannels.length : '—' }}</strong><span>检查连接 →</span></button>
+          <button @click="router.push({ name: 'knowledge-hub', query: { tab: 'docs', kb_id: failedDocs[0]?.kb_id } })"><span>入库失败</span><strong>{{ resourceLoaded.kbs ? failedDocs.length : '—' }}</strong><span>查看文档 →</span></button>
+        </div>
+      </div>
       <!-- ============ 第一层级：KPI 行（设计稿：标签 + mono 大数 + 真实脚注） ============ -->
       <div class="kpis">
         <div class="kpi bc-panel">
           <div class="kpi__label">用户总数</div>
-          <div class="kpi__value mono">{{ fmtNum(usersDisplay) }}</div>
-          <div class="kpi__meta">{{ kpi.activeUsers }} 个启用</div>
+          <div class="kpi__value mono">{{ resourceLoaded.users ? fmtNum(usersDisplay) : '—' }}</div>
+          <div class="kpi__meta">{{ resourceLoaded.users ? kpi.activeUsers : '—' }} 个启用</div>
         </div>
         <div class="kpi bc-panel">
           <div class="kpi__label">数字员工</div>
-          <div class="kpi__value mono">{{ fmtNum(agentsDisplay) }}</div>
-          <div class="kpi__meta">{{ agentBotCount }} 个专属连接 · 已授权 {{ kpi.distinctTools }} 项工具</div>
+          <div class="kpi__value mono">{{ resourceLoaded.agents ? fmtNum(agentsDisplay) : '—' }}</div>
+          <div class="kpi__meta">{{ resourceLoaded.agents ? agentBotCount : '—' }} 个专属连接 · 已授权 {{ resourceLoaded.roles ? kpi.distinctTools : '—' }} 项工具</div>
         </div>
         <div class="kpi bc-panel">
-          <div class="kpi__label">今日会话</div>
-          <div class="kpi__value mono">{{ fmtNum(todayConvosDisplay) }}</div>
-          <div class="kpi__meta">覆盖 {{ kpi.todayUsers }} 个用户</div>
+          <div class="kpi__label">今日活跃会话</div>
+          <div class="kpi__value mono">{{ resourceLoaded.conversations ? fmtNum(todayConvosDisplay) : '—' }}</div>
+          <div class="kpi__meta">覆盖 {{ resourceLoaded.conversations ? kpi.todayUsers : '—' }} 个用户</div>
         </div>
         <div class="kpi bc-panel">
           <div class="kpi__label">待审批</div>
-          <div class="kpi__value mono">{{ fmtNum(pendingDisplay) }}</div>
+          <div class="kpi__value mono">{{ pendingTotal ?? '—' }}</div>
           <div class="kpi__meta">
-            <span v-if="kpi.pending" class="kpi__pill kpi__pill--warn">需处理</span>
-            <span v-else class="kpi__pill kpi__pill--ok">无积压</span>
+            <span v-if="pendingTotal" class="kpi__pill kpi__pill--warn">需处理</span>
+            <span v-else-if="pendingTotal === 0" class="kpi__pill kpi__pill--ok">无积压</span><span v-else>状态未知</span>
             <span>敏感操作人工批准</span>
           </div>
         </div>
@@ -55,7 +64,7 @@
             </div>
           </div>
           <div class="dash-card__body chart-wrap">
-            <template v-if="trend.values.length">
+            <template v-if="resourceLoaded.conversations && trend.values.length">
               <svg
                 class="chart"
                 viewBox="0 0 640 200"
@@ -85,27 +94,27 @@
                 >{{ t.text }}</span>
               </div>
             </template>
-            <div v-else class="chart-empty bc-muted">暂无会话数据</div>
+            <div v-else class="chart-empty bc-muted">{{ resourceLoaded.conversations ? '暂无会话数据' : '会话数据尚未加载' }}</div>
           </div>
         </div>
 
         <div class="bc-panel dash-card">
           <div class="dash-card__head">
             <span class="dash-card__title">治理概览</span>
-            <span class="dash-card__hint">近 {{ auditSampleSize }} 条样本</span>
+            <span class="dash-card__hint">近 {{ resourceLoaded.audit ? auditSampleSize : '—' }} 条样本</span>
           </div>
           <div class="gov-list">
             <div class="gov-row">
               审计记录 · 近 24h
-              <span class="gov-row__v mono">{{ fmtNum(kpi.audit24h) }}</span>
+              <span class="gov-row__v mono">{{ fmtNum(resourceLoaded.audit ? kpi.audit24h : null) }}</span>
             </div>
             <div class="gov-row">
               已拒绝访问
-              <span class="gov-row__v mono">{{ fmtNum(kpi.auditDenied) }}</span>
+              <span class="gov-row__v mono">{{ fmtNum(resourceLoaded.audit ? kpi.auditDenied : null) }}</span>
             </div>
             <div class="gov-row">
               执行错误
-              <span class="gov-row__v mono">{{ fmtNum(kpi.auditError) }}</span>
+              <span class="gov-row__v mono">{{ fmtNum(resourceLoaded.audit ? kpi.auditError : null) }}</span>
             </div>
             <div class="gov-row">
               全量留痕
@@ -176,7 +185,7 @@
               </template>
             </el-table-column>
           </el-table>
-          <div v-else class="chart-empty bc-muted">暂无会话</div>
+          <div v-else class="chart-empty bc-muted">{{ resourceLoaded.conversations ? '暂无会话' : '会话数据尚未加载' }}</div>
         </div>
 
         <div class="bc-panel dash-card">
@@ -197,9 +206,9 @@
               </div>
             </div>
           </div>
-          <div v-else class="chart-empty bc-muted">暂无知识库</div>
+          <div v-else class="chart-empty bc-muted">{{ resourceLoaded.kbs ? '暂无知识库' : '知识库数据尚未加载' }}</div>
           <div class="dash-card__foot">
-            <span class="bc-muted bc-text-xs">共 {{ fmtNum(totalDocs) }} 篇文档已索引</span>
+            <span class="bc-muted bc-text-xs">共 {{ resourceLoaded.kbs ? fmtNum(totalDocs) : '—' }} 篇文档</span>
           </div>
         </div>
       </div>
@@ -211,12 +220,20 @@
 import { ref, computed, onMounted } from 'vue'
 import { Refresh, ArrowRight } from '@element-plus/icons-vue'
 import { admin } from '../api'
+import InlineError from '../components/InlineError.vue'
+import { useRouter } from 'vue-router'
+const router = useRouter()
 import PageHeader from '../components/PageHeader.vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import { useCountUp } from '../composables/useCountUp'
 
 /* ---------------- 状态 ---------------- */
 const loading = ref(true)
+const loadErrors = ref([])
+const resourceLoaded = ref({})
+const channels = ref([])
+const failedDocs = ref([])
+const pendingTotal = ref(null)
 const loadedAt = ref('—')
 const users = ref([])
 const roles = ref([])
@@ -264,7 +281,6 @@ const agentBotCount = computed(() =>
   agents.value.reduce((n, a) => n + (a.im_channels?.length || (a.has_im_config ? 1 : 0)), 0),
 )
 const todayConvosDisplay = useCountUp(computed(() => kpi.value.todayConvos))
-const pendingDisplay = useCountUp(computed(() => kpi.value.pending))
 
 /* ---------------- 会话趋势（真实数据分桶） ---------------- */
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
@@ -381,42 +397,49 @@ function fmtClock(s) {
 
 /* ---------------- 加载（并行，单项失败不阻塞） ---------------- */
 async function load() {
+  if (loading.value && resourceLoaded.value.started) return
   loading.value = true
-  try {
-    const safe = (p, fallback) => p.catch(() => fallback)
-    const [userList, roleList, agentList, convList, audit, approvals, kbs] = await Promise.all([
-      safe(admin.listUsers(), []),
-      safe(admin.listRoles(), []),
-      safe(admin.listAgents(), []),
-      safe(admin.listConversations(), []),
-      safe(admin.listAudit({ page: 1, page_size: AUDIT_SAMPLE }), { items: [] }),
-      safe(admin.listApprovals('pending'), []),
-      safe(admin.listKnowledgeBases(), []),
-    ])
-    users.value = userList
-    roles.value = roleList
-    agents.value = agentList
-    conversations.value = convList
-    auditItems.value = audit.items || []
-    auditSampleSize.value = Math.min(auditItems.value.length, AUDIT_SAMPLE)
-    pendingApprovals.value = approvals
-
-    // 每个 KB 的文档量（失败按 0 计，不阻塞看板）
-    kbStats.value = await safe(
-      Promise.all(kbs.map((kb) => admin.listDocuments(kb.id).then((d) => ({ name: kb.name, docs: d.length })))),
-      kbs.map((kb) => ({ name: kb.name, docs: 0 })),
-    )
-
-    loadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  } finally {
-    loading.value = false
-  }
+  resourceLoaded.value.started = true
+  loadErrors.value = []
+  const resources = [
+    ['users', '用户', admin.listUsers(), users],
+    ['roles', '角色', admin.listRoles(), roles],
+    ['agents', '数字员工', admin.listAgents(), agents],
+    ['conversations', '会话', admin.listConversations(), conversations],
+    ['audit', '审计', admin.listAudit({ page: 1, page_size: AUDIT_SAMPLE }), auditItems],
+    ['approvals', '审批', admin.pageApprovals({ status: 'pending', page_size: 1 }), pendingApprovals],
+    ['channels', '连接状态', admin.imStatus(), channels],
+    ['kbs', '知识库', admin.listKnowledgeBases(), null],
+  ]
+  await Promise.all(resources.map(async ([key, label, request, target]) => {
+    try {
+      const value = await request
+      if (key === 'audit') { auditItems.value = value.items; auditSampleSize.value = value.items.length }
+      else if (key === 'approvals') { pendingApprovals.value = value.items; pendingTotal.value = value.total }
+      else if (key === 'channels') channels.value = value.channels || []
+      else if (key === 'kbs') {
+        const docs = await Promise.all(value.map(async (kb) => ({ kb, docs: await admin.listDocuments(kb.id) })))
+        kbStats.value = docs.map(({ kb, docs }) => ({ name: kb.name, docs: docs.length }))
+        failedDocs.value = docs.flatMap(({ kb, docs }) => docs.filter((d) => d.status === 'failed').map((d) => ({ ...d, kb_id: kb.id })))
+      } else target.value = value
+      resourceLoaded.value[key] = true
+    } catch { loadErrors.value.push(label) }
+  }))
+  loadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  loading.value = false
 }
+const unhealthyChannels = computed(() => channels.value.filter((c) => !c.is_connected))
 
 onMounted(load)
 </script>
 
 <style scoped>
+.attention-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:16px; }
+.attention-grid button { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:16px; background:var(--bc-bg-surface); color:var(--bc-text-1); border:1px solid var(--bc-border); border-radius:var(--bc-radius-md); cursor:pointer; text-align:left; }
+.attention-grid strong { font-size:24px; }
+.attention-grid span { font-size:14px; }
+@media(max-width:600px) { .attention-grid { grid-template-columns:1fr; } }
+
 /* ============ KPI 行（设计稿：无强调竖线，label + mono 大数 + 脚注） ============ */
 .kpis {
   display: grid;

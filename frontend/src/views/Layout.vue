@@ -125,7 +125,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../api'
 import ModeToggle from '../components/ModeToggle.vue'
@@ -134,7 +134,11 @@ import { ArrowDown, ArrowRight, Expand, Fold, Setting, SwitchButton } from '@ele
 
 const route = useRoute()
 const router = useRouter()
-const collapsed = ref(false)
+const compactViewport = window.matchMedia('(max-width: 960px)')
+const collapsed = ref(compactViewport.matches)
+function syncCompactViewport(event) { collapsed.value = event.matches }
+onMounted(() => compactViewport.addEventListener('change', syncCompactViewport))
+onBeforeUnmount(() => compactViewport.removeEventListener('change', syncCompactViewport))
 
 // 侧边栏导航模型（分组 + 首页位）与 Hub 定义统一在 src/nav.js（ADR-0014），此处只读不定义。
 
@@ -469,6 +473,16 @@ async function onUserCommand(cmd) {
   .content {
     padding: var(--bc-space-6) var(--bc-space-5) var(--bc-space-10);
   }
+}
+
+@media (max-width: 600px) {
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar__crumb { min-width: 0; }
+  .topbar__group, .topbar__sep, .topbar__env { display: none; }
+  .topbar__page { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar__actions { gap: 6px; flex-shrink: 0; }
+  .topbar__user > span:not(.topbar__avatar) { display: none; }
+  .content { padding: 20px 12px 60px; }
 }
 
 /* 折叠文案淡入淡出 */

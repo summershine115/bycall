@@ -20,6 +20,8 @@
 - [参考连接器](guides/reference-connectors.md)：示例 MCP 连接器接入和角色治理。
 - [T3.2 真机演示](guides/demo-t3.2.md)：三条平台流程的人工演示动线。
 
+- [控制台复查](guides/console-ux-review.md)：T3.8 实施范围、启动方式与验收证据。
+
 ## 规格与调研
 
 - [Agent 框架规格](specs/agent-framework-upgrade.md)：S1/S2 已落地，S3/S4 冻结。

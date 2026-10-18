@@ -9,6 +9,9 @@
       </div>
     </div>
 
+    <InlineError :message="loadError" :busy="loading" @retry="loadAll" />
+    <InlineError :message="pollError" @retry="loadAll" />
+    <p v-if="docsLoadedAt" class="bc-muted bc-text-xs">文档状态更新于 {{ docsLoadedAt }}</p>
     <ContentLoader v-if="loading" :rows="5" />
 
     <template v-else>
@@ -80,7 +83,7 @@
 
         <div class="bc-panel">
           <EmptyState
-            v-if="!documents.length"
+            v-if="!documents.length && !loadError"
             icon="Document"
             :title="filterSource ? '该知识域下暂无文档' : '库内还没有文档'"
             description="添加文档或上传文件入库；入库后可预览切块效果。"
@@ -88,7 +91,7 @@
             <el-button type="primary" :icon="Plus" @click="openCreate">添加文档</el-button>
           </EmptyState>
 
-          <el-table v-else :data="documents">
+          <el-table v-if="documents.length" :data="documents">
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column label="标题" min-width="180">
               <template #default="{ row }">
@@ -124,6 +127,12 @@
                 <el-tag v-else :type="statusType(row.status)" size="small">
                   {{ statusLabel(row.status) }}
                 </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="检索发布" min-width="150">
+              <template #default="{ row }">
+                <el-tag :type="row.is_retrievable ? 'success' : 'info'" size="small">{{ row.is_retrievable ? '已发布，可检索' : '当前不可检索' }}</el-tag>
+                <div v-if="row.status === 'failed'" class="bc-hint">重建失败不代表旧索引可用；请修复后重试。</div>
               </template>
             </el-table-column>
             <el-table-column label="切块数" width="86" align="center">
@@ -535,10 +544,12 @@
 import { Plus, Upload, Grid, Setting, Collection, DataLine } from '@element-plus/icons-vue'
 import ContentLoader from '../components/ContentLoader.vue'
 import EmptyState from '../components/EmptyState.vue'
+import InlineError from '../components/InlineError.vue'
 import ChunkTree from '../components/ChunkTree.vue'
 import { useKnowledge } from './useKnowledge'
 
 const {
+  loadError, pollError, docsLoadedAt, loadAll,
   loading, saving, editing, reindexing,
   kbs, kbId, documents, sources, filterSource, dialogVisible, form, currentKb,
   uploadDialogVisible, uploadFile, uploadForm, uploading,

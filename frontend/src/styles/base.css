@@ -199,3 +199,17 @@ html.no-theme-transition *::after {
   width: 100%;
   transition: width 0.2s ease-out, opacity 0.4s ease-out 0.2s;
 }
+
+/* 控制台任务操作的键盘焦点与窄屏基线。 */
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--bc-text-1);
+  outline-offset: 3px;
+}
+.bc-pagination { padding: 16px; flex-wrap: wrap; gap: 8px; }
+.el-dialog { max-width: calc(100vw - 24px); }
+.el-form-item__content, .el-descriptions__content { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 600px) {
+  .bc-panel--padded { padding: 16px; }
+  .el-dialog__footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .el-radio-group { flex-wrap: wrap; }
+}

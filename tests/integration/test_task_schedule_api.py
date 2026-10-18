@@ -278,6 +278,22 @@ class TestTaskAPI:
         assert len(rows) == 1
         assert rows[0]["goal"] == "进行中"
 
+    def test_list_filter_by_conversation_before_limit(self, client):
+        """关联会话先过滤再截断，避免被其他会话的新任务挤出列表。"""
+        from bycall.db import session_scope
+        from bycall.governance.models import Task
+
+        uid = _user()
+        related = _seed_task(uid, goal="关联任务")
+        _seed_task(uid, goal="其他会话更新的任务")
+        with session_scope() as session:
+            task = session.get(Task, related)
+            task.conversation_id = 123
+            session.add(task)
+        rows = client.get("/api/admin/tasks", params={"conversation_id": 123, "limit": 1}).json()
+        assert [row["id"] for row in rows] == [related]
+        assert client.get("/api/admin/tasks", params={"conversation_id": 999}).json() == []
+
     def test_task_detail_with_steps(self, client):
         uid = _user()
         tid = _seed_task(uid)

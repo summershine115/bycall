@@ -44,7 +44,9 @@ from bycall.admin.schemas import (
     AgentOut,
     AgentUpdate,
     ApprovalGrantOut,
+    ApprovalGrantPage,
     ApprovalOut,
+    ApprovalPage,
     ApprovalReview,
     AuditOut,
     AuditPage,
@@ -2937,7 +2939,7 @@ def list_documents(
     source: str | None = Query(default=None, description="按知识域标签过滤"),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
-) -> list[Document]:
+) -> list[DocumentOut]:
     """列出 KB 内文档。可选 source 过滤。"""
     _get_kb_or_404(session, kb_id)
     if source is not None:
@@ -2946,7 +2948,25 @@ def list_documents(
         ).all()
     else:
         rows = session.exec(Document.select_by_kb(kb_id)).all()
-    return list(rows)
+    from bycall.rag.publication import INDEX_PREFIX
+
+    # 批量读取发布门，避免控制台文档列表为每篇文档额外发一次 SQL。
+    keys = [f"{INDEX_PREFIX}{doc.id}" for doc in rows if doc.status == "completed"]
+    manifests = (
+        {
+            item.key: json.loads(item.value)
+            for item in session.exec(select(SystemSetting).where(SystemSetting.key.in_(keys))).all()
+        }
+        if keys
+        else {}
+    )
+    results = []
+    for doc in rows:
+        out = DocumentOut.model_validate(doc)
+        manifest = manifests.get(f"{INDEX_PREFIX}{doc.id}", {"active": f"doc_{doc.id}"})
+        out.is_retrievable = doc.status == "completed" and bool(manifest.get("active"))
+        results.append(out)
+    return results
 
 
 @router.post(
@@ -4143,6 +4163,8 @@ def _approval_to_out(req) -> ApprovalOut:
         user_name=req.user_name,
         conversation_id=req.conversation_id,
         channel=req.channel,
+        task_id=req.task_id,
+        step_id=req.step_id,
         tool_name=req.tool_name,
         tool_args=args,
         status=req.status,
@@ -4217,6 +4239,62 @@ def list_approval_grants(
         stmt = stmt.where(ApprovalGrant.tool_name == tool_name)
     rows = session.exec(stmt).all()
     return [_grant_to_out(r) for r in rows[:limit]]
+
+
+@router.get("/approval-pages", response_model=ApprovalPage)
+def page_approvals(
+    status_filter: str | None = Query(default=None, alias="status"),
+    conversation_id: int | None = Query(default=None),
+    task_id: int | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalPage:
+    """新增分页查询，保留旧列表接口兼容性并在 SQL 层限制查询量。"""
+    from bycall.governance.models import ApprovalRequest
+
+    stmt = select(ApprovalRequest)
+    if status_filter:
+        stmt = stmt.where(ApprovalRequest.status == status_filter)
+    if conversation_id is not None:
+        stmt = stmt.where(ApprovalRequest.conversation_id == conversation_id)
+    if task_id is not None:
+        stmt = stmt.where(ApprovalRequest.task_id == task_id)
+    total = session.exec(select(func.count()).select_from(stmt.subquery())).one()
+    rows = session.exec(
+        stmt.order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ApprovalPage(
+        items=[_approval_to_out(row) for row in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/approval-grant-pages", response_model=ApprovalGrantPage)
+def page_approval_grants(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    session: Session = Depends(get_session),
+    _admin: None = Depends(_require_admin),
+) -> ApprovalGrantPage:
+    """授权台账使用独立分页，避免只看到前 500 条记录。"""
+    from bycall.governance.models import ApprovalGrant
+
+    total = session.exec(select(func.count()).select_from(ApprovalGrant)).one()
+    rows = session.exec(
+        select(ApprovalGrant)
+        .order_by(ApprovalGrant.granted_at.desc(), ApprovalGrant.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ApprovalGrantPage(
+        items=[_grant_to_out(row) for row in rows], total=total, page=page, page_size=page_size
+    )
 
 
 @router.post("/approvals/grants/{grant_id}/revoke", response_model=ApprovalGrantOut)
@@ -4487,6 +4565,7 @@ def list_tasks(
         default=None, alias="status", description="按状态过滤（completed/failed/paused/...）"
     ),
     user_id: int | None = Query(default=None, description="按执行用户过滤"),
+    conversation_id: int | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
     _admin: None = Depends(_require_admin),
@@ -4497,6 +4576,8 @@ def list_tasks(
         stmt = stmt.where(Task.status == status_filter)
     if user_id is not None:
         stmt = stmt.where(Task.user_id == user_id)
+    if conversation_id is not None:
+        stmt = stmt.where(Task.conversation_id == conversation_id)
     rows = session.exec(stmt.order_by(Task.created_at.desc()).limit(limit)).all()
     return [_task_to_out(session, t) for t in rows]
 
