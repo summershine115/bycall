@@ -260,6 +260,7 @@ def _lexical_rank(query: str, results: list[SearchResult]) -> list[SearchResult]
     """在同一候选语料上计算 BM25；无关键词交集的候选不作为证据。"""
     terms = set(_tokens(query))
     docs = [Counter(_tokens(r.text)) for r in results]
+    document_freq = Counter(term for doc in docs for term in doc)
     lengths = [sum(d.values()) for d in docs]
     avg_length = sum(lengths) / max(1, len(docs)) or 1.0
     out = []
@@ -269,7 +270,7 @@ def _lexical_rank(query: str, results: list[SearchResult]) -> list[SearchResult]
             freq = doc[term]
             if not freq:
                 continue
-            df = sum(term in d for d in docs)
+            df = document_freq[term]
             idf = math.log(1 + (len(docs) - df + 0.5) / (df + 0.5))
             score += idf * freq * 2.2 / (freq + 1.2 * (0.25 + 0.75 * length / avg_length))
         if score > 0:

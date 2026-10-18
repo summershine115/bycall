@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import json
 import logging
 import threading
@@ -34,7 +35,7 @@ from dataclasses import dataclass, field
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from bycall.agent.context_budget import budget_and_format_rag, resolve_budget
 from bycall.agent.graph import TOOL_ROUND_FLUSH, GraphResult, run_tool_loop, run_tool_loop_stream
@@ -72,48 +73,73 @@ logger = logging.getLogger(__name__)
 
 # 测试置 True → 同步压缩（确定性好断言）；生产保持 False（后台线程）。
 _COMPACTION_SYNC = False
-_compactor_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compaction")
-_compactor_locks: dict[int, threading.Lock] = {}
-_compactor_locks_guard = threading.Lock()
-atexit.register(_compactor_executor.shutdown, wait=False)
+_MEMORY_SYNC = False
+_background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent-maintenance")
+_background_slots = threading.BoundedSemaphore(34)
+_compactor_pending: set[int] = set()
+_compactor_guard = threading.Lock()
+_prepare_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="agent-prepare")
+_prepare_slots = threading.BoundedSemaphore(16)
+atexit.register(_background_executor.shutdown, wait=False, cancel_futures=True)
+atexit.register(_prepare_executor.shutdown, wait=False, cancel_futures=True)
 
 
-def _compactor_lock_for(conversation_id: int) -> threading.Lock:
-    with _compactor_locks_guard:
-        lock = _compactor_locks.get(conversation_id)
-        if lock is None:
-            lock = threading.Lock()
-            _compactor_locks[conversation_id] = lock
-        return lock
+def _submit_maintenance(func, *args, **kwargs):
+    """可选维护任务满载时跳过；限制运行中与排队总数，避免积压持有对话全文。"""
+    if not _background_slots.acquire(blocking=False):
+        logger.warning("后台维护队列已满，跳过 %s", func.__name__)
+        return None
+    try:
+        future = _background_executor.submit(func, *args, **kwargs)
+    except RuntimeError:
+        _background_slots.release()
+        logger.warning("后台维护已停止，跳过任务")
+        return None
+    future.add_done_callback(lambda _: _background_slots.release())
+    return future
 
 
 def _run_compaction(conversation_id: int) -> None:
-    """后台压缩一个会话（自包含：开自己的 session + 取 chat model + 压缩 + 提交）。"""
+    """后台压缩自建 session；跨进程并发由 compress_conversation 的 DB 租约控制。"""
     from bycall.llm import resolver
 
-    lock = _compactor_lock_for(conversation_id)
-    if not lock.acquire(blocking=False):
-        return  # 该会话已在压缩，跳过；下一轮 should_compress 会再追
     try:
         with session_scope() as session:
-            try:
-                _model, chat_model = resolver.get_chat_model(session)
-            except Exception as e:  # 取不到模型（如未配置）→ 跳过，不阻断
-                logger.warning("压缩取模型失败 conv=%s: %s", conversation_id, e)
+            resolved = resolver.get_chat_model(session)
+            if resolved is None:
                 return
-            compress_conversation(session, conversation_id, chat_model)
+            compress_conversation(session, conversation_id, resolved[1])
     except Exception:
         logger.exception("后台压缩失败 conv=%s", conversation_id)
-    finally:
-        lock.release()
 
 
 def schedule_compaction(conversation_id: int) -> None:
-    """异步压缩会话历史（不阻塞用户回复）。幂等可重入；指针模型保证不丢、不重复。"""
+    """同会话至多一个待处理任务，结束后删除登记，不积累永久会话锁。"""
     if _COMPACTION_SYNC:
         _run_compaction(conversation_id)
         return
-    _compactor_executor.submit(_run_compaction, conversation_id)
+    with _compactor_guard:
+        if conversation_id in _compactor_pending:
+            return
+        _compactor_pending.add(conversation_id)
+
+    def done(_future):
+        with _compactor_guard:
+            _compactor_pending.discard(conversation_id)
+
+    future = _submit_maintenance(_run_compaction, conversation_id)
+    if future is None:
+        done(None)
+    else:
+        future.add_done_callback(done)
+
+
+def schedule_memory_extraction(**kwargs) -> None:
+    """回答提交后再调度可选记忆提取；测试可同步执行以保证隔离。"""
+    if _MEMORY_SYNC:
+        maybe_extract_and_save_memory(**kwargs)
+    else:
+        _submit_maintenance(maybe_extract_and_save_memory, **kwargs)
 
 
 _tracer = get_tracer()
@@ -228,13 +254,15 @@ def _run_agent_impl(
     if decision != "ready":
         return payload  # denied / denied_no_access（已审计）
 
+    # 模型等待前释放前置读取事务；快照避免 commit 后自动刷新用户而重新占用连接。
+    user = User.model_validate(user)
+    session.commit()
     cap = payload.cap
     retrieved = payload.retrieved
     langchain_tools = payload.langchain_tools
     messages = payload.messages
     context_trace = payload.context_trace
-    cap_token = payload.cap_token
-    approval_token = payload.approval_token
+    cap_token, approval_token = _set_turn_context(cap, user, conversation_id, channel, im_user_id)
 
     # 5. 执行工具回路（LangGraph）：model ↔ tool 循环，直到无 tool_calls。
     from bycall.mcp.context import reset_current_capability
@@ -266,13 +294,8 @@ def _run_agent_impl(
         reset_current_capability(cap_token)
         reset_approval_context(approval_token)
 
-    # 8. agent 记忆提取（保守可写，红线 #7）：仅 answered+工具调用 轮触发——纯闲聊/拒绝/
-    # 失败不调提取 LLM（省成本）。提取写入用独立 session，失败不影响主流程。
-    if graph_result.tool_calls_made:
-        maybe_extract_and_save_memory(llm=llm, user_id=user.id, question=question, answer=answer)
-
     # 6-7. 会话持久化 + 审计 + 构造结果（两路共用）。
-    return _finalize_turn(
+    result = _finalize_turn(
         session=session,
         user=user,
         channel=channel,
@@ -284,6 +307,9 @@ def _run_agent_impl(
         context_trace=context_trace,
         conversation_id=conversation_id,
     )
+    if graph_result.tool_calls_made:
+        schedule_memory_extraction(llm=llm, user_id=user.id, question=question, answer=answer)
+    return result
 
 
 def _result(
@@ -476,6 +502,14 @@ def _to_langchain_messages(messages: list[LLMMessage]) -> list[BaseMessage]:
     return result
 
 
+def _visible_kbs_statement(cap: CapabilitySet):
+    """KB 可见性先在 SQL 收窄；查询和改写判定复用同一条件。"""
+    stmt = select(KnowledgeBase).order_by(KnowledgeBase.id)
+    if not cap.is_admin:
+        stmt = stmt.where(KnowledgeBase.id.in_(cap.visible_kb_ids))
+    return stmt
+
+
 def _retrieve_across_kbs(
     session: Session,
     question: str,
@@ -498,10 +532,7 @@ def _retrieve_across_kbs(
 
     budget = resolve_budget(cap.context_budget_overrides)
 
-    kbs = list(session.exec(KnowledgeBase.select_all()).all())
-    if not cap.is_admin:
-        visible_ids = set(cap.visible_kb_ids)
-        kbs = [kb for kb in kbs if kb.id in visible_ids]
+    kbs = session.exec(_visible_kbs_statement(cap)).all()
     if not kbs:
         return RetrievalOutcome()
 
@@ -562,8 +593,6 @@ class _PreparedTurn:
     langchain_tools: list
     messages: list
     context_trace: str
-    cap_token: object
-    approval_token: object
 
 
 def _prepare_turn(
@@ -632,7 +661,7 @@ def _prepare_turn(
     with _tracer.start_as_current_span("rag.retrieve") as _span:
         search_question = question
         history = []
-        has_kbs = bool(session.exec(KnowledgeBase.select_all()).first())
+        has_kbs = bool(session.exec(_visible_kbs_statement(cap).limit(1)).first())
         if llm is not None and conversation_id is not None and has_kbs and cap.knowledge_scope_tags:
             history = load_message_history(
                 session, conversation_id, budget=resolve_budget(cap.context_budget_overrides)
@@ -675,29 +704,38 @@ def _prepare_turn(
         retrieved=retrieved,
     )
 
-    # 能力令牌 + 审批上下文（M4）。
-    from bycall.mcp.context import set_current_capability
-    from bycall.tools.approval import ApprovalContext, set_approval_context
-
-    cap_token = set_current_capability(cap)
-    approval_token = set_approval_context(
-        ApprovalContext(
-            user_id=user.id,  # type: ignore[arg-type]
-            user_name=user.name,
-            conversation_id=conversation_id,
-            channel=channel,
-            im_user_id=im_user_id,
-        )
-    )
     return "ready", _PreparedTurn(
         cap=cap,
         retrieved=retrieved,
         langchain_tools=langchain_tools,
         messages=messages,
         context_trace=context_trace,
-        cap_token=cap_token,
-        approval_token=approval_token,
     )
+
+
+def _set_turn_context(cap, user, conversation_id, channel, im_user_id):
+    """执行工具的线程/Task 自己安装令牌，不能跨 context 返回或 reset token。"""
+    from bycall.mcp.context import set_current_capability
+    from bycall.tools.approval import ApprovalContext, set_approval_context
+
+    return set_current_capability(cap), set_approval_context(
+        ApprovalContext(
+            user_id=user.id,
+            user_name=user.name,
+            conversation_id=conversation_id,
+            channel=channel,
+            im_user_id=im_user_id,
+        )
+    )
+
+
+def _prepare_stream_turn(bind, user_id: int, **kwargs):
+    """工作线程独占自己的 Session；只返回消息、能力值与工具，不返回 ORM 实体。"""
+    with Session(bind) as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise PermissionError("用户已不存在")
+        return _prepare_turn(session=session, user=user, **kwargs)
 
 
 def _retrieval_notice(retrieved: list) -> str:
@@ -734,8 +772,6 @@ def _finalize_turn(
     if conversation_id is not None:
         save_message(session, conversation_id, "user", question)
         save_message(session, conversation_id, "assistant", answer)
-        # 压缩改后台异步：指针判定与折叠在 compress_conversation 内，不阻塞回复。
-        schedule_compaction(conversation_id)
 
     # 7. 审计落库（含工具调用记录）。
     tool_detail = ""
@@ -754,6 +790,9 @@ def _finalize_turn(
         tool_results=json.dumps(graph_result.tool_calls_made, ensure_ascii=False),
         context_trace=context_trace,
     )
+    # _audit 已提交历史与审计，后台读取不会早于事务提交。
+    if conversation_id is not None and channel == "api":
+        schedule_compaction(conversation_id)
 
     return _result(
         answer=answer,
@@ -825,17 +864,35 @@ async def _run_agent_stream_impl(
     stream_id 由调用方管理（IM 渠道用 sender.send_stream 的 stream_id），此处不生成。
     """
 
-    # 1-4. 治理前置管线（能力集 → RAG 预过滤 → 工具过滤 → 消息 + 能力/审批令牌）。
-    decision, payload = _prepare_turn(
-        llm=llm,
-        session=session,
-        user=user,
-        question=question,
-        channel=channel,
-        conversation_id=conversation_id,
-        im_user_id=im_user_id,
-        agent_id=agent_id,
-    )
+    # 仅传引擎和标量给工作线程；先释放入口事务，模型等待期间不占用该连接。
+    bind = session.get_bind()
+    user = User.model_validate(user)
+    session.commit()
+    if not _prepare_slots.acquire(blocking=False):
+        result = _result(
+            answer="服务繁忙，请稍后再试。", decision="busy", scope=[], retrieved=0, user=user
+        )
+        yield result.answer, True, result
+        return
+    try:
+        future = _prepare_executor.submit(
+            contextvars.copy_context().run,
+            _prepare_stream_turn,
+            bind,
+            user.id,
+            llm=llm,
+            question=question,
+            channel=channel,
+            conversation_id=conversation_id,
+            im_user_id=im_user_id,
+            agent_id=agent_id,
+        )
+    except BaseException:
+        _prepare_slots.release()
+        raise
+    # 取消等待不会提前归还仍在执行的工作槽位，也不会让调用方复用线程里的 Session。
+    future.add_done_callback(lambda _: _prepare_slots.release())
+    decision, payload = await asyncio.wrap_future(future)
     if decision != "ready":
         result = payload  # denied / denied_no_access（已审计）
         yield result.answer, True, result
@@ -846,8 +903,7 @@ async def _run_agent_stream_impl(
     langchain_tools = payload.langchain_tools
     messages = payload.messages
     context_trace = payload.context_trace
-    cap_token = payload.cap_token
-    approval_token = payload.approval_token
+    cap_token, approval_token = _set_turn_context(cap, user, conversation_id, channel, im_user_id)
 
     # 5. 流式执行工具回路。
     from bycall.mcp.context import reset_current_capability
@@ -904,17 +960,6 @@ async def _run_agent_stream_impl(
         graph_result = GraphResult(answer=full_answer)
     answer = full_answer or graph_result.answer
 
-    # 8. agent 记忆提取（保守可写）：仅 answered+工具调用 轮触发。放独立线程跑同步提取，
-    # 不阻塞事件循环；答案已流式送出（用户在读），提取期间用户无感。
-    if graph_result.tool_calls_made:
-        await asyncio.to_thread(
-            maybe_extract_and_save_memory,
-            llm=llm,
-            user_id=user.id,
-            question=question,
-            answer=answer,
-        )
-
     # 6-7. 会话持久化 + 审计 + 构造结果（两路共用）。
     result = _finalize_turn(
         session=session,
@@ -928,6 +973,8 @@ async def _run_agent_stream_impl(
         context_trace=context_trace,
         conversation_id=conversation_id,
     )
+    if graph_result.tool_calls_made:
+        schedule_memory_extraction(llm=llm, user_id=user.id, question=question, answer=answer)
     notice = _retrieval_notice(retrieved)
     if notice:
         yield notice, False, None

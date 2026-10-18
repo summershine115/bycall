@@ -301,7 +301,7 @@ async def _run_stream(
       的终局结果）时，回填 user 消息 + 写一条 system 失败条目——用户问了什么始终可见，
       历史永不断裂。回填在租约释放前完成（持租约 append）。
     """
-    from bycall.agent.runner import run_agent_stream
+    from bycall.agent.runner import run_agent_stream, schedule_compaction
     from bycall.agent.session_lease import (
         acquire_turn_lease,
         lease_heartbeat,
@@ -322,6 +322,7 @@ async def _run_stream(
     session: Any = ctx.__enter__()
     lease_token: str | None = None
     conv_id: int | None = None
+    answered = False
     try:
         user = session.get(User, user_id)
         if user is None:
@@ -368,8 +369,10 @@ async def _run_stream(
             ):
                 # run_agent_stream 内部捕获 LLM 错误后产出 decision="error" 终局结果并提前
                 # return（不走 save_message）——视为失败，触发回填，保证历史不断裂。
-                if is_final and result is not None and result.decision == "error":
-                    failed = True
+                if is_final and result is not None:
+                    answered = result.decision == "answered"
+                    if result.decision == "error":
+                        failed = True
                 yield chunk_text, is_final, result
         except Exception:
             failed = True
@@ -387,6 +390,9 @@ async def _run_stream(
             ctx.__exit__(None, None, None)
         except Exception:
             logger.warning("流式 session 提交失败（可能因异常导致），已忽略", exc_info=True)
+        if answered and conv_id is not None:
+            # turn 租约与入口 Session 均已释放，后台压缩才能获取自己的租约。
+            schedule_compaction(conv_id)
 
 
 def _no_model_result_static(channel: str = ""):

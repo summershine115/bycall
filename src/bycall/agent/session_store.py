@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 
 from langchain_core.language_models import BaseChatModel
-from sqlmodel import Session
+from sqlalchemy import exists, func, update
+from sqlmodel import Session, select
 
 from bycall.agent.context_budget import DEFAULT_BUDGET, ContextBudget, ContextReport
-from bycall.governance.models import Conversation, Message, UserMemory
+from bycall.governance.models import Conversation, Message, SessionLease, UserMemory
 from bycall.llm.base import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
@@ -153,11 +155,6 @@ def _term_set(text: str) -> set[str]:
     return terms
 
 
-def _memory_score(mem: UserMemory, q_terms: set[str]) -> int:
-    """记忆与问题的关键词重叠度（越大越相关）。"""
-    return len(_term_set(mem.content) & q_terms)
-
-
 def load_user_memory(
     session: Session, user_id: int, question: str = "", *, budget: ContextBudget | None = None
 ) -> list[UserMemory]:
@@ -172,27 +169,46 @@ def load_user_memory(
     预算上限由 ``budget.memory_max_items / memory_max_chars`` 决定（不传用默认）——按角色可调（缺陷 4）。
     """
     b = budget or DEFAULT_BUDGET
-    memories = list(session.exec(UserMemory.select_active_by_user(user_id, source="admin")).all())
-    if not memories:
+    if b.memory_max_items <= 0 or b.memory_max_chars <= 0:
         return []
-    if question:
-        q_terms = _term_set(question)
-        if q_terms:
-            memories = sorted(
-                memories,
-                key=lambda m: (-_memory_score(m, q_terms), m.id or 0),
-            )
-    picked: list[UserMemory] = []
+    q_terms = _term_set(question)
+    if not q_terms:
+        return _load_ordered_memory(
+            session, user_id, "admin", b.memory_max_items, b.memory_max_chars
+        )
+    stmt = (
+        select(UserMemory.id, UserMemory.content)
+        .where(
+            UserMemory.user_id == user_id,
+            UserMemory.source == "admin",
+            UserMemory.status == "active",
+            func.length(UserMemory.content) <= b.memory_max_chars,
+        )
+        .execution_options(yield_per=128)
+    )
+    # 相关性仍扫描全部有效记忆，但排序只保留分数/ID/长度，不持有全文和 ORM 对象。
+    ranked = sorted(
+        (-len(_term_set(content) & q_terms), id_, len(content))
+        for id_, content in session.exec(stmt)
+    )
+    picked_ids = []
     used_chars = 0
-    for m in memories:
-        cost = len(m.content)
+    for _score, id_, cost in ranked:
         if used_chars + cost > b.memory_max_chars:
-            continue  # 超字符预算：跳过（高相关项已在前，宁可少注入也不超）
-        picked.append(m)
+            continue
+        picked_ids.append(id_)
         used_chars += cost
-        if len(picked) >= b.memory_max_items:
+        if len(picked_ids) >= b.memory_max_items:
             break
-    return picked
+    if not picked_ids:
+        return []
+    picked = session.exec(
+        UserMemory.select_active_by_user(user_id, source="admin").where(
+            UserMemory.id.in_(picked_ids)
+        )
+    ).all()
+    by_id = {m.id: m for m in picked}
+    return [by_id[id_] for id_ in picked_ids if id_ in by_id]
 
 
 def load_agent_memory(
@@ -209,16 +225,31 @@ def load_agent_memory(
     预算上限由 ``budget.agent_memory_max_items / agent_memory_max_chars`` 决定（不传用默认）。
     """
     b = budget or DEFAULT_BUDGET
-    memories = list(session.exec(UserMemory.select_active_by_user(user_id, source="agent")).all())
+    return _load_ordered_memory(
+        session, user_id, "agent", b.agent_memory_max_items, b.agent_memory_max_chars
+    )
+
+
+def _load_ordered_memory(
+    session: Session, user_id: int, source: str, max_items: int, max_chars: int
+) -> list[UserMemory]:
+    """无相关性重排时分批读取，满足预算即停止；不加载单条就不可能容纳的全文。"""
+    if max_items <= 0 or max_chars <= 0:
+        return []
+    memories = session.exec(
+        UserMemory.select_active_by_user(user_id, source=source)
+        .where(func.length(UserMemory.content) <= max_chars)
+        .execution_options(yield_per=128)
+    )
     picked: list[UserMemory] = []
     used_chars = 0
-    for m in memories:
-        cost = len(m.content)
-        if used_chars + cost > b.agent_memory_max_chars:
-            continue  # 超字符预算：跳过（不半截注入）
-        picked.append(m)
+    for memory in memories:
+        cost = len(memory.content)
+        if used_chars + cost > max_chars:
+            continue
+        picked.append(memory)
         used_chars += cost
-        if len(picked) >= b.agent_memory_max_items:
+        if len(picked) >= max_items:
             break
     return picked
 
@@ -433,7 +464,13 @@ def should_compress(*, message_count: int, summary_covered_count: int) -> bool:
     )
 
 
-def compress_history(llm: BaseChatModel, messages: list[Message], previous_summary: str) -> str:
+def compress_history(
+    llm: BaseChatModel,
+    messages: list[Message],
+    previous_summary: str,
+    *,
+    raise_errors: bool = False,
+) -> str:
     """把一批消息增量折叠进摘要（纯函数：调用方决定折叠哪些消息）。
 
     附带 previous_summary 让 LLM 增量更新（不从头重写）。LLM 调用失败时返回
@@ -462,7 +499,11 @@ def compress_history(llm: BaseChatModel, messages: list[Message], previous_summa
                 "会话压缩完成: %d 条消息 → summary %d 字符", len(messages), len(new_summary)
             )
             return new_summary
+        if raise_errors:
+            raise ValueError("摘要模型返回空内容")
     except Exception as e:
+        if raise_errors:
+            raise
         logger.warning("会话压缩失败，保留旧摘要: %s", e)
     return previous_summary
 
@@ -475,29 +516,71 @@ def load_message_range(
 
 
 def compress_conversation(session: Session, conversation_id: int, llm: BaseChatModel) -> bool:
-    """压缩指定会话：把"滑出窗口、尚未进 summary"的消息折进 summary 并推进指针。
+    """持租约压缩并提交摘要；LLM 等待前提交读取事务，失败或租约失效不推进指针。
 
-    幂等且自包含——后台任务与单测均可直接调。返回是否实际推进了指针。
+    本函数自包含提交，调用方应使用专用 Session；同会话任务合并不能替代 DB 租约。
     """
+    from bycall.agent.session_lease import acquire_lease, release_lease
+    from bycall.config import get_settings
+
     conv = session.get(Conversation, conversation_id)
-    if conv is None:
-        return False
-    if not should_compress(
+    if conv is None or not should_compress(
         message_count=conv.message_count, summary_covered_count=conv.summary_covered_count
     ):
         return False
-    start = conv.summary_covered_count
-    end = conv.message_count - DEFAULT_BUDGET.history_limit  # 窗口之外的最新边界
-    to_fold = load_message_range(session, conversation_id, offset=start, limit=end - start)
-    if not to_fold:
+    token = acquire_lease(
+        session,
+        conversation_id,
+        "compaction",
+        ttl_seconds=get_settings().session_lease_ttl_seconds,
+    )
+    session.commit()
+    if token is None:
         return False
-    new_summary = compress_history(llm, to_fold, conv.summary)
-    if new_summary and new_summary != conv.summary:
-        conv.summary = new_summary
-    conv.summary_covered_count = end
-    session.add(conv)
-    logger.info("会话 %s 压缩：指针 %d→%d，折叠 %d 条", conversation_id, start, end, len(to_fold))
-    return True
+    try:
+        # 获取租约后重新读取，不能沿用排队前或前一个事务内的 ORM 状态。
+        session.refresh(conv)
+        start = conv.summary_covered_count
+        end = conv.message_count - DEFAULT_BUDGET.history_limit
+        previous_summary = conv.summary
+        if end <= start:
+            return False
+        to_fold = [
+            Message.model_validate(message)
+            for message in load_message_range(
+                session, conversation_id, offset=start, limit=end - start
+            )
+        ]
+        session.commit()
+        if not to_fold:
+            return False
+        new_summary = compress_history(llm, to_fold, previous_summary, raise_errors=True)
+        # 过期/被抢占的任务不能发布；CAS 同时避免覆盖已被其他写入更新的摘要。
+        lease_owned = exists().where(
+            SessionLease.conversation_id == conversation_id,
+            SessionLease.token == token,
+            SessionLease.expires_at > datetime.now(UTC),
+        )
+        result = session.execute(
+            update(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.summary_covered_count == start,
+                Conversation.summary == previous_summary,
+                lease_owned,
+            )
+            .values(summary=new_summary, summary_covered_count=end)
+            .execution_options(synchronize_session=False)
+        )
+        return (result.rowcount or 0) > 0
+    except Exception:
+        session.rollback()
+        logger.exception("会话 %s 压缩失败，保留摘要与指针", conversation_id)
+        return False
+    finally:
+        # 摘要写入与释放租约同事务提交；旧 token 不会释放后继任务的租约。
+        release_lease(session, conversation_id, token)
+        session.commit()
 
 
 __all__ = [

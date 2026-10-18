@@ -554,7 +554,9 @@ class TestAgentImConfigValidation:
         from bycall.admin.api import _validate_agent_im_config
 
         # 完整凭证（无冲突）通过——不再 400。
-        _validate_agent_im_config(db_session, None, {"feishu": {"app_id": "cli_a", "app_secret": "s"}})
+        _validate_agent_im_config(
+            db_session, None, {"feishu": {"app_id": "cli_a", "app_secret": "s"}}
+        )
 
     def test_invalid_payload_shape_rejected(self, db_session):
         """顶层非渠道分组的标量字段 → 400（拼写错误不被静默吞掉）。"""
@@ -788,6 +790,7 @@ class TestAgentOutPreview:
         out = _agent_to_out(agent)
         assert out.has_im_config is True
         assert out.im_config_preview == {"_error": "<decrypt failed>"}
+
 
 class TestImConfigNormalizeAndMerge:
     """im_config 规范化 / PATCH 解析 / 按渠道合并的纯函数契约。"""

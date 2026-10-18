@@ -27,6 +27,7 @@ def _reset_settings():
     from bycall.agent import runner as _runner
 
     _runner._COMPACTION_SYNC = True
+    _runner._MEMORY_SYNC = True
     yield
     get_settings.cache_clear()
     clear_registry()
@@ -39,6 +40,7 @@ def _reset_settings():
 
     clear_capability_cache()
     _runner._COMPACTION_SYNC = False
+    _runner._MEMORY_SYNC = False
 
 
 @pytest.fixture

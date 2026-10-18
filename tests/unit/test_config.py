@@ -21,6 +21,7 @@ def test_env_override_top_level(monkeypatch):
     monkeypatch.setenv("BYCALL_ENV", "prod")
     monkeypatch.setenv("BYCALL_DEBUG", "false")
     monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
+    monkeypatch.setenv("BYCALL_SESSION_SECRET", "test-session-secret-" + "s" * 32)
     get_settings.cache_clear()
     config = get_settings()
     assert config.env == "prod"

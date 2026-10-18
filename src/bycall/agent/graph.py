@@ -262,7 +262,7 @@ async def run_tool_loop_stream(
     tool_call 到达之后的文本是工具回合杂音，一律不外送。
 
     AIMessageChunk 累加（``acc = acc + chunk``）：``acc.tool_calls`` 给出组装好的完整
-    tool_calls，``acc.content`` 给完整 content。工具执行手动 ``tool.invoke`` 构造
+    tool_calls，``acc.content`` 给完整 content。工具执行使用标准 ``tool.ainvoke`` 构造
     ToolMessage（脱离 graph 执行上下文时 ToolNode 要求 LangGraph config），审计记录
     复用 ``_collect_tool_calls``（含 result 截断、「请求未执行」兜底）。
 
@@ -323,7 +323,7 @@ async def run_tool_loop_stream(
                 # 工具回合：把组装好的 AIMessage（含 tool_calls）追加进上下文，
                 # 然后逐个执行 tool_call。此处不能复用 ToolNode——它脱离 graph
                 # 执行上下文时要求 LangGraph config（standalone invoke 会报缺
-                # config key），故手动 tool.invoke 构造 ToolMessage，逻辑等价。
+                # config key），故使用 tool.ainvoke 构造 ToolMessage，逻辑等价。
                 # 工具回合的文本一律不向用户 yield（避免污染 runner 的 full_answer）。
                 ai_msg = AIMessage(
                     content=_content_to_text(acc.content) if acc else "",
@@ -338,7 +338,7 @@ async def run_tool_loop_stream(
                         result_str = f"<unknown_tool: {tc_name}>"
                     else:
                         try:
-                            result = tool.invoke(tc.get("args", {}))
+                            result = await tool.ainvoke(tc.get("args", {}))
                         except Exception as e:  # 工具执行异常不中断回路，记进审计。
                             logger.warning("工具 %s 执行失败: %s", tc_name, e)
                             result_str = f"<tool_error: {e}>"

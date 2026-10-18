@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from bycall.db import session_scope
 from bycall.governance.models import UserMemory
@@ -90,18 +90,36 @@ def maybe_extract_and_save_memory(
     try:
         with session_scope() as session:
             settings = _read_extract_settings(session)
-            if not settings.enabled:
-                return 0
-            candidates = _extract_candidates(llm, question, answer)
-            if not candidates:
-                return 0
-            for cand in candidates:
-                gated = _gate(cand, settings)
-                if gated is None:
+        if not settings.enabled:
+            return 0
+        candidates = _extract_candidates(llm, question, answer)
+        facts = [gated for cand in candidates if (gated := _gate(cand, settings)) is not None]
+        if not facts:
+            return 0
+        with session_scope() as session:
+            existing = {
+                _normalize(content)
+                for content in session.exec(
+                    select(UserMemory.content)
+                    .where(UserMemory.user_id == user_id)
+                    .execution_options(yield_per=128)
+                )
+            }
+            for fact, category, confidence in facts:
+                norm = _normalize(fact)
+                if norm in existing:
                     continue
-                fact, category, confidence = gated
-                if _save_if_new(session, user_id, fact, category, confidence):
-                    written += 1
+                session.add(
+                    UserMemory(
+                        user_id=user_id,
+                        content=fact,
+                        category=category,
+                        source="agent",
+                        confidence=confidence,
+                    )
+                )
+                existing.add(norm)
+                written += 1
             if written:
                 logger.info("agent 记忆提取写入 %d 条 user_id=%s", written, user_id)
     except Exception:
@@ -200,32 +218,6 @@ def _normalize(text: str) -> str:
     与「负责 华东 区销售」判为不同——去空白才能正确去重。仅用于匹配，不影响落库原文。
     """
     return "".join(text.lower().split())
-
-
-def _save_if_new(
-    session: Session, user_id: int, fact: str, category: str, confidence: float
-) -> bool:
-    """去重后写入 agent 记忆。已存在同事实（任意来源/状态）→ 不写，返回 False。
-
-    匹配范围含 admin/agent、active/superseded 全部：admin 同事实 → 不覆盖（权威）；
-    agent 同事实 → 不重复；已被 admin 标 superseded 的同事实 → 不复活（尊重纠正）。
-    """
-    norm = _normalize(fact)
-    existing = session.exec(UserMemory.select_by_user(user_id)).all()
-    if any(_normalize(m.content) == norm for m in existing):
-        return False
-    session.add(
-        UserMemory(
-            user_id=user_id,
-            category=category,
-            content=fact,
-            source="agent",
-            confidence=confidence,
-            status="active",
-        )
-    )
-    session.flush()
-    return True
 
 
 __all__ = ["maybe_extract_and_save_memory"]

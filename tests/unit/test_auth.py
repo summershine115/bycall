@@ -182,6 +182,7 @@ def test_set_act_as_prod_raises(db_env, monkeypatch):
 
     monkeypatch.setenv("BYCALL_ENV", "prod")
     monkeypatch.setenv("BYCALL_SECRET_ENCRYPTION_KEY", "e" * 48)
+    monkeypatch.setenv("BYCALL_SESSION_SECRET", "test-session-secret-" + "s" * 32)
     get_settings.cache_clear()
     assert get_settings().env == "prod"
 
