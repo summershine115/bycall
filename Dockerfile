@@ -19,6 +19,11 @@ RUN pip install --no-cache-dir -e ".[dev]"
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 
+# 镜像内默认零依赖可跑：状态库用 /app/data 下的 SQLite；生产用环境变量覆盖为 Postgres DSN
+# （docker-compose 的 app 服务已覆盖），不依赖构建期 .env。
+ENV BYCALL_POSTGRES_DSN=sqlite:////app/data/bycall.db \
+    BYCALL_VECTOR_STORE_DATA_DIR=/app/data/zvec
+
 EXPOSE 8000
 
 # 生产入口：非 reload，多 worker（M0 先 1 worker，M5 调优）。

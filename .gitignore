@@ -23,8 +23,8 @@ coverage.xml
 .mypy_cache/
 .ruff_cache/
 
-# ---- 运行时数据（绝不进 git）----
-data/
+# ---- 运行时数据（绝不进 git，但保留目录占位）----
+data/*
 !data/.gitkeep
 *.log
 logs/
@@ -53,6 +53,7 @@ secrets/
 .claude/
 .omo/
 .senpi/
+skills-lock.json
 
 # ---- 前端构建产物 ----
 frontend/node_modules/

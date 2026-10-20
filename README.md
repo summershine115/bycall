@@ -63,6 +63,7 @@ confused deputy 与提示注入降质仍是开放难题，对策在审批、审�
 
 ```bash
 git clone https://github.com/summershine115/bycall.git && cd bycall
+cp .env.example .env  # 默认 SQLite，无需 docker / 外部服务
 make venv && source .venv/bin/activate
 make install
 make seed-reference   # 灌入参考场景（示例角色/账号/MCP 连接器，幂等）
@@ -77,8 +78,8 @@ make eval-security    # 五类攻击 × 21 条红线用例，任一失败即红�
 前置：仓库已 clone、`.venv` 已建好且依赖已安装（见上一节）。
 
 ```bash
-# 1. 复制配置
-cp .env.example .env   # 填启动引导；模型与 IM 凭证由控制台管理
+# 1. 复制配置（默认 SQLite；生产把 BYCALL_POSTGRES_DSN 换成 Postgres）
+cp .env.example .env   # 模型与 IM 凭证由控制台管理
 
 # 2. 起 API（热重载，端口 8000）
 make dev
