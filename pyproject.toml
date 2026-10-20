@@ -8,9 +8,19 @@ version = "0.3.0"
 description = "Bycall — 企业级数字员工 Agent（路线 B：分层混搭自研）"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
-authors = [{ name = "Bycall Team" }]
-keywords = ["agent", "rag", "digital-employee", "langgraph", "zvec"]
+license = { text = "MIT" }
+authors = [{ name = "summershine115" }]
+keywords = [
+    "agent",
+    "rag",
+    "digital-employee",
+    "governance",
+    "access-control",
+    "rbac",
+    "mcp",
+    "langgraph",
+    "zvec",
+]
 
 # 运行时依赖（M0 最小集）。各里程碑新增依赖时在此追加。
 dependencies = [
@@ -74,7 +84,9 @@ dev = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/lilinsen/bycall/blob/main/README.md"
+Homepage = "https://github.com/summershine115/bycall"
+Repository = "https://github.com/summershine115/bycall"
+Documentation = "https://github.com/summershine115/bycall/blob/main/README.md"
 
 # hatchling: 把 src/bycall + 仓库级 evals CLI 作为包根
 [tool.hatch.build.targets.wheel]

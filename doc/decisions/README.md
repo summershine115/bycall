@@ -27,6 +27,8 @@
 
 | ADR-0017 | 控制台可信配置与任务闭环 | ✅ 已采纳（用户要求实施） | 2026-10-18 | [0017](0017-console-trust-and-task-flow.md) |
 
+| ADR-0018 | 开源发布——MIT 许可 + 公开 GitHub 仓库（阶段 A） | ✅ 已采纳（用户拍板） | 2026-10-20 | [0018](0018-open-source-release-mit.md) |
+
 ## 2. 正文中的已采纳决策（未单独成 ADR，位置即权威）
 
 这些决策已拍板并记录在正文文档中，保持原位不迁移，此处仅登记状态：
@@ -120,5 +122,5 @@
 | `doc/decisions/0015-feishu-gateway.md` | ✅ 已采纳 | 飞书渠道 ADR（自研长连接协议层对齐官方 lark-oapi 1.7.3 / union_id 优先绑定 / p2p chat_id 适配 / 卡片伪流式 / 全局+专属双作用域） |
 | `doc/guides/evaluation.md` | 随阶段 2 落地 | 评测 CLI 使用说明（make eval / eval-security / --snapshot / --compare） |
 | `doc/README.md` | 文档入口 | 阅读顺序、目录职责与维护约定 |
-| `doc/open-source-positioning.md` / `doc/open-source-checklist.md` | 建议稿 / 待执行 | 开源定位尚未采纳，清单不是发布通过证明 |
+| `doc/open-source-positioning.md` / `doc/open-source-checklist.md` | 建议稿 / 阶段 A 已执行 | 开源定位尚未采纳（见 ADR-0018）；清单阶段 A 已于 2026-10-20 执行，阶段 B 不在范围内 |
 | `doc/archive/` | 历史归档 | 实施笔记与前端接入包，不承载当前待办 |

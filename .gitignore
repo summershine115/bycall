@@ -48,6 +48,12 @@ secrets/
 .codegraph/
 .commandcode/
 
+# ---- 本地 Agent/工具会话与技能（不属于项目内容）----
+.agents/
+.claude/
+.omo/
+.senpi/
+
 # ---- 前端构建产物 ----
 frontend/node_modules/
 frontend/dist/

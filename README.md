@@ -13,6 +13,9 @@
 > 文档入口见 [`doc/README.md`](doc/README.md)，当前进度见 [`doc/execution-plan.md`](doc/execution-plan.md)，技术分层与
 > 架构红线见 [`doc/architecture.md`](doc/architecture.md)。
 
+> **本项目是架构参考实现，非生产就绪软件，不提供任何安全担保。**
+> 它展示的治理模式可作为设计参考，不构成对您部署环境的安全承诺。
+
 ---
 
 ## 技术栈
@@ -28,31 +31,68 @@
 | 重排 | rerank 模型（硅基流动 / Jina / 自定义）| 混合检索向量+FTS+filter → RRF → rerank（M2）|
 | 部署 | Docker Compose → K8s | 内网无公网 |
 
-## 快速开始
+## 这个仓库真正值得看的东西
+
+**策略不在提示词层，而在代码层。** LLM 只能"请求"，判定发生在它够不到的地方——
+下面六道闸全部由代码与评测用例锁定，`make eval-security` 让五类攻击 × 21 条红线用例全部失败：
+
+| # | 闸 | 机制 | 代码指针 |
+|---|---|---|---|
+| 1 | 信任根 | 身份来自 IM 平台令牌 → 用户记录，模型无法"自称是谁" | `agent/im_handler.py`、`gateway/` |
+| 2 | 看不到 | 无权工具根本不进工具列表，"看到不让调"都不存在 | `tools/gateway.py`（`filter_tools`） |
+| 3 | 调了也过闸 | 执行时能力校验 + 连接器侧 `bycall_role` 复核（跨进程纵深） | `governance/capability.py`、`examples/connectors/` |
+| 4 | 召回前过滤 | `build_acl_filters` fail-closed，无权知识**从未成为 prompt token** | `governance/policy.py`、`rag/retrieve.py` |
+| 5 | 回流也过滤 | `sanitize_tool_result`：有权工具的返回照样脱敏 + 截断 | `tools/redactor.py` |
+| 6 | 跨时间重算 | 审批等待 / 任务暂停后用**最新**用户状态重算，撤权即刻生效 | `governance/capability.py`（`reload_user_and_compute_cap`） |
+
+> 一个你能看着五类攻击全部失败的数字员工——治理平时不可见，攻击失败那一刻才可见。
 
 ```bash
-# 1. 建虚拟环境（需 python3.12）
+make venv && source .venv/bin/activate && make install
+make seed-reference && make eval-security
+```
+
+**诚实的边界**：这套体系保证的是"越权不可能"，不保证"授权范围内的错误行为不可能"。
+confused deputy 与提示注入降质仍是开放难题，对策在审批、审计与评测，不在权限层。
+
+## 快速开始
+
+### 最小体验（零 API key、零 Docker）
+
+不需要外部服务，也不需要模型凭证，clone 下来就能验证核心主张：
+
+```bash
+git clone https://github.com/summershine115/bycall.git && cd bycall
 make venv && source .venv/bin/activate
-
-# 2. 安装依赖（运行时 + dev）
 make install
+make seed-reference   # 灌入参考场景（示例角色/账号/MCP 连接器，幂等）
+make eval-security    # 五类攻击 × 21 条红线用例，任一失败即红灯
+```
 
-# 3. 复制配置
+> 全绿即说明：越权召回、会话/记忆泄漏、提示词注入提权、工具越权、审批绕过五类攻击全部被拦。
+> 想跑完整自检（lint + 全部测试 + 四类评测），执行 `make ci-local`。
+
+### 完整应用链路（需要 LLM API key）
+
+前置：仓库已 clone、`.venv` 已建好且依赖已安装（见上一节）。
+
+```bash
+# 1. 复制配置
 cp .env.example .env   # 填启动引导；模型与 IM 凭证由控制台管理
 
-# 4. 起 API（热重载，端口 8000）
+# 2. 起 API（热重载，端口 8000）
 make dev
 # → http://localhost:8000/health  返回 {"status":"ok"}
 # → http://localhost:8000/ready   返回版本 + 后端选型
 # → http://localhost:8000/docs    Swagger UI
 
-# 5. 跑测试
+# 3. 跑测试
 make ci-local          # lint + 全部测试 + 四类评测 + 安全评测（全部本地可跑，无需外部服务）
 
-# 6.（可选）体验参考场景（示例 MCP 连接器 + 3 类角色 + demo 账号，见 ADR-0009）
+# 4.（可选）体验参考场景（示例 MCP 连接器 + 3 类角色 + demo 账号，见 ADR-0009）
 make seed-reference   # 幂等灌入；之后 make dev 会拉起 demo 工单/库存连接器
 
-# 7.（可选）起 postgres + redis
+# 5.（可选）起 postgres + redis
 make docker-up
 ```
 
@@ -103,3 +143,7 @@ tests/
 
 详见 [`doc/architecture.md`](doc/architecture.md) 与
 [`doc/decisions/`](doc/decisions/)（ADR）。
+
+## License
+
+[MIT](LICENSE) © 2026 summershine115
