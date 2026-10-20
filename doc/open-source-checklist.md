@@ -15,15 +15,17 @@
 - ✅ **A0.4 种子数据**：`scripts/seed_reference.py` 为 demo 角色/账号（demo-tech / demo-lead /
   demo-guest）与通用物料，无真实组织痕迹；`examples/connectors/` 同为虚构数据。
 - ✅ **A0.5 内网 host**：`src/ doc/ examples/ tests/ evals/ scripts/ docker/` 复扫无内网域名与真实端点。
-- ✅ **A1 仓库卫生**：`.agents/`、`.claude/`、`.codegraph/`、`.omo/`、`.senpi/` 移出版本库并写入
-  `.gitignore`；`git status` 无未跟踪杂物。
+- ✅ **A1 仓库卫生**：`.agents/`、`.claude/`、`.codegraph/`、`.omo/`、`.senpi/`、
+  工具生成的 `skills-lock.json` 移出版本库并写入 `.gitignore`；`git status` 无未跟踪杂物。
 - ✅ **A2 许可**：新增 MIT `LICENSE`（版权 `summershine115`）；`pyproject.toml` 的
   `license` / `authors` / `urls` 同步为 MIT 与公开仓库地址；README 头部免责声明就位。
 - ✅ **A3 README**：新增"这个仓库真正值得看的东西"（六道闸 + 代码指针 + 信任 demo 命令链）；
   "快速开始"拆为"最小体验（零 key、零 Docker）"与"完整应用链路"两条。
-- ✅ **A4 发布链路**：本地 `make ci-local` 全绿（lint + 989 项测试 + 四类评测 35/35 +
-  安全红线 21/21，约 2 分钟），零 API key、零 Docker。
-- ⬜ **A5 发布动作**：GitHub 建仓与 push 结果见文末（按实际执行补记）。
+- ✅ **A4 发布链路**：公开仓库干净 clone 复测——`make install` → `make seed-reference` →
+  `make eval-security` → `make ci-local` 全绿（lint + 989 项测试 + 四类评测 35/35 +
+  安全红线 21/21），零 API key、零 Docker、零 Postgres。首次失败与修复记录见 A4.1。
+- ✅ **A5 发布动作**：已建公开仓库 <https://github.com/summershine115/bycall> 并 push main；
+  GitHub Actions 的 Lint / Test / Build (docker) 三门全绿（详见 A5）。
 - ⏸ **阶段 B 未做**（清单 §7 明确排除）：英文/双语 README、OWASP Agentic Top 10 映射、
   CONTRIBUTING、首个 tag。
 
@@ -149,31 +151,44 @@ make seed-reference && make eval-security
 
 ### A4.1 干净 clone 模拟
 ```bash
-cd /tmp && git clone /Users/lilinsen/Code/bycall bycall-fresh && cd bycall-fresh
+cd /tmp && git clone https://github.com/summershine115/bycall bycall-fresh && cd bycall-fresh
+cp .env.example .env   # 默认 SQLite，无需 docker
 make venv && source .venv/bin/activate && make install
 ```
-- ✅ 2026-10-20 已执行（见下方 A4.2 记录）；clone 后仅凭仓库内容即可建环境并全绿。
+- ✅ 2026-10-20 已执行（从公开仓库 clone，非本地路径），仅有仓库内容即可建环境并全绿。
+- ⚠️ **首次执行失败并已修复**：① 默认 DSN 指向 Postgres 且未装 psycopg；
+  ② 仓库不含 `data/` 目录，SQLite 无法创建数据库文件；③ `mcp>=1.24` 未钉上限，
+  干净环境解析到 mcp 2.x，`mcp.server.fastmcp` 已改名导致示例连接器与测试导入失败。
+  修复：`.env.example` 默认 SQLite + `data/.gitkeep` 占位 + `mcp>=1.24,<2`
+  （见 commit `fix: 修复干净环境启动与依赖可复现性`）。
 
 ### A4.2 核心链路(零 API key、零 docker)
 ```bash
+cp .env.example .env
 make seed-reference && make eval-security && make ci-local
 ```
 - ✅ 全绿 → "进入测试"通过;记录总耗时(可写进 README:"从 clone 到看到攻击被拦约 X 分钟")
 - ❌ 任何失败 → 修复后再发布(陌生人第一条命令失败是开源项目最高的流失率来源)
-- **2026-10-20 主仓库执行结果**：`make ci-local` 全绿——lint 通过、989 项测试通过、
-  四类评测 35/35、安全红线 21/21，整链约 2 分钟；全程零 API key、零 Docker。
-  干净 clone 复核记录见 A4.1。
+- **2026-10-20 公开仓库干净 clone 复测（修复后）**：`make install` → `make seed-reference` →
+  `make eval-security` → `make ci-local` 全部通过——lint 通过、989 项测试通过、
+  四类评测 35/35、安全红线 21/21；零 API key、零 Docker、零 Postgres。
+  从 clone 到看到"21 条攻击用例全部被拦"约 3–5 分钟（主要耗时在依赖安装与构建）。
 
 ### A4.3 (可选)完整链路
 有 API key 的前提下 `make docker-up && make dev` 走一遍现有快速开始,确认文档与实况一致。
+- ✅ 2026-10-20：GitHub Actions 的 docker build + 容器 `/health` 冒烟通过
+  （镜像默认 SQLite，无需外部依赖）。
 
 ---
 
 ## A5 发布动作
 
-- [ ] GitHub 创建公开仓库(名称、description、topics 建议:`agent` `governance` `rbac` `rag` `access-control` `mcp` `hitl`)
-- [ ] push main(注意:确认远程不含 `--mirror` 的私有分支残留)
+- [x] GitHub 创建公开仓库：`https://github.com/summershine115/bycall`
+  （description：组织授权下的数字员工参考实现；topics：`agent` `governance` `rbac` `rag`
+  `access-control` `mcp` `hitl` `digital-employee` `langgraph` `zvec` `ai-agent`）
+- [x] push main（唯一分支 main，无私有分支残留）
 - [ ] **不打 tag**——第一个 tag 属于阶段 B("作为证据封版":README 治理重写 + OWASP 映射完成后)
+- ✅ 2026-10-20：GitHub Actions CI 三门全绿——Lint (ruff)、Test (pytest 989)、Build (docker)。
 
 ---
 

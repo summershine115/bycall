@@ -31,7 +31,7 @@
 
 ## 提案与归档
 
-- [开源定位](open-source-positioning.md) 为尚未采纳的建议；[开源清单](open-source-checklist.md) 为待执行清单，不代表已经通过发布检查。
+- [开源定位](open-source-positioning.md) 为尚未采纳的建议；[开源清单](open-source-checklist.md) 阶段 A 已于 2026-10-20 执行（决策与依据见 [ADR-0018](decisions/0018-open-source-release-mit.md)），阶段 B 未做。公开仓库：<https://github.com/summershine115/bycall>。
 - `archive/tasks/` 保存原实施计划与任务勾选；`archive/frontend-theme/` 保存已跟踪的前端接入包。归档中的步骤、路径和勾选保留历史，不作为当前实施指令。
 
 ## 维护约定
